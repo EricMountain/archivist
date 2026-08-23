@@ -27,7 +27,7 @@ variable "aws_profile" {
 variable "app_name" {
   description = "Prefix for every resource name. Change only if it collides with something you already run."
   type        = string
-  default     = "photo-archivist"
+  default     = "archivist"
 }
 
 variable "environment" {

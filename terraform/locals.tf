@@ -3,8 +3,8 @@ data "aws_caller_identity" "current" {}
 locals {
   app = var.app_name
 
-  # prod is unsuffixed: photo-archivist-media.
-  # anything else is inserted:  photo-archivist-dev-media.
+  # prod is unsuffixed: archivist-media.
+  # anything else is inserted:  archivist-dev-media.
   name_prefix = var.environment == "prod" ? local.app : "${local.app}-${var.environment}"
 
   # Bucket names are globally unique, so they carry the account ID.

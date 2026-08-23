@@ -1,6 +1,6 @@
 # Terraform
 
-Infrastructure for photo-archivist. Currently the DynamoDB table and the two S3
+Infrastructure for archivist. Currently the DynamoDB table and the two S3
 buckets; Lambda, API Gateway, CloudFront and Cognito to follow.
 
 **This is deployed by each user into their own AWS account.** There is no shared
@@ -20,7 +20,7 @@ terraform/
   backend.tf     S3 backend, partial config
   variables.tf
   locals.tf      naming convention lives here
-  dynamodb.tf    photo-archivist-media
+  dynamodb.tf    archivist-media
   s3.tf          originals + derived buckets
   outputs.tf
 ```
@@ -48,7 +48,7 @@ You need an AWS account, a domain you control, and credentials as above.
 
 ```sh
 cd terraform/bootstrap
-terraform init && terraform apply          # creates photo-archivist-tfstate-<account>
+terraform init && terraform apply          # creates archivist-tfstate-<account>
 
 cd ..
 cp backend.hcl.example backend.hcl         # set your account ID and region
@@ -71,13 +71,13 @@ lock table**. That approach is superseded; don't reintroduce it.
 
 ## Naming
 
-Everything is prefixed `photo-archivist`. `local.name_prefix` in `locals.tf` is the
+Everything is prefixed `archivist`. `local.name_prefix` in `locals.tf` is the
 single place this is decided:
 
 | Environment | Table | Buckets |
 | --- | --- | --- |
-| `prod` | `photo-archivist-media` | `photo-archivist-originals-<account>` |
-| `dev` | `photo-archivist-dev-media` | `photo-archivist-dev-originals-<account>` |
+| `prod` | `archivist-media` | `archivist-originals-<account>` |
+| `dev` | `archivist-dev-media` | `archivist-dev-originals-<account>` |
 
 Bucket names carry the account ID because the S3 namespace is global.
 

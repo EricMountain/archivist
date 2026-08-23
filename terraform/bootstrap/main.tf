@@ -35,7 +35,7 @@ variable "aws_profile" {
 
 variable "app_name" {
   type    = string
-  default = "photo-archivist"
+  default = "archivist"
 }
 
 data "aws_caller_identity" "current" {}

@@ -8,13 +8,13 @@ their own domain; there is no shared service. Read `deployment.md` for what that
 for responsibility, versioning and distribution — several decisions below only make
 sense in that light, particularly the single-tenant scaling assumptions.
 
-Single DynamoDB table (`photo-archivist-media`), on-demand billing, two GSIs.
+Single DynamoDB table (`archivist-media`), on-demand billing, two GSIs.
 
-**Naming convention:** every AWS resource is prefixed `photo-archivist-`. Tables are
-`photo-archivist-<purpose>`, so if the single-table design is ever abandoned the
-successors are `photo-archivist-media`, `photo-archivist-audit` and so on. Buckets add
+**Naming convention:** every AWS resource is prefixed `archivist-`. Tables are
+`archivist-<purpose>`, so if the single-table design is ever abandoned the
+successors are `archivist-media`, `archivist-audit` and so on. Buckets add
 the account ID for global uniqueness. Non-production environments insert the
-environment name: `photo-archivist-dev-media`.
+environment name: `archivist-dev-media`.
 
 `sample-data.md` holds a worked example of eight assets as real rows. **It is part of
 this design and must be updated alongside any change here** — key structure, item
@@ -195,7 +195,7 @@ sharing, no federation and no central directory — two people on two instances 
 unrelated accounts, and the only way to give someone access to your photos is to give
 them an account on your instance.
 
-## Table: `photo-archivist-media`
+## Table: `archivist-media`
 
 | | Attribute | Value |
 | --- | --- | --- |
@@ -258,7 +258,7 @@ role         display | raw | motion | sidecar
 path         2026/summer/IMG_4021.HEIC   # this file's full path; mutable
 ext          heic                        # normalised lowercase
 mime         image/heic
-s3Bucket     photo-archivist-originals
+s3Bucket     archivist-originals
 s3Key        raw/01J7X…/01K2M9G7…        # keyed by renditionId, so renames never
                                          # touch S3
 contentHash  hmac-sha256:…               # HMAC of plaintext, keyed by an owner secret

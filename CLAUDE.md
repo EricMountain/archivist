@@ -1,4 +1,4 @@
-# photo-archivist
+# archivist
 
 A "serverless" photo library on S3 + DynamoDB + Lambda + CloudFront. Design stage —
 no implementation yet.
@@ -50,9 +50,9 @@ command, which would defeat the purpose.
 
 ## Naming
 
-Every AWS resource is prefixed `photo-archivist`. `local.name_prefix` in
+Every AWS resource is prefixed `archivist`. `local.name_prefix` in
 `terraform/locals.tf` is the single place that's decided; non-prod environments insert
-the environment name (`photo-archivist-dev-media`). Buckets append the account ID.
+the environment name (`archivist-dev-media`). Buckets append the account ID.
 
 ## Keep the sample data in sync
 

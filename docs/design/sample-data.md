@@ -1,6 +1,6 @@
 # Sample data
 
-Nine assets as they'd actually sit in `photo-archivist-media`, chosen to exercise the awkward
+Nine assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
 parts of `design.md` rather than the happy path: multi-rendition grouping, all four
 `takenAtSrc` rungs, three `tzSrc` rungs, chunked encryption, and a sort-key tie.
 
@@ -550,7 +550,7 @@ GSI1's `INCLUDE` projection is what makes this a single round-trip.
 
 ```js
 {
-  TableName: "photo-archivist-media",
+  TableName: "archivist-media",
   IndexName: "GSI1",
   KeyConditionExpression: "gsi1pk = :o",
   ExpressionAttributeValues: { ":o": "O#01J7X…" },
@@ -641,7 +641,7 @@ Everything about an asset — metadata, renditions and facets — in one read:
 
 ```js
 {
-  TableName: "photo-archivist-media",
+  TableName: "archivist-media",
   KeyConditionExpression: "pk = :p",
   ExpressionAttributeValues: { ":p": "O#01J7X…#M#01K5A2QB3HN7WYP2GKD4RVXM8C" }
 }
@@ -665,13 +665,13 @@ By path (pattern 1b) is two reads, pointer then item:
 
 ```js
 // 1
-{ TableName: "photo-archivist-media",
+{ TableName: "archivist-media",
   Key: { pk: "O#01J7X…#PATH#2026/07-japan/IMG_8123.CR3", sk: "#PTR" },
   ConsistentRead: true }
 // → { photoId: "01K5A2QB3H…", renditionId: "01K5A2QB3H…" }
 
 // 2
-{ TableName: "photo-archivist-media",
+{ TableName: "archivist-media",
   Key: { pk: "O#01J7X…#M#01K5A2QB3H…", sk: "#META" },
   ProjectionExpression: "photoId, stem, takenAt, thumbs, #st",
   ExpressionAttributeNames: { "#st": "status" } }
