@@ -31,7 +31,7 @@ because it contradicts this document silently.
   partition rewrite.
 * **A photo is an asset with one or more file renditions.** Files sharing a path stem
   (`IMG_4021.CR3` + `IMG_4021.JPG`) group into one asset with one timeline entry.
-* **Deletion is soft**, for 30 days by default. Trashing rewrites `gsi1pk` to a trash
+* **Deletion is soft**, for 30 days by default. Trashing rewrites `timelinePk` to a trash
   partition of the same index, so an asset is in the timeline or the trash, never both.
 * **All timestamps are stored in UTC**, ISO-8601, fixed width, always `Z`-suffixed:
   `2026-07-14T09:22:05.000Z`. The local UTC offset is preserved alongside as
@@ -63,19 +63,19 @@ because it contradicts this document silently.
 | 1b | Get a photo by full path | `PATH` pointer → `GetItem` (2 reads) |
 | 1c | Get a photo *and* its renditions *and* its facets | Base table, `Query` on PK |
 | 1d | Find the asset owning a path stem, during ingest | `STEM` pointer, `GetItem` |
-| 2 | List photos, newest first, by owner (paginated) | `GSI1`, `ScanIndexForward=false` |
-| 3 | List photos in a time range, by owner | `GSI1`, SK `BETWEEN` |
-| 4 | List photos containing a certain object, by owner | `GSI2` |
-| 5 | List photos by camera / other EXIF attribute, by owner | `GSI2` |
-| 4b/5b | Any of the above, restricted to a time range | `GSI2`, SK `BETWEEN` |
+| 2 | List photos, newest first, by owner (paginated) | `timeline_gsi`, `ScanIndexForward=false` |
+| 3 | List photos in a time range, by owner | `timeline_gsi`, SK `BETWEEN` |
+| 4 | List photos containing a certain object, by owner | `facet_gsi` |
+| 5 | List photos by camera / other EXIF attribute, by owner | `facet_gsi` |
+| 4b/5b | Any of the above, restricted to a time range | `facet_gsi`, SK `BETWEEN` |
 | 6 | List an owner's configured devices | Base table, `Query` on PK |
 | 6b | Get one device's default offset | Base table, `GetItem` |
-| 7 | List every photo from a given device (for retro-correction) | `GSI2`, `F#DEVICE#…` |
-| 8 | List photos I hold a RAW for | `GSI2`, `F#REND#raw` |
+| 7 | List every photo from a given device (for retro-correction) | `facet_gsi`, `F#DEVICE#…` |
+| 8 | List photos I hold a RAW for | `facet_gsi`, `F#REND#raw` |
 | 9 | Resolve a login to a user | `IDP` pointer, `GetItem` |
 | 10 | List the libraries a user can access | Base table, `Query` on `U#<userId>` |
-| 11 | List the trash, most recently deleted first | `GSI1`, `O#<owner>#TRASH` |
-| 12 | Find assets whose retention has expired | `GSI1`, trash partition, SK `<` cutoff |
+| 11 | List the trash, most recently deleted first | `timeline_gsi`, `O#<owner>#TRASH` |
+| 12 | Find assets whose retention has expired | `timeline_gsi`, trash partition, SK `<` cutoff |
 
 Queries 4 and 5 collapse into one index: "contains a dog" and "shot on a Canon R5"
 are both *facets* — a `(type, value)` pair attached to a photo. One index, one code
@@ -400,7 +400,7 @@ facetType    LABEL
 facetValue   dog
 confidence   0.94                        # LABEL only
 labelSrc     rekognition | client | manual   # LABEL only; see "Labelling" below
-takenAt      2026-07-14T09:22:05.000Z    # denormalised, feeds GSI2 SK
+takenAt      2026-07-14T09:22:05.000Z    # denormalised, feeds facet_gsi SK
 tzOffsetMin  540                         # denormalised, for grid rendering
 thumbs       { 256: {key, iv, bytes} }   # denormalised; ULID-derived, so immutable
 encDek / encKeyId                        # needed to decrypt the thumb in the grid
@@ -431,12 +431,12 @@ long tail costs a few extra items per photo, which is the cheaper side of the tr
 Cost: ~13–23 items per photo (10–20 labels + 3 or so derived), ~250 B each. A 100k-photo
 library is ~2M items / ~600 MB. Trivial at DynamoDB pricing.
 
-## GSI1 — timeline (queries 2, 3)
+## timeline_gsi (queries 2, 3)
 
 | | Attribute | Value |
 | --- | --- | --- |
-| PK | `gsi1pk` | `O#<ownerId>` |
-| SK | `gsi1sk` | `<takenAt>#<photoId>` |
+| PK | `timelinePk` | `O#<ownerId>` |
+| SK | `timelineSk` | `<takenAt>#<photoId>` |
 
 Projection: `INCLUDE [thumbs, encDek, encKeyId, width, height, mime, tzOffsetMin,
 status]` — enough to render a grid page without a second round-trip, decryption
@@ -450,12 +450,12 @@ and guarantees a total order, which is what makes cursor pagination correct.
 Pagination: pass `LastEvaluatedKey` back to the client as an opaque base64 cursor.
 Don't expose the key shape — see the sharding note below.
 
-## GSI2 — facets (queries 4, 5)
+## facet_gsi (queries 4, 5)
 
 | | Attribute | Value |
 | --- | --- | --- |
-| PK | `gsi2pk` | `O#<ownerId>#F#<type>#<value>` |
-| SK | `gsi2sk` | `<takenAt>#<photoId>` |
+| PK | `facetPk` | `O#<ownerId>#F#<type>#<value>` |
+| SK | `facetSk` | `<takenAt>#<photoId>` |
 
 Projection: same `INCLUDE` list.
 
@@ -469,7 +469,7 @@ Files whose paths differ only by extension are one asset. `2026/summer/IMG_4021.
 and `2026/summer/IMG_4021.JPG` share the stem `2026/summer/IMG_4021`, so they become
 two `R#` items under one `#META` and one entry in the timeline.
 
-Only `#META` items carry GSI1 keys, so this falls out of the existing sparse-index
+Only `#META` items carry timeline_gsi keys, so this falls out of the existing sparse-index
 design rather than needing a filter: the timeline literally cannot show a rendition.
 
 ### Who decides
@@ -522,7 +522,7 @@ Extensions are lowercased for role detection, but stems compare case-sensitively
 first is primary until its JPEG arrives, then hands over.
 
 The handover is cheap by construction: `photoId` and `takenAt` don't change, so
-`gsi1sk` is untouched and the asset doesn't move in the timeline. Only `primaryRend`,
+`timelineSk` is untouched and the asset doesn't move in the timeline. Only `primaryRend`,
 `mime` and the dimensions on `#META` are rewritten. Existing thumbnails are kept —
 regenerating them from a newly-arrived JPEG is optional polish, not correctness.
 
@@ -534,7 +534,7 @@ outranks the stored one on the ladder above. So a JPEG with real EXIF upgrades a
 created from an extension-less file that fell back to `file-mtime`, but a second file
 with equally good EXIF changes nothing.
 
-This matters because `takenAt` is baked into `gsi1sk` and denormalised into every facet
+This matters because `takenAt` is baked into `timelineSk` and denormalised into every facet
 item. Without the rule, a JPEG landing after its RAW would rewrite the whole partition
 for no gain.
 
@@ -549,7 +549,7 @@ the MOV attaches as a `motion` rendition instead of appearing as a separate vide
 the timeline. XMP sidecars likewise land as `sidecar` and stay out of the way.
 
 The `REND` facet type indexes which roles an asset has, so "photos I have RAW for" is
-an ordinary GSI2 query (`F#REND#raw`) rather than a scan.
+an ordinary facet_gsi query (`F#REND#raw`) rather than a scan.
 
 ### Deleting
 
@@ -837,7 +837,7 @@ as the resume cursor.
 
 ## Establishing `takenAt`
 
-`gsi1sk` is built from `takenAt`, and a sort key can't be null, so every photo needs a
+`timelineSk` is built from `takenAt`, and a sort key can't be null, so every photo needs a
 timestamp even when EXIF has none. First hit wins; the winner is recorded in
 `takenAtSrc`:
 
@@ -915,13 +915,13 @@ matter of filling in a device that's already listed rather than typing an identi
 ### Retroactive correction
 
 Because `tzSrc` records which rung won, setting or changing a device default can
-correct precisely the photos that were guessed: query `GSI2` for
+correct precisely the photos that were guessed: query `facet_gsi` for
 `O#<owner>#F#DEVICE#<deviceKey>` (access pattern 7), keep the ones whose `tzSrc` is
 `device`, `owner-default` or `assumed-utc`, and leave anything resolved from `exif-offset`,
 `gps` or an explicit upload override alone. No library-wide reprocessing, and no risk
 of trampling a better answer that was already found.
 
-Note this rewrites `takenAt`, and therefore `gsi1sk` and every affected photo's facet
+Note this rewrites `takenAt`, and therefore `timelineSk` and every affected photo's facet
 items — see the last known limitation below. It's bounded to one partition per photo
 and should run as a batched background job, not inline in the settings request.
 
@@ -966,37 +966,37 @@ the Python case anyway.
 Deleting is soft by default, with a retention window (`trashRetentionDays` on owner
 settings, default 30) after which a sweep purges for real.
 
-### Trashing reuses GSI1
+### Trashing reuses timeline_gsi
 
-Soft-delete doesn't add an index or a filter. It **rewrites `gsi1pk`**:
+Soft-delete doesn't add an index or a filter. It **rewrites `timelinePk`**:
 
-| State | `gsi1pk` | `gsi1sk` |
+| State | `timelinePk` | `timelineSk` |
 | --- | --- | --- |
 | live | `O#<ownerId>` | `<takenAt>#<photoId>` |
 | trashed | `O#<ownerId>#TRASH` | `<deletedAt>#<photoId>` |
 
-An item has exactly one `gsi1pk` value, so it is in the timeline or in the trash and
+An item has exactly one `timelinePk` value, so it is in the timeline or in the trash and
 never both — the mutual exclusion is structural rather than enforced by a filter. The
 timeline query is completely unchanged, and a trashed asset disappears from it the
 instant the write lands.
 
 The trash listing is then the same query against a different partition, newest-deleted
 first. Sorting by `deletedAt` also makes the purge sweep a range query: everything with
-`gsi1sk < now − retention` is due.
+`timelineSk < now − retention` is due.
 
-Facet items get `gsi2pk` and `gsi2sk` **removed** rather than rewritten, since there's
+Facet items get `facetPk` and `facetSk` **removed** rather than rewritten, since there's
 no useful "search the trash by label" case. Removing the attributes drops them out of
-GSI2 entirely — the sparse-index property again.
+facet_gsi entirely — the sparse-index property again.
 
 ```text
 # on trash
-UPDATE #META  SET gsi1pk = O#<owner>#TRASH,
-                  gsi1sk = <deletedAt>#<photoId>,
+UPDATE #META  SET timelinePk = O#<owner>#TRASH,
+                  timelineSk = <deletedAt>#<photoId>,
                   deletedAt = <now>, deletedBy = <deviceLabel>
-UPDATE F#…     REMOVE gsi2pk, gsi2sk        # one write per facet item
+UPDATE F#…     REMOVE facetPk, facetSk        # one write per facet item
 ```
 
-Restore is the exact inverse, recomputing `gsi1sk` from the still-present `takenAt`.
+Restore is the exact inverse, recomputing `timelineSk` from the still-present `takenAt`.
 Both directions cost one write per facet item — the same order as the `takenAt`
 correction already described, bounded to one partition, and rare.
 
@@ -1168,28 +1168,28 @@ second reason — beyond lock-out avoidance — that it isn't optional.
 
 ## Known limitations
 
-**No multi-facet intersection.** "Dogs AND shot on a Canon" needs two GSI2 queries
+**No multi-facet intersection.** "Dogs AND shot on a Canon" needs two facet_gsi queries
 intersected. Pragmatic answer: query the more selective facet, then filter in the
 lambda against the photo's other facets. If real AND/OR/NOT search becomes a
 requirement, that's the point to put an OpenSearch Serverless collection or
 S3+Athena alongside DynamoDB — not to add more GSIs.
 
-**One partition per owner on GSI1.** A single GSI1 PK value lives on one physical
+**One partition per owner on timeline_gsi.** A single timeline_gsi PK value lives on one physical
 partition, capped at ~1000 WCU / 3000 RCU. Reads are fine; a bulk import of 100k
 photos for one owner serialises to roughly 40 minutes. Since each deployment serves one
 household, this is close to theoretical — it bounds the initial import and nothing
-else. If it ever mattered, time-bucket the key — `gsi1pk = O#<ownerId>#<YYYY>` — and
+else. If it ever mattered, time-bucket the key — `timelinePk = O#<ownerId>#<YYYY>` — and
 walk buckets descending, since reads are already time-ordered. Keeping cursors opaque
 now means that change won't break clients later.
 
 **Sorting is by UTC instant, not local wall-clock.** Photos taken at 9am in Tokyo and
 9am in London are three hours apart in the timeline. This is the correct behaviour for
 a continuous trip narrative and the wrong one for "my mornings", and it's baked into
-`gsi1sk`. `tzOffsetMin` is projected into both GSIs so the UI can still *display*
+`timelineSk`. `tzOffsetMin` is projected into both GSIs so the UI can still *display*
 local time and group by local day within a page.
 
 **Correcting `takenAt` rewrites the photo's facet items**, since they denormalise it
-for `gsi2sk`. Rare, bounded to one partition, and doable in a single transaction.
+for `facetSk`. Rare, bounded to one partition, and doable in a single transaction.
 
 ## Open questions
 

@@ -1,7 +1,3 @@
-# NOTE: `terraform validate` warns that hash_key/range_key are deprecated in favour of
-# a `key_schema` block. As of provider v6.58.0 that replacement does not exist yet —
-# both block and attribute forms are rejected as unsupported. The warning is ahead of
-# the implementation, so hash_key/range_key stay until key_schema actually ships.
 resource "aws_dynamodb_table" "media" {
   name         = "${local.name_prefix}-media"
   billing_mode = "PAY_PER_REQUEST"
@@ -21,42 +17,58 @@ resource "aws_dynamodb_table" "media" {
   }
 
   attribute {
-    name = "gsi1pk"
+    name = "timelinePk"
     type = "S"
   }
 
   attribute {
-    name = "gsi1sk"
+    name = "timelineSk"
     type = "S"
   }
 
   attribute {
-    name = "gsi2pk"
+    name = "facetPk"
     type = "S"
   }
 
   attribute {
-    name = "gsi2sk"
+    name = "facetSk"
     type = "S"
   }
 
-  # Timeline. Sparse: only #META items carry gsi1pk/gsi1sk, so renditions, facets
-  # and pointers are structurally incapable of appearing in it.
+  # Timeline. Sparse: only #META items carry timelinePk/timelineSk, so renditions,
+  # facets and pointers are structurally incapable of appearing in it.
   global_secondary_index {
-    name               = "GSI1"
-    hash_key           = "gsi1pk"
-    range_key          = "gsi1sk"
+    name               = "timeline_gsi"
     projection_type    = "INCLUDE"
     non_key_attributes = local.grid_projection
+
+    key_schema {
+      attribute_name = "timelinePk"
+      key_type       = "HASH"
+    }
+
+    key_schema {
+      attribute_name = "timelineSk"
+      key_type       = "RANGE"
+    }
   }
 
   # Facets: labels, camera, device, rendition roles. Sparse over F# items.
   global_secondary_index {
-    name               = "GSI2"
-    hash_key           = "gsi2pk"
-    range_key          = "gsi2sk"
+    name               = "facet_gsi"
     projection_type    = "INCLUDE"
     non_key_attributes = local.grid_projection
+
+    key_schema {
+      attribute_name = "facetPk"
+      key_type       = "HASH"
+    }
+
+    key_schema {
+      attribute_name = "facetSk"
+      key_type       = "RANGE"
+    }
   }
 
   point_in_time_recovery {

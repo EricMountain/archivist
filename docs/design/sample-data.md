@@ -14,6 +14,33 @@ parts of `design.md` rather than the happy path: multi-rendition grouping, all f
 * `thumbs` is written on one line as `{size: bytes}` — each entry really holds
   `{bucket, key, iv, bytes}`, with keys of the form `th/<ownerId>/<photoId>/<size>`.
 
+### Key
+
+| Prefix | Marks |
+| --- | --- |
+| `O#` | an owner — the library namespace everything else hangs off |
+| `U#` | a user — the human principal, kept separate from `O#` so identity stays swappable |
+| `M#` | a photo's media partition, `O#<ownerId>#M#<photoId>` — holds its `#META`, `R#` and `F#` items |
+| `R#` | a rendition — one physical file (RAW, JPEG, motion clip…) within a photo's partition |
+| `F#` | a facet, `F#<type>#<value>` — a label, camera, device etc. attached to a photo |
+| `D#` | a device config item, under `O#<ownerId>#DEVICES` |
+| `W#` | a key-wrapping item, under `O#<ownerId>#KEYS` |
+| `IDP#` | `IDP#<issuer>#<subject>` — resolves a login to a `userId`; the one pointer not scoped to an owner |
+| `STEM#` / `PATH#` / `HASH#` | pointer items, scoped under an owner, resolving a stem/path/content-hash to the ids it names |
+| `#META` | the logical-photo item within an `M#` partition |
+| `#PTR` | the resolved-id payload of any pointer item (`STEM#`, `PATH#`, `HASH#`, `IDP#`) |
+| `#SETTINGS` / `#PROFILE` | the one settings item on an `O#` partition, or profile item on a `U#` partition |
+| `#DEVICES` / `#KEYS` | fixed `pk` suffixes marking an owner's device-config or key-wrapping collection |
+| `#TRASH` | `pk` suffix marking the trash partition of `timeline_gsi` (see "Trashing reuses `timeline_gsi`" in `design.md`) |
+
+`M#` is overloaded once: on an `O#` partition it means *media* (`O#<ownerId>#M#<photoId>`),
+but as the `sk` on a `U#<userId>` item it means *membership* (`M#<ownerId>`, role
+owner/editor/viewer). Same letter, different item type — context is always the
+partition it's read from.
+
+Facet `<type>` values (`CAMERA`, `DEVICE`, `LABEL`, `LENS`, `REND`, `YEAR`, …) are a
+closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
+
 ## The nine assets
 
 | # | Asset | Renditions | Exercises |
@@ -61,8 +88,8 @@ O#01J7X…#M#01K5A2Q8ZCV1D9KXM3BQNR7T2F
                                               exifIv      <b64>
                                               groupSrc    stem
                                               status      ready
-                                              gsi1pk      O#01J7XQP4M2N8VBKD3RTYFW9GHC
-                                              gsi1sk      2026-07-14T09:22:05.000Z#
+                                              timelinePk  O#01J7XQP4M2N8VBKD3RTYFW9GHC
+                                              timelineSk  2026-07-14T09:22:05.000Z#
                                                           01K5A2Q8ZCV1D9KXM3BQNR7T2F
 
                                   R#01K5A2Q8ZCW4MB7XKQNV2HTRF3
@@ -110,8 +137,8 @@ encDek       <b64>
 encKeyId     mk-2026-03
 width        4032
 height       3024
-gsi2pk       O#01J7XQP4M2N8VBKD3RTYFW9GHC#F#LABEL#temple
-gsi2sk       2026-07-14T09:22:05.000Z#01K5A2Q8ZCV1D9KXM3BQNR7T2F
+facetPk      O#01J7XQP4M2N8VBKD3RTYFW9GHC#F#LABEL#temple
+facetSk      2026-07-14T09:22:05.000Z#01K5A2Q8ZCV1D9KXM3BQNR7T2F
 ```
 
 ---
@@ -138,7 +165,7 @@ O#01J7X…#M#01K5A2QB3HN7WYP2GKD4RVXM8C
                          thumbs      {256: 15360, 1024: 168960, 2048: 401408}
                          groupSrc    stem
                          status      ready
-                         gsi1sk      2026-07-13T16:48:20.000Z#
+                         timelineSk  2026-07-13T16:48:20.000Z#
                                      01K5A2QB3HN7WYP2GKD4RVXM8C
 
                 R#01K5A2QB3HQ8VMT5XKND7WBFR2
@@ -170,7 +197,7 @@ O#01J7X…#M#01K5A2QB3HN7WYP2GKD4RVXM8C
                 … 14 LABEL facets
 ```
 
-**One `#META`, so one row in GSI1.** The RAW never reaches the timeline.
+**One `#META`, so one row in timeline_gsi.** The RAW never reaches the timeline.
 
 ---
 
@@ -270,21 +297,21 @@ O#01J7X…#M#01K5A2QH2WPB9NXK4TDMR6YFV3
 ## A6 / A7 — burst frames, identical timestamp
 
 Both exposed within the same second, so EXIF gives both `11:03:12`. The `photoId`
-suffix in `gsi1sk` is what keeps the ordering total, and therefore what keeps cursor
+suffix in `timelineSk` is what keeps the ordering total, and therefore what keeps cursor
 pagination from skipping or repeating a row.
 
 ```text
 O#01J7X…#M#01K5A2QKB8YM5RVT7NQXHD2WFG
                 #META    stem     2026/07-japan/IMG_4030
                          takenAt  2026-07-15T11:03:12.000Z
-                         gsi1sk   2026-07-15T11:03:12.000Z#01K5A2QKB8YM5RVT7NQXHD2WFG
+                         timelineSk 2026-07-15T11:03:12.000Z#01K5A2QKB8YM5RVT7NQXHD2WFG
                 R#01K5A2QKB82NRK8WXQ5BTMVDH7
                          role display   path 2026/07-japan/IMG_4030.JPG
 
 O#01J7X…#M#01K5A2QMD3ZQ8WKN6BVYTX4HRP
                 #META    stem     2026/07-japan/IMG_4031
                          takenAt  2026-07-15T11:03:12.000Z
-                         gsi1sk   2026-07-15T11:03:12.000Z#01K5A2QMD3ZQ8WKN6BVYTX4HRP
+                         timelineSk 2026-07-15T11:03:12.000Z#01K5A2QMD3ZQ8WKN6BVYTX4HRP
                 R#01K5A2QMD33PWD6KQX9NMTVBRF
                          role display   path 2026/07-japan/IMG_4031.JPG
 ```
@@ -328,7 +355,7 @@ That's the overhead that makes the range arithmetic in `design.md` necessary.
 
 ## A9 — trashed
 
-Deleted on 6 August, so it holds a trash `gsi1pk` instead of the timeline one. Nothing
+Deleted on 6 August, so it holds a trash `timelinePk` instead of the timeline one. Nothing
 filters it out of the timeline: it simply isn't in that partition of the index.
 
 ```text
@@ -344,21 +371,21 @@ O#01J7X…#M#01K5A2QRG2WBK4XN7QTMVD3HRY
                          deletedAt   2026-08-06T20:14:52.000Z
                          deletedBy   "Pixel 9"
                          status      ready                      ← orthogonal to deletion
-                         gsi1pk      O#01J7XQP4M2N8VBKD3RTYFW9GHC#TRASH
-                         gsi1sk      2026-08-06T20:14:52.000Z#
+                         timelinePk  O#01J7XQP4M2N8VBKD3RTYFW9GHC#TRASH
+                         timelineSk  2026-08-06T20:14:52.000Z#
                                      01K5A2QRG2WBK4XN7QTMVD3HRY
 
                 R#01K5A2QRG25XMQ7BN3KWTVDH9F
                          role  display   path  2026/07-japan/IMG_4025.JPG
                          plainBytes 3407872   encChunkSize 0
 
-                F#LABEL#temple        ← still exists, but with NO gsi2pk/gsi2sk
+                F#LABEL#temple        ← still exists, but with NO facetPk/facetSk
                 F#CAMERA#Google Pixel 9
                 F#REND#display
-                … 9 more facets, all with their GSI2 keys removed
+                … 9 more facets, all with their facet_gsi keys removed
 ```
 
-Two things to notice. `gsi1sk` sorts by `deletedAt`, not `takenAt` — the trash is
+Two things to notice. `timelineSk` sorts by `deletedAt`, not `takenAt` — the trash is
 ordered by when you deleted things, and that's also what makes the purge sweep a range
 query. And `takenAt` is untouched, which is what lets a restore recompute the timeline
 sort key without consulting anything else.
@@ -466,13 +493,13 @@ O#01J7X…#KEYS             W#01K5A2P4XNXM9BVQ2KTNWRDH4G    kind        recovery
 Note the Pixel 9 has no `tzOffsetMin` — it writes `OffsetTimeOriginal`, so it never
 needs rung 5. The D750 does need one.
 
-## GSI1 — the timeline
+## timeline_gsi
 
 Every `#META` item, one row each, no renditions, no facets, no pointers. Queried
 descending, this is the infinite scroll.
 
 ```text
-gsi1pk                        gsi1sk                                              asset
+timelinePk                    timelineSk                                          asset
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-16T04:15:33.000Z#01K5A2QPF9XT2HMB5RKWNVQ3YD  A8
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-15T11:03:12.000Z#01K5A2QMD3ZQ8WKN6BVYTX4HRP  A7
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-15T11:03:12.000Z#01K5A2QKB8YM5RVT7NQXHD2WFG  A6
@@ -484,11 +511,11 @@ O#01J7XQP4M2N8VBKD3RTYFW9GHC  2011-03-02T19:44:10.000Z#01K5A2QF7NKD3VYB8MQXTG5HW
 ```
 
 Eight rows for **nine** assets, from twelve files. A2 and A3 each contribute two files
-and one row; A9 contributes none, because its `gsi1pk` points at a different partition
+and one row; A9 contributes none, because its `timelinePk` points at a different partition
 of this same index:
 
 ```text
-gsi1pk                              gsi1sk                                        asset
+timelinePk                          timelineSk                                    asset
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#TRASH  2026-08-06T20:14:52.000Z#01K5A2QRG2WBK4XN…    A9
 ```
 
@@ -497,12 +524,12 @@ Query 3 ("July 2026") is the same timeline query with
 though it was taken on 14 July, because the range condition only ever runs against the
 live partition.
 
-## GSI2 — facets
+## facet_gsi
 
 A slice, showing three different facet types sharing one index:
 
 ```text
-gsi2pk                                          gsi2sk                        asset
+facetPk                                         facetSk                       asset
 O#01J7X…#F#LABEL#temple                         2026-07-14T09:22:05.000Z#01K5…  A1
 O#01J7X…#F#LABEL#temple                         2026-07-13T16:48:20.000Z#01K5…  A2
 
@@ -515,16 +542,16 @@ O#01J7X…#F#CAMERA#Google Pixel 9                2026-07-14T10:05:41.000Z#01K5�
 O#01J7X…#F#CAMERA#Google Pixel 9                2026-07-14T09:22:05.000Z#01K5…  A1
 ```
 
-Same sort key shape as GSI1, which is why "temples, newest first" and "temples in July"
+Same sort key shape as timeline_gsi, which is why "temples, newest first" and "temples in July"
 are one query with a different `BETWEEN`.
 
 ## What to check while reading
 
 1. **Twelve files, nine assets, eight timeline rows.** A2 and A3 each contribute two
    files and one row; A9 is trashed and contributes none. Nothing filters either case
-   out — renditions never get GSI1 keys, and A9's point at a different partition.
+   out — renditions never get timeline_gsi keys, and A9's point at a different partition.
 2. **A6 and A7 share a timestamp to the millisecond.** Only the ULID suffix separates
-   them, which is the whole reason `gsi1sk` isn't just `takenAt`.
+   them, which is the whole reason `timelineSk` isn't just `takenAt`.
 3. **A4 sits in 2011.** The design can't do better without lying, and `takenAtSrc` is
    how the UI knows to say so.
 4. **Three different `tzSrc` values across A1, A2 and A5**, each resolved from a
@@ -546,13 +573,13 @@ abbreviated `01J7X…` for width; substitute the full ULID.
 ### The timeline (patterns 2, 3)
 
 The one that runs constantly. Note `ScanIndexForward: false` for newest-first, and that
-GSI1's `INCLUDE` projection is what makes this a single round-trip.
+timeline_gsi's `INCLUDE` projection is what makes this a single round-trip.
 
 ```js
 {
   TableName: "archivist-media",
-  IndexName: "GSI1",
-  KeyConditionExpression: "gsi1pk = :o",
+  IndexName: "timeline_gsi",
+  KeyConditionExpression: "timelinePk = :o",
   ExpressionAttributeValues: { ":o": "O#01J7X…" },
   ScanIndexForward: false,
   Limit: 50
@@ -566,8 +593,8 @@ Next page: pass back the previous response's `LastEvaluatedKey` verbatim.
 {
   …,
   ExclusiveStartKey: {
-    gsi1pk: "O#01J7X…",
-    gsi1sk: "2026-07-14T09:22:05.000Z#01K5A2Q8ZCV1D9KXM3BQNR7T2F",
+    timelinePk: "O#01J7X…",
+    timelineSk: "2026-07-14T09:22:05.000Z#01K5A2Q8ZCV1D9KXM3BQNR7T2F",
     pk:     "O#01J7X…#M#01K5A2Q8ZCV1D9KXM3BQNR7T2F",
     sk:     "#META"
   }
@@ -583,8 +610,8 @@ July 2026 only (pattern 3) is the same query with a range condition:
 
 ```js
 {
-  IndexName: "GSI1",
-  KeyConditionExpression: "gsi1pk = :o AND gsi1sk BETWEEN :from AND :to",
+  IndexName: "timeline_gsi",
+  KeyConditionExpression: "timelinePk = :o AND timelineSk BETWEEN :from AND :to",
   ExpressionAttributeValues: {
     ":o":    "O#01J7X…",
     ":from": "2026-07-01T00:00:00.000Z",
@@ -604,8 +631,8 @@ All four are one query shape with a different partition key.
 
 ```js
 {
-  IndexName: "GSI2",
-  KeyConditionExpression: "gsi2pk = :f",
+  IndexName: "facet_gsi",
+  KeyConditionExpression: "facetPk = :f",
   ExpressionAttributeValues: { ":f": "O#01J7X…#F#LABEL#temple" },
   ScanIndexForward: false
 }
@@ -618,13 +645,13 @@ All four are one query shape with a different partition key.
 ":f": "O#01J7X…#F#DEVICE#canon|eos r5|042024001234"  // → A2         (pattern 7)
 ```
 
-And a facet restricted to a date range needs nothing new, because GSI2 sorts by the
-same key as GSI1:
+And a facet restricted to a date range needs nothing new, because facet_gsi sorts by the
+same key as timeline_gsi:
 
 ```js
 {
-  IndexName: "GSI2",
-  KeyConditionExpression: "gsi2pk = :f AND gsi2sk BETWEEN :from AND :to",
+  IndexName: "facet_gsi",
+  KeyConditionExpression: "facetPk = :f AND facetSk BETWEEN :from AND :to",
   ExpressionAttributeValues: {
     ":f":    "O#01J7X…#F#CAMERA#Google Pixel 9",
     ":from": "2026-07-15T00:00:00.000Z",
@@ -709,8 +736,8 @@ Same index, same query shape, different partition:
 
 ```js
 {
-  IndexName: "GSI1",
-  KeyConditionExpression: "gsi1pk = :t",
+  IndexName: "timeline_gsi",
+  KeyConditionExpression: "timelinePk = :t",
   ExpressionAttributeValues: { ":t": "O#01J7X…#TRASH" },
   ScanIndexForward: false
 }
@@ -721,8 +748,8 @@ The purge sweep is that query with an upper bound, so it returns exactly what's 
 
 ```js
 {
-  IndexName: "GSI1",
-  KeyConditionExpression: "gsi1pk = :t AND gsi1sk < :cutoff",
+  IndexName: "timeline_gsi",
+  KeyConditionExpression: "timelinePk = :t AND timelineSk < :cutoff",
   ExpressionAttributeValues: {
     ":t":      "O#01J7X…#TRASH",
     ":cutoff": "2026-07-07T00:00:00.000Z"   // now − trashRetentionDays
@@ -734,9 +761,9 @@ The purge sweep is that query with an upper bound, so it returns exactly what's 
 Trashing an asset, which is what removes it from the timeline:
 
 ```js
-// #META — move it between partitions of GSI1
+// #META — move it between partitions of timeline_gsi
 {
-  UpdateExpression: `SET gsi1pk = :trash, gsi1sk = :dsk,
+  UpdateExpression: `SET timelinePk = :trash, timelineSk = :dsk,
                          deletedAt = :now, deletedBy = :dev`,
   ConditionExpression: "attribute_not_exists(deletedAt)",
   ExpressionAttributeValues: {
@@ -747,8 +774,8 @@ Trashing an asset, which is what removes it from the timeline:
   }
 }
 
-// each F# item — drop out of GSI2 entirely
-{ UpdateExpression: "REMOVE gsi2pk, gsi2sk" }
+// each F# item — drop out of facet_gsi entirely
+{ UpdateExpression: "REMOVE facetPk, facetSk" }
 ```
 
 The `ConditionExpression` makes a double-delete a no-op rather than something that
@@ -758,7 +785,7 @@ Restore is the inverse, and needs no stored state beyond `takenAt`:
 
 ```js
 {
-  UpdateExpression: `SET gsi1pk = :live, gsi1sk = :tsk
+  UpdateExpression: `SET timelinePk = :live, timelineSk = :tsk
                      REMOVE deletedAt, deletedBy`,
   ExpressionAttributeValues: {
     ":live": "O#01J7X…",

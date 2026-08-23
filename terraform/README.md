@@ -46,12 +46,18 @@ small, avoidable leak about how someone's account is organised.
 
 You need an AWS account, a domain you control, and credentials as above.
 
+Create a bucket for Terraform state (or provide one):
+
 ```sh
 cd terraform/bootstrap
 terraform init && terraform apply          # creates archivist-tfstate-<account>
+```
 
+Configure `backend.hcl` and `tfvars` - you can symlink to a private directory:
+
+```sh
 cd ..
-cp backend.hcl.example backend.hcl         # set your account ID and region
+cp backend.hcl.example backend.hcl         # set your account ID, region and the tfstate bucket
 terraform init -backend-config=backend.hcl
 
 cat > terraform.tfvars <<'EOF'
