@@ -1,0 +1,353 @@
+# Plan 02 — Archivist Android MVP
+
+Read `docs/design/android.md` for the stack and the reasoning; this is the build order.
+
+**MVP means:** connect to an instance, sign in, enrol a key, back up selected folders,
+browse the timeline, view a photo, delete. Not: albums, search UI beyond facet browse,
+video playback, sharing, or multi-instance.
+
+**Depends on** plan 01 being deployed to a `dev` instance, and step 1.16's conformance
+vectors existing.
+
+---
+
+## 2.1 — Project scaffolding
+
+**Goal.** An app that builds and installs.
+
+**Files.** `android/` — Gradle wrapper, `settings.gradle.kts`,
+`gradle/libs.versions.toml`, `app/`.
+
+**Details.**
+- `applicationId` and `namespace` both `fr.enry.archivist`. Debug builds take
+  `applicationIdSuffix = ".debug"`.
+- `minSdk 28` (native HEIC decode), `targetSdk` current.
+- Version catalog for every dependency — Renovate needs one file.
+- Compose with Material 3, Hilt, Kotlin coroutines.
+- Package layout from `android.md`: `crypto`, `data.{local,remote,repo}`, `domain`,
+  `sync`, `ui`.
+- Extract `:core:crypto` as its own Gradle module now, not later. It needs an isolated
+  test suite and a desktop JVM tool will reuse it.
+
+**Done when.** A debug APK installs and shows an empty Compose screen.
+
+---
+
+## 2.2 — Crypto module
+
+**Goal.** Encrypt and decrypt exactly what every other client does.
+
+**Files.** `core/crypto/src/main/kotlin/…`, and tests reading `testdata/vectors/`.
+
+**Details.**
+- Tink for streaming AEAD (`AES256_GCM_HKDF_1MB`) above 32 MB; plain AES-256-GCM below.
+  Threshold and chunk size from `crypto-format.md`.
+- Envelope operations: generate a DEK, wrap and unwrap with the master key, generate
+  per-object IVs. **A nonce is never reused under one DEK** — generate per object,
+  store per object.
+- Streaming only. Never load a file into memory; a 480 MB video must encrypt through an
+  `InputStream`.
+- The master key is an in-memory, non-exportable key. Never write it to disk, never log
+  it, clear it on `onTrimMemory`.
+
+**Done when.** The conformance vectors from step 1.16 all decrypt correctly, the
+truncated vector fails, and a 100 MB round-trip runs without the heap exceeding a few
+megabytes.
+
+**Do this step before anything that uploads.** A format mistake found later means
+re-uploading a library.
+
+---
+
+## 2.3 — Instance connection
+
+**Goal.** Point the app at a server.
+
+**Files.** `data/remote/Discovery.kt`, `ui/onboarding/`.
+
+**Details.**
+- First screen asks for a hostname. No default, no fallback, HTTPS only — reject
+  `http://` outright.
+- `GET https://<host>/.well-known/archivist.json`, persist the result to DataStore.
+- **Check `cryptoVersion`** and refuse an instance the app is too old for, with a "update
+  Archivist to use this server" message. Instances lag by months; this is a real case.
+- Distinguish the failure modes in the UI: host not found; reachable but no discovery
+  document ("is this an Archivist server?"); server too new. A single "connection
+  failed" makes typos undiagnosable.
+- Show `instanceName` on success so the user can confirm they reached the right place.
+- Store per-instance so a second instance is possible later — don't model this as a
+  singleton.
+
+**Done when.** Connecting to the `dev` instance persists its config; a typo'd hostname
+and a valid non-Archivist host produce different, accurate errors.
+
+---
+
+## 2.4 — Authentication
+
+**Goal.** Sign in with a passkey.
+
+**Files.** `data/remote/Auth.kt`, `ui/onboarding/SignIn.kt`.
+
+**Details.**
+- AndroidX Credential Manager against the instance's Cognito pool from discovery.
+- Tokens in `EncryptedSharedPreferences`, scoped per instance. Refresh proactively; the
+  user should not see a login prompt daily.
+- On first success call `POST /session/bootstrap`.
+- OkHttp interceptor attaches the access token and refreshes on 401 exactly once.
+
+**Done when.** A passkey registered on the `dev` instance signs in, survives an app
+restart, and refreshes without re-prompting.
+
+---
+
+## 2.5 — Key enrolment and recovery code
+
+**Goal.** The device can decrypt, and the user has a way back.
+
+**Files.** `crypto/KeyCustody.kt`, `ui/onboarding/Enrolment.kt`.
+
+**Details.**
+- First device: generate the master key on-device, generate a 128-bit recovery code
+  (base32, grouped `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`), wrap the master key under both an
+  Android Keystore keypair and an Argon2id KEK from the code, `POST` both wrappings.
+- **Enrolment is not complete until the user types the recovery code back.** Not a
+  "saved it" checkbox — actually confirm it. There is no recovery path afterwards.
+- Later device: unwrap via the recovery code, then enrol a Keystore wrapping.
+- Keystore key: EC, hardware-backed, `setUserAuthenticationRequired(true)`.
+- Handle `KeyPermanentlyInvalidatedException` — thrown when the user changes their lock
+  screen — by re-enrolling from the recovery code rather than crashing.
+
+**Done when.** A fresh install enrols, restarts and unlocks silently; a second install
+recovers using only the code; a lock-screen change produces a re-enrolment prompt, not a
+crash.
+
+---
+
+## 2.6 — Local storage
+
+**Goal.** The timeline renders offline and the upload queue survives death.
+
+**Files.** `data/local/` — Room entities, DAOs, database.
+
+**Details.**
+- Tables: `photos` (timeline cache mirroring GSI1 projections), `renditions`,
+  `upload_queue`, `local_tombstones` (content hash → deleted, so a scan skips it),
+  `sync_state` (folder selections, cursors).
+- Room is the source of truth the UI reads. Never bind the UI to a network response.
+- Thumbnail cache goes in `noBackupFilesDir` — decrypted thumbnails must not end up in
+  a Google cloud backup.
+
+**Done when.** Schema compiles, migrations are exported, DAO tests pass.
+
+---
+
+## 2.7 — Folder selection and scanning
+
+**Goal.** Find files to back up, without finding all of them.
+
+**Files.** `sync/Scanner.kt`, `ui/settings/Folders.kt`.
+
+**Details.**
+- Request `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` with a clear rationale screen first.
+- List device folders via `MediaStore`; the user picks. Camera roll offered but not
+  assumed.
+- Scan produces candidates: not already uploaded (hash in `photos`), not in
+  `local_tombstones`.
+- Compute the content HMAC while reading. Do it once and store it.
+
+**Done when.** Selecting a folder queues its unsynced files; deselecting stops future
+uploads without touching what's already uploaded; a file in the tombstone table is never
+re-queued.
+
+---
+
+## 2.8 — Metadata extraction
+
+**Goal.** The timestamp and offset ladders, correctly.
+
+**Files.** `domain/Timestamps.kt`, `domain/ExifExtractor.kt`, and thorough tests.
+
+**Details.**
+- `androidx.exifinterface`. Extract dimensions, MIME, camera make/model/serial, lens.
+- **The `takenAt` ladder**, first hit wins, recording `takenAtSrc`: EXIF
+  `DateTimeOriginal` → client file mtime → (server handles the rest). Reject future
+  timestamps and anything before 1990.
+- **The offset ladder**, recording `tzSrc`: upload-forced → EXIF `OffsetTimeOriginal` →
+  GPS delta (`DateTimeOriginal − GPSDateStamp/GPSTimeStamp`, rounded to 15 minutes) →
+  upload-fallback → device default → owner `homeTz` resolved against the photo's local
+  date → assume UTC.
+- `deviceKey` is `<make>|<model>|<serial>`, lowercased, whitespace collapsed, missing
+  parts `-`.
+- The raw EXIF blob is **encrypted** before leaving the device. It contains GPS.
+
+**Done when.** A fixture set covering EXIF-with-offset, EXIF-with-GPS-only,
+EXIF-with-neither, and no-EXIF-at-all each resolve to the documented rung. These tests
+matter more than they look: a regression silently misplaces photos in time rather than
+failing.
+
+---
+
+## 2.9 — Thumbnails
+
+**Goal.** 256, 1024, 2048 — generated once, forever.
+
+**Files.** `sync/Thumbnailer.kt`.
+
+**Details.**
+- Longest edge, aspect preserved. WebP.
+- `ImageDecoder` with `setTargetSampleSize` — downsample during decode, never decode
+  full-size then scale. A 50 MP image decoded whole will OOM.
+- All three sizes, always. The server can never re-derive a missing one, and adding a
+  size later costs a re-upload of the entire library.
+- RAW is out of scope: Android can't decode CR3 or ARW. Skip RAW files without a
+  sibling; the home-side importer owns those.
+
+**Done when.** A 50 MP HEIC produces three correctly-sized WebPs without the heap
+exceeding ~50 MB.
+
+---
+
+## 2.10 — Upload worker
+
+**Goal.** Backup that survives reboots, flaky networks and impatience.
+
+**Files.** `sync/UploadWorker.kt`, `data/repo/UploadRepository.kt`.
+
+**Details.**
+- WorkManager, one work item per file, state in `upload_queue`.
+- Per file: extract metadata → thumbnails → `POST /uploads` → stream-encrypt and PUT
+  each presigned URL → mark done.
+- **Multipart parts of 8 MiB** — exactly 8 crypto chunks. Misaligned boundaries make
+  range arithmetic painful later.
+- Constraints from settings: `NetworkType.UNMETERED` by default,
+  `setRequiresBatteryNotLow(true)`, optional `setRequiresCharging(true)`.
+- Long-running worker with a foreground notification for large files, or Android kills
+  it.
+- Exponential backoff. Distinguish permanent failures (400s — stop) from transient ones
+  (5xx, network — retry).
+- Handle the `kind: purged` response by writing a local tombstone and never retrying.
+
+**Done when.** Uploading 100 photos survives a process kill and an airplane-mode
+toggle, resuming without duplicates; switching to metered network pauses it.
+
+---
+
+## 2.11 — Timeline
+
+**Goal.** The screen people actually use.
+
+**Files.** `ui/timeline/`, `data/repo/PhotoRepository.kt`,
+`crypto/EncryptedImageFetcher.kt`.
+
+**Details.**
+- Paging 3 with `RemoteMediator`: network fills Room, Room feeds the pager.
+- Justified grid, newest first, date headers by **local** day using `tzOffsetMin` — not
+  UTC. Photos taken at 9am should group under that day.
+- A custom Coil `Fetcher` fetches ciphertext from CloudFront, unwraps the asset DEK with
+  the in-memory master key, decrypts, and returns the bitmap. Cache decrypted results in
+  Coil's disk cache, rooted in `noBackupFilesDir`.
+- Load the 256 thumbnail for instant paint, then 1024 for the grid.
+- **Locked state:** if the master key is unavailable, show an explicit locked screen
+  with an unlock action. Do not render a grid of grey rectangles — metadata renders fine
+  without the key, so the app will look healthy while every image fails.
+
+**Done when.** 1,000 photos scroll smoothly, the app opens offline showing cached
+thumbnails, and revoking key access produces the locked state rather than broken images.
+
+---
+
+## 2.12 — Photo detail
+
+**Goal.** Look at one photo.
+
+**Files.** `ui/detail/`.
+
+**Details.**
+- 2048 thumbnail, pinch-zoom, swipe between photos.
+- Metadata panel: date in local time, camera, dimensions, size, and the rendition list
+  ("JPEG · RAW"). Decrypt `exifEnc` on-device for the details.
+- Mark the date as approximate when `takenAtSrc != exif`.
+- Original on demand only — it's a paid retrieval against a tiered object.
+
+**Done when.** Detail opens from the grid, zooms, and shows an approximate-date marker
+for a photo lacking EXIF.
+
+---
+
+## 2.13 — Delete
+
+**Goal.** The three-way prompt from `android.md`.
+
+**Files.** `ui/detail/DeleteDialog.kt`.
+
+**Details.**
+- Options: remove from archive (default, keeps the local file); remove from both;
+  cancel.
+- Archive removal calls `DELETE /photos/{id}`. Both-removal additionally deletes via
+  `MediaStore`.
+- **Write a local tombstone either way**, so the scanner doesn't immediately re-upload
+  the file still sitting on the phone.
+- Default keeps the local copy: the phone is one of the independent copies the whole
+  design leans on, and deleting the last copy of something should never be a default.
+
+**Done when.** Archive-only removal makes the photo vanish from the timeline, leaves it
+in the gallery, and it is not re-uploaded on the next scan.
+
+---
+
+## 2.14 — Settings
+
+**Goal.** The minimum that isn't hostile.
+
+**Files.** `ui/settings/`.
+
+**Details.**
+- Sync: folders, network policy, charging requirement.
+- Devices: list, edit timezone defaults, remove.
+- Keys: enrolled wrappings, re-show recovery code confirmation flow.
+- Storage: thumbnail cache size and a clear-cache action.
+- Account: sign out, delete account (with confirmation).
+
+**Done when.** Every setting persists across restart and takes effect.
+
+---
+
+## 2.15 — Upload queue UI
+
+**Goal.** Visible progress.
+
+**Files.** `ui/queue/`.
+
+**Details.**
+- List of pending, in-progress and failed uploads, with per-item errors and retry.
+- Show *why* a queue is idle — "waiting for Wi-Fi", "waiting to charge". A silent
+  stalled queue is the most common self-inflicted support problem in backup apps.
+
+**Done when.** Pausing on a metered network shows the reason rather than nothing.
+
+---
+
+## 2.16 — CI and release
+
+**Goal.** Ship it.
+
+**Files.** `.github/workflows/`.
+
+**Details.**
+- PR: build, unit tests, instrumented tests on a Gradle-managed device.
+- Tag: assemble, sign, upload to the Play internal track via the Play Developer API
+  service account.
+- Secrets: upload keystore (base64), keystore passwords, service account JSON.
+- Renovate: grouped by ecosystem, automerge patch and minor on green, majors manual.
+- `--no-daemon`, remote build cache.
+
+**Done when.** A tagged commit appears on the internal track without manual steps.
+
+---
+
+## Deliberately not in the MVP
+
+Video playback, albums, favourites, people, free-text search, sharing, multi-instance,
+web client, RAW handling on device. Each is a real feature; none is needed to prove the
+architecture works end to end.

@@ -1,0 +1,11 @@
+# Anything specific to one person or one deployment lives in private/ and is never
+# committed, so the rest of the tree can be published as-is. See private/README.md.
+private/
+
+# Symlinks into private/. Ignored alongside their targets so a clone gets neither the
+# content nor a dangling link.
+docs/design/thoughts.md
+terraform/terraform.tfvars
+terraform/backend.hcl
+
+.DS_Store
