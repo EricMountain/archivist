@@ -6,3 +6,6 @@
 backend.hcl
 terraform.tfvars
 crash.log
+
+# Lambda deployment zips built by `data.archive_file` at apply time.
+.build/

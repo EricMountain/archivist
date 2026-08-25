@@ -52,3 +52,34 @@ variable "noncurrent_version_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "enable_google_idp" {
+  description = "Federate Cognito sign-in with Google in addition to passkeys. An operator may not want a Google dependency, so this defaults off."
+  type        = bool
+  default     = false
+}
+
+variable "google_client_id" {
+  description = "OAuth client ID from the Google Cloud console. Required only when enable_google_idp is true."
+  type        = string
+  default     = null
+}
+
+variable "instance_name" {
+  description = "Human-readable name for this instance, shown in the app and served in the discovery document."
+  type        = string
+  default     = "Archivist"
+}
+
+variable "route53_zone_name" {
+  description = "Route 53 hosted zone to create DNS records in. Defaults to domain_name with its first label stripped (e.g. \"example.com\" for \"photos.example.com\"); override if that guess is wrong, such as for an apex domain."
+  type        = string
+  default     = null
+}
+
+variable "google_client_secret" {
+  description = "OAuth client secret from the Google Cloud console. Required only when enable_google_idp is true. Set via a *.auto.tfvars file in private/, never committed."
+  type        = string
+  default     = null
+  sensitive   = true
+}

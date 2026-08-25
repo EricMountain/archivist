@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "aws-lambda"],
+    "paths": {
+      "@archivist/core/*": ["../core/*.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

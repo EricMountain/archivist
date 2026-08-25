@@ -137,12 +137,19 @@ fills Room, and Room feeds the pager.
 
 Uploads must never load a file into memory. A 480 MB video would OOM instantly, and
 even a 50 MB RAW is careless. Tink's `StreamingAead` (`AES256_GCM_HKDF_1MB`) encrypts
-over an `InputStream`, which matches the 1 MiB chunking in `design.md` and already
-handles the segment-framing and truncation-resistance problems flagged there.
+over an `InputStream`, and that construction *is* the format — `crypto-format.md`
+specifies it byte-for-byte, so on Android the correct implementation is Tink's, used
+unmodified. Do not reimplement it, and do not tune its parameters.
 
-**Align S3 multipart parts to crypto chunks.** Parts must be ≥5 MB, chunks are 1 MiB,
-so use 8 MiB parts — exactly 8 chunks each. Misaligned boundaries make the byte-range
-arithmetic for video seeking far more painful than it needs to be.
+The pieces the app still owns: generating the DEK, wrapping it with the master key
+(AES-KW), building the associated-data string, and choosing whole-object mode below the
+32 MB threshold. All four are specified; all four are covered by the conformance
+vectors.
+
+**Align S3 multipart parts to crypto segments.** Parts must be ≥5 MB, ciphertext
+segments are exactly 1 MiB, so use 8 MiB parts — exactly 8 segments each. Misaligned
+boundaries make the byte-range arithmetic for video seeking far more painful than it
+needs to be.
 
 ### Thumbnails
 
@@ -250,9 +257,11 @@ Two separate ceremonies, for the reasons in `design.md`:
 * **Auth**: Credential Manager → passkey → Cognito tokens, against *this instance's*
   user pool from the discovery document. Refresh tokens live in
   `EncryptedSharedPreferences`, scoped per instance; the app should not prompt daily.
-* **Key unlock**: an EC keypair in Android Keystore, hardware-backed and
+* **Key unlock**: an RSA-3072 keypair in Android Keystore, hardware-backed and
   `setUserAuthenticationRequired(true)` so it sits behind biometrics. It unwraps the
-  master key into memory at app start.
+  master key into memory at app start. RSA rather than EC because v1's `wrapAlg` has no
+  ECDH mode — see `crypto-format.md`, and open question 1 in `design.md`, which plan
+  step 2.4a is the measurement for.
 
 The master key is held in memory only — never in SharedPreferences, never on disk, and
 cleared on `onTrimMemory`. Re-unwrapping is a biometric prompt, which is cheap.
@@ -268,18 +277,20 @@ isn't a bug that shows up in testing, it's photos that one client can never open
 
 Tink has Java, Python, Go and C++ implementations but its JavaScript one is no longer
 maintained, so the web client hand-rolls over WebCrypto regardless of what we choose.
-Given that, adopt **Tink's `AES256_GCM_HKDF_1MB` framing as the specification**: it's
-already designed by cryptographers, it solves the truncation problem correctly, and it
-gives Android, a home-side Python importer and a Go CLI working implementations for
-free. Only the web is hand-written.
+Given that, **Tink's `AES256_GCM_HKDF_1MB` framing is the specification** — written up
+in `docs/design/crypto-format.md`, which is authoritative over this document and over
+`design.md` wherever the three describe bytes. It's already designed by cryptographers,
+it solves the truncation problem correctly, and it gives Android, a home-side Python
+importer and a Go CLI working implementations for free. Only the web is hand-written.
 
 Kotlin Multiplatform was considered and rejected for this: it would share code across
 Kotlin targets only, which leaves the Python and Go tooling exactly where it started.
 See "Interoperability" in `design.md`.
 
-Non-negotiable consequence: **generate conformance test vectors from Tink and commit
-them.** Every client's test suite decrypts the same fixtures. Without that, drift is
-discovered by a user, years later, holding a photo nobody can read.
+Non-negotiable consequence: **the conformance vectors in `testdata/vectors/` run in
+this app's test suite.** All 22 cases, including the ones that must fail. A
+client that passes its own round-trip tests but not these is broken, and the way that
+manifests is a user, years later, holding a photo nobody can read.
 
 ## Build and dependencies
 

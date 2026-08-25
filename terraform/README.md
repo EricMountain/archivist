@@ -1,7 +1,8 @@
 # Terraform
 
-Infrastructure for archivist. Currently the DynamoDB table and the two S3
-buckets; Lambda, API Gateway, CloudFront and Cognito to follow.
+Infrastructure for archivist: the DynamoDB table, the three S3 buckets, Cognito,
+the API Gateway HTTP API and its Lambda, the S3-event and purge Lambdas,
+CloudFront, DNS and the discovery document.
 
 **This is deployed by each user into their own AWS account.** There is no shared
 service — you run the whole stack yourself, under your own domain, and you pay your own
@@ -15,19 +16,32 @@ you find something that does, it's a bug.
 
 ```
 terraform/
-  bootstrap/     run once, creates the state bucket (local state)
-  versions.tf    provider + version pins
-  backend.tf     S3 backend, partial config
+  bootstrap/       run once, creates the state bucket (local state)
+  versions.tf      provider + version pins
+  backend.tf       S3 backend, partial config
   variables.tf
-  locals.tf      naming convention lives here
-  dynamodb.tf    archivist-media
-  s3.tf          originals + derived buckets
+  locals.tf        naming convention lives here
+  dynamodb.tf      archivist-media
+  s3.tf            originals + derived buckets
+  cognito.tf       user pool, passkeys, optional Google federation
+  iam.tf           one execution role per Lambda, scoped to exactly what it touches
+  api.tf           HTTP API, JWT authorizer, the API Lambda and its routes
+  s3_events.tf     S3-event Lambda: confirms upload arrival, flips status
+  schedules.tf     purge Lambda, daily EventBridge trigger
+  cloudfront.tf    certificate, distribution, CDN-prefix-stripping functions
+  dns.tf           Route 53 records: ACM validation, the domain alias
+  wellknown.tf     web bucket, placeholder page, /.well-known/archivist.json
   outputs.tf
 ```
 
-Flat root module rather than `modules/` + `environments/`: there is one environment
-and about eight resources. Reach for modules when there is a second consumer, not
-before — premature module extraction costs more than it saves at this size.
+Flat root module rather than `modules/` + `environments/`: there is one environment.
+Reach for modules when there is a second consumer, not before — premature module
+extraction costs more than it saves at this size.
+
+Lambda code is built separately (`make build`, from the repo root) into `dist/`;
+each Lambda's Terraform zips its own `dist/<name>/` with `data.archive_file` at
+apply time. Never run `terraform apply` without a fresh build first — `make
+deploy` is the only supported entry point, for exactly that reason.
 
 ## Credentials
 

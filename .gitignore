@@ -9,3 +9,16 @@ terraform/terraform.tfvars
 terraform/backend.hcl
 
 .DS_Store
+
+# TypeScript workspace build artefacts.
+dist/
+node_modules/
+coverage/
+*.tsbuildinfo
+
+# Android build artifacts and IDE
+android/app/build/
+android/.gradle/
+#.idea/
+#*.iml
+local.properties

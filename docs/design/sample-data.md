@@ -32,6 +32,7 @@ parts of `design.md` rather than the happy path: multi-rendition grouping, all f
 | `#SETTINGS` / `#PROFILE` | the one settings item on an `O#` partition, or profile item on a `U#` partition |
 | `#DEVICES` / `#KEYS` | fixed `pk` suffixes marking an owner's device-config or key-wrapping collection |
 | `#TRASH` | `pk` suffix marking the trash partition of `timeline_gsi` (see "Trashing reuses `timeline_gsi`" in `design.md`) |
+| `REGISTRY#OWNERS` | the one fixed `pk` listing every owner in the deployment, for the purge sweep |
 
 `M#` is overloaded once: on an `O#` partition it means *media* (`O#<ownerId>#M#<photoId>`),
 but as the `sk` on a `U#<userId>` item it means *membership* (`M#<ownerId>`, role
@@ -75,7 +76,7 @@ O#01J7X…#M#01K5A2Q8ZCV1D9KXM3BQNR7T2F
                                               height      3024
                                               enc         AES-256-GCM
                                               encDek      <b64>
-                                              encKeyId    mk-2026-03
+                                              encKeyId    mk-3
                                               takenAt     2026-07-14T09:22:05.000Z
                                               tzOffsetMin 540
                                               tzSrc       exif-offset
@@ -99,9 +100,9 @@ O#01J7X…#M#01K5A2Q8ZCV1D9KXM3BQNR7T2F
                                               ext          heic
                                               mime         image/heic
                                               s3Bucket     pa-originals
-                                              s3Key        raw/01J7XQP4…/01K5A2Q8ZCW4…
+                                              s3Key        raw/01J7XQP4…/01K5A2Q8ZCV1…/01K5A2Q8ZCW4…
                                               contentHash  hmac-sha256:9f2c41ab…
-                                              bytes        4823931
+                                              bytes        4823935
                                               plainBytes   4823919
                                               width        4032
                                               height       3024
@@ -134,7 +135,7 @@ takenAt      2026-07-14T09:22:05.000Z
 tzOffsetMin  540
 thumbs       {256: 14336, 1024: 152576, 2048: 358400}
 encDek       <b64>
-encKeyId     mk-2026-03
+encKeyId     mk-3
 width        4032
 height       3024
 facetPk      O#01J7XQP4M2N8VBKD3RTYFW9GHC#F#LABEL#temple
@@ -174,9 +175,10 @@ O#01J7X…#M#01K5A2QB3HN7WYP2GKD4RVXM8C
                          ext          cr3
                          mime         image/x-canon-cr3
                          plainBytes   52428800          ← 50 MB, over threshold
-                         bytes        52429624
-                         encChunkSize 1048576           ← chunked
-                         encIv        <b64>
+                         bytes        52429656          ← 40 B header + 51 × 16 B tag
+                         encChunkSize 1048576           ← chunked; no encIv, the salt
+                                                          and nonce prefix are in the
+                                                          ciphertext header
 
                 R#01K5A2QB3HTF9WNX2MHQVRD6BY
                          role         display
@@ -184,7 +186,7 @@ O#01J7X…#M#01K5A2QB3HN7WYP2GKD4RVXM8C
                          ext          jpg
                          mime         image/jpeg
                          plainBytes   8388608
-                         bytes        8388620
+                         bytes        8388624            ← + one 16-byte GCM tag
                          encChunkSize 0                 ← whole-object
                          encIv        <b64>
 
@@ -341,15 +343,18 @@ O#01J7X…#M#01K5A2QPF9XT2HMB5RKWNVQ3YD
                 R#01K5A2QPF94QXM7BND2VTKWRHG
                          role  display   path  2026/07-japan/VID_0009.MP4
                          plainBytes   503316480      ← 480 MB
-                         bytes        503324160      ← +16 B tag per 1 MiB chunk
+                         bytes        503324216      ← header + one tag per segment
                          encChunkSize 1048576        ← chunked, so seeking works
 
                 F#REND#display   F#YEAR#2026   F#DEVICE#google|pixel 9|-
                 … 8 more facets
 ```
 
-The ciphertext is 7,680 bytes larger than the plaintext: 480 chunks × 16-byte GCM tag.
-That's the overhead that makes the range arithmetic in `design.md` necessary.
+The ciphertext is 7,736 bytes larger than the plaintext: a 40-byte stream header plus
+481 × 16-byte GCM tag. 481 rather than 480, because the header is charged against the
+first segment, which therefore carries 1,048,520 plaintext bytes rather than 1,048,560
+— so the tail spills into one more segment. That's the overhead that makes the range
+arithmetic in `crypto-format.md` necessary.
 
 ---
 
@@ -422,12 +427,22 @@ O#01J7X…#HASH#hmac-sha256:c7e0b83d…             #PTR   kind live, photoId �
 
 O#01J7X…#HASH#hmac-sha256:e5a90271…             #PTR   kind purged
                                                        purgedAt 2026-06-30T08:11:04Z
+                                                       blockedAttempts 3
+                                                       lastAttemptAt 2026-08-19T02:00:11Z
+                                                       lastAttemptBy "home-server"
+                                                       expiresAt 1818640811
 ```
 
 The last one is a **tombstone** — an asset deleted and then purged in June. It resolves
 to no photo; it exists so that the file still sitting on the phone isn't re-uploaded on
 the next sync. Its `PATH` and `STEM` pointers were removed at purge, because a path is
 a reusable name while a hash is content identity.
+
+It has blocked three re-uploads, most recently on 19 August, all from the home server —
+which still holds the file, so the trash UI is telling the user to delete it there too.
+`expiresAt` is 365 days past that *last attempt*, not past `purgedAt`: each blocked
+attempt pushes the TTL out, so the tombstone lives exactly as long as something keeps
+offering the file back.
 
 The two `IMG_8123` path pointers resolving to one `photoId` *is* the grouping, viewed
 from the other end.
@@ -442,6 +457,9 @@ pk                                    sk            attributes
 O#01J7XQP4M2N8VBKD3RTYFW9GHC          #SETTINGS     ownerId      01J7XQP4M2N8VBKD3RT…
                                                     displayName  "Home photos"
                                                     homeTz       Europe/Paris
+                                                    encHashSecret   <b64>
+                                                    hashSecretKeyId mk-3
+                                                    masterKeyVerSeq 3
                                                     createdAt    2026-08-08T09:12:00.000Z
 
 U#01J7XRB6K3PQ8WNVD2MTYX4HFG          #PROFILE      userId       01J7XRB6K3PQ8WNVD2M…
@@ -454,12 +472,20 @@ U#01J7XRB6K3PQ8WNVD2MTYX4HFG          M#01J7XQP4M2N8VBKD3RTYFW9GHC
 
 IDP#cognito#a7f3e19c-4b82-4d6e-…      #PTR          userId       01J7XRB6K3PQ8WNVD2M…
 IDP#google#116384927461028374651      #PTR          userId       01J7XRB6K3PQ8WNVD2M…
+
+REGISTRY#OWNERS                       O#01J7XQP4M2N8VBKD3RTYFW9GHC
+                                                    ownerId      01J7XQP4M2N8VBKD3RT…
+                                                    createdAt    2026-08-08T09:12:00.000Z
 ```
 
 Both `IDP` pointers resolve to one `userId`, which is the whole reason for the
 indirection: adding Google alongside Cognito was one `PutItem`, not a migration. Note
 `homeTz` is `Europe/Paris` rather than `+60` — offset rung 6 resolves it against each
 photo's local date, so summer photos get `+120` and winter ones `+60`.
+
+The `REGISTRY#OWNERS` row is written once, alongside `#SETTINGS`, at bootstrap. With
+one owner it's a one-row partition; it exists so the purge sweep (pattern 13) can
+`Query` every owner in the deployment without a table `Scan`.
 
 ## Owner-level items
 
@@ -479,7 +505,8 @@ O#01J7X…#DEVICES          D#nikon|d750|3021447            label       "Nikon D
 O#01J7X…#KEYS             W#01K5A2P4XNVBQ7MK3NTXWD9HF2    kind        device
                                                           label       "Pixel 9"
                                                           wrapAlg     RSA-OAEP-256
-                                                          masterKeyVer mk-2026-03
+                                                          masterKeyVer mk-3
+                                                          rotatedAt    2026-03-14T08:…
 O#01J7X…#KEYS             W#01K5A2P4XNWD3KQB8NMXVTRH5Y    kind        passkey
                                                           label       "Firefox / desktop"
                                                           credentialId <b64>
@@ -492,6 +519,12 @@ O#01J7X…#KEYS             W#01K5A2P4XNXM9BVQ2KTNWRDH4G    kind        recovery
 
 Note the Pixel 9 has no `tzOffsetMin` — it writes `OffsetTimeOriginal`, so it never
 needs rung 5. The D750 does need one.
+
+All three `W#` items carry `masterKeyVer mk-3`, abbreviated away on the last two. That
+is an invariant, not a coincidence: every surviving wrapping is rewritten to the new
+version as part of a rotation, so a live wrapping on an older version means a rotation
+that never finished. `masterKeyVerSeq 3` on `#SETTINGS` is the allocator that produced
+it — three versions minted over this library's life, the third current.
 
 ## timeline_gsi
 
@@ -728,6 +761,11 @@ which appear in this schema, so projections touching them need
 // ingest resolving one device's default offset
 { Key: { pk: "O#01J7X…#DEVICES", sk: "D#canon|eos r5|042024001234" } }
 // → tzOffsetMin 540
+
+// the purge sweep's first step: every owner in the deployment (pattern 13)
+{ KeyConditionExpression: "pk = :r",
+  ExpressionAttributeValues: { ":r": "REGISTRY#OWNERS" } }
+// → one row today: ownerId 01J7XQP4M2…
 ```
 
 ### Trash (patterns 11, 12)
@@ -807,11 +845,16 @@ it, though, has three outcomes rather than two:
 | --- | --- | --- |
 | no item | new bytes | ingest normally |
 | `kind: live` | already held | skip, idempotent re-import |
-| `kind: purged` | deliberately deleted | skip **silently**, unless `reAddDeleted` |
+| `kind: purged` | deliberately deleted | skip, record the attempt, unless `reAddDeleted` |
 
 The third row is what stops a phone re-uploading a photo the user deleted from the
 archive but kept on the device. Without it the file returns on the first sync after the
 trash purges.
+
+Rows 2 and 3 both **record the attempt** on the pointer — `blockedAttempts`,
+`lastAttemptAt`, `lastAttemptBy` — and row 3 additionally pushes the tombstone's TTL
+out. Refusing the upload is silent on the wire; the attempt itself is not, because the
+user is the only one who can delete the source file.
 
 The others:
 

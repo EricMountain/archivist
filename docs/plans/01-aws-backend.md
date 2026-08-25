@@ -177,7 +177,8 @@ attempting it against a `dev` deployment.
 - `POST /session/bootstrap`, idempotent. If the `IDP` pointer resolves, return the
   existing user. Otherwise mint `userId` and `ownerId` ULIDs and transactionally write:
   `IDP` pointer (conditional), `U#/#PROFILE`, `U#/M#<ownerId>` with role `owner`,
-  `O#/#SETTINGS` with `homeTz` and `trashRetentionDays: 30`.
+  `O#/#SETTINGS` with `homeTz`, `trashRetentionDays: 30` and
+  `tombstoneRetentionDays: 365`.
 - `homeTz` is an **IANA zone name**, not an offset. Take it from the client, default
   `UTC`.
 
@@ -190,20 +191,45 @@ bootstrap twice produces no duplicates.
 
 **Goal.** Device enrolment and the recovery code.
 
-**Files.** `src/lambda/api/routes/keys.ts`.
+**Files.** `src/lambda/api/routes/keys.ts`, `src/core/repo/keys.ts`.
 
 **Details.**
+- **Partly built, and the existing code contradicts the current design.**
+  `routes/keys.ts` today takes `masterKeyVer` as a required `POST /keys` body field and
+  validates it — that field must be *removed* from the request contract and come from
+  the allocator instead. `repo/keys.ts` has `listKeyWraps`, `putKeyWrap` and
+  `deleteKeyWrap`; it needs `allocateMasterKeyVer` and the hash-secret write. Reconcile
+  before extending, and check `KeyWrapResponse` still projects the right fields once
+  `rotatedAt` exists.
 - `GET /keys` lists `W#` items (never the wrapped material for other devices — return
   metadata only, plus the wrapping for the *requesting* device).
-- `POST /keys` enrols a wrapping: `kind`, `label`, `wrapAlg`, `wrappedKey`,
-  `masterKeyVer`, plus `credentialId`/`prfSalt` or `kdfSalt`/`kdfParams`.
+- `POST /keys` enrols a wrapping: `kind`, `label`, `wrapAlg`, `wrappedKey`, plus
+  `credentialId`/`prfSalt` or `kdfSalt`/`kdfParams`. **`masterKeyVer` is not a request
+  field** — see the next bullet.
+- `POST /keys/version` allocates a master key version: an atomic `ADD 1` on
+  `masterKeyVerSeq` on the `#SETTINGS` item, returning `mk-<n>` and stamping
+  `rotatedAt`. The client calls this once at the start of enrolment or rotation and
+  puts the returned value on every wrapping and every `encDek` it rewrites.
+  **Clients must never mint a version themselves** — two concurrent rotations would
+  label two different master keys identically and every `encKeyId` in the table would
+  become ambiguous. `ADD` on a missing attribute starts from 0, so the first allocation
+  naturally yields `mk-1` with no bootstrap special case.
+- `PUT /keys/hash-secret` stores `encHashSecret` and `hashSecretKeyId` on `#SETTINGS`.
+  Opaque to the server, like every other wrapped value, but `contentHash` cannot be
+  computed without it.
 - `DELETE /keys/{wrapId}` refuses if it would leave fewer than two wrappings, or if it
   would remove the last `recovery` wrapping. **The invariant is enforced server-side**,
   not just in the UI.
 - The server never sees an unwrapped master key. Treat `wrappedKey` as opaque bytes.
+  This is also why there is no rotation endpoint that does the work: re-wrapping every
+  `encDek` needs both the old and new master keys, so the sweep runs on a client and
+  arrives here as ordinary per-photo writes.
 
 **Done when.** Enrolling two devices works; deleting down to one wrapping is rejected
-with a clear error.
+with a clear error; `POST /keys` no longer accepts a client-supplied `masterKeyVer`;
+and two concurrent `POST /keys/version` calls return different versions — test it with
+two in-flight requests, not two sequential ones, since a read-then-write allocator
+passes the sequential version of that test.
 
 ---
 
@@ -225,8 +251,17 @@ Sequence:
    1990, clamp dimensions, cap `exifEnc` size, and ignore any client-supplied
    `ownerId`, `photoId` or `uploadedAt`.
 2. **Hash check** with three outcomes: absent → continue; `kind: live` → return the
-   existing photo, no upload; `kind: purged` → **skip silently** unless `reAddDeleted`.
-   Getting this wrong means deleted photos resurrect on the next sync.
+   existing photo, no upload; `kind: purged` → **skip** unless `reAddDeleted`. Getting
+   this wrong means deleted photos resurrect on the next sync.
+
+   A refused re-upload is silent *on the wire* — an unattended sync has nowhere useful
+   to put an error — but it is recorded. One `UpdateItem` on the pointer: `ADD
+   blockedAttempts 1`, set `lastAttemptAt` and `lastAttemptBy`, and on a tombstone also
+   push `expiresAt` out by `tombstoneRetentionDays`. That last part is what makes the
+   TTL safe: a tombstone survives exactly as long as some source keeps offering the file
+   back, and expires once it goes quiet. Do this for a trashed `kind: live` hit too —
+   the trash window is when the warning is most useful, because the user can still act
+   before anything is purged.
 3. **Stem resolution.** Derive the stem server-side from `path` — never trust a
    client-supplied stem. Conditional-put the `STEM` pointer: success → new asset;
    failure → read it and attach a rendition.
@@ -241,7 +276,8 @@ the rule that a later rendition may only **improve** `takenAt` — re-resolve on
 
 **Done when.** Uploading `IMG_1.CR3` then `IMG_1.JPG` yields one asset with two
 renditions and one timeline entry; the JPEG becomes primary; concurrent uploads of both
-produce the same result.
+produce the same result; and re-offering purged bytes increments `blockedAttempts` and
+moves `expiresAt` forward.
 
 ---
 
@@ -302,7 +338,11 @@ query with a date range returns the documented subset.
 - `DELETE /photos/{id}/renditions/{rid}` — soft; re-elect `primaryRend`, drop the
   `F#REND#` facet, trash the asset if it was the last rendition.
 - `POST /photos/{id}/restore` — the inverse, recomputing `gsi1sk` from `takenAt`.
-- `GET /trash` — GSI1 trash partition, newest deleted first.
+- `GET /trash` — GSI1 trash partition, newest deleted first. Each entry carries its
+  `HASH` pointer's `blockedAttempts` / `lastAttemptAt` / `lastAttemptBy` when non-zero,
+  so the client can warn that a source still holds the file. Without this the warning
+  has no way to reach the person who can act on it, and the tombstone TTL loses the
+  thing that makes it safe.
 
 **Done when.** Delete removes a photo from the timeline and adds it to the trash in one
 call; restore returns it to its original timeline position.
@@ -313,7 +353,8 @@ call; restore returns it to its original timeline position.
 
 **Goal.** Actually delete expired trash, and leave tombstones.
 
-**Files.** `src/lambda/purge/index.ts`, `terraform/schedules.tf`.
+**Files.** `src/lambda/purge/index.ts`, `terraform/schedules.tf`,
+`terraform/dynamodb.tf`.
 
 **Details.**
 - EventBridge rule, daily.
@@ -324,12 +365,20 @@ call; restore returns it to its original timeline position.
   `purgedAt`** rather than deleting it.
 - That last part is the point of the step. Without the tombstone, a phone that kept the
   local file re-uploads it on the next sync, a month after the user deleted it.
+- Set `expiresAt` on the tombstone: `tombstoneRetentionDays` (default 365) past the
+  later of `purgedAt` and `lastAttemptAt`. **Epoch seconds, not milliseconds and not
+  ISO-8601** — DynamoDB silently never expires an item whose TTL attribute it cannot
+  parse as epoch seconds, which fails as "nothing ever expired" months later.
 - Resumable: process in batches, tolerate being killed.
-- **Not DynamoDB TTL.** TTL would orphan the S3 objects.
+- **The asset sweep is not DynamoDB TTL** — TTL would orphan the S3 objects. Tombstones
+  are the exception, and only because nothing is behind them; enable TTL on the table
+  for the `expiresAt` attribute in `terraform/dynamodb.tf`. Nothing but tombstones
+  carries that attribute, so no other item is at risk.
 
 **Done when.** An asset with a backdated `deletedAt` is fully removed, its S3 objects
-are gone, and its `HASH` pointer survives as a tombstone that a subsequent upload of the
-same bytes silently skips.
+are gone, its `HASH` pointer survives as a tombstone that a subsequent upload of the
+same bytes skips, and that tombstone carries an `expiresAt` in epoch seconds that
+DynamoDB accepts.
 
 ---
 
@@ -380,22 +429,29 @@ the owner's S3 prefix remains.
 **Goal.** The artefact that keeps every client — Android, web, Python, Go, 2029's
 version of any of them — mutually readable.
 
-**Files.** `docs/design/crypto-format.md`, `testdata/vectors/*`, `tools/gen-vectors/`.
+**Files.** `testdata/vectors/*`, `tools/gen-vectors/`. Spec: `docs/design/crypto-format.md`.
 
 **Details.**
-- Specify precisely: AES-256-GCM whole-object below 32 MB; Tink's
-  `AES256_GCM_HKDF_1MB` streaming framing above it. Nonce derivation, AAD contents
-  (`photoId` and chunk index), the final-chunk marker, and the plaintext↔ciphertext
-  offset arithmetic (`index × (chunkSize + 16)`).
-- Generate vectors with Tink (Python is easiest): a small file, a file spanning exactly
-  two chunks, a file with a partial final chunk, and a deliberately truncated stream
-  that **must** fail to decrypt.
-- Commit the vectors with the key material, since they're test fixtures.
+- `docs/design/crypto-format.md` is **written** — the spec exists and is authoritative.
+  This step is the executable half: the vectors that prove implementations match it.
+  Read it first; do not re-derive the format from `design.md`.
+- Generate vectors with Tink (Python is easiest) covering the 22 cases the spec's
+  "Conformance vectors" table lists, including the boundary cases at `P = C0` and
+  `P = C0 + Cn` that settle whether a full final segment can be the last one, and every
+  case marked **fail**: truncated stream, mid-segment truncation, swapped segments,
+  altered header salt, altered AAD.
+- Case 22 is the byte-range table — plaintext ranges mapped to the ciphertext ranges a
+  client must actually request. It's what stops a seeking bug from being found by a
+  user scrubbing a video.
+- Commit the vectors with the key material, since they're test fixtures and protect
+  nothing.
+- `manifest.json` drives the suites: id, mode, keys as hex, AAD, files, expected result.
+  Adding a case must not mean editing four test suites.
 - Document the rule: every client's test suite decrypts these; a client that can't is
   broken regardless of what its own round-trip tests say.
 
-**Done when.** The vectors exist, a Python script verifies them, and the truncated
-stream fails as expected.
+**Done when.** The vectors exist, a Python script verifies them, every case marked
+**fail** fails, and the range table in case 22 round-trips.
 
 ---
 

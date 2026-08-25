@@ -21,6 +21,11 @@ this design and must be updated alongside any change here** — key structure, i
 types, attribute names, GSI keys or projections. A stale sample is worse than none,
 because it contradicts this document silently.
 
+`crypto-format.md` is the wire format: exactly which bytes an encrypted object is made
+of, how keys are wrapped, and the conformance vectors every client must pass. This
+document decides *what* is encrypted and *why*; that one decides *how*, and **it wins
+wherever the two describe bytes.**
+
 ## Decisions
 
 * **Owner, user and identity are separate concepts**, 1:1 today. `ownerId` is the
@@ -76,6 +81,7 @@ because it contradicts this document silently.
 | 10 | List the libraries a user can access | Base table, `Query` on `U#<userId>` |
 | 11 | List the trash, most recently deleted first | `timeline_gsi`, `O#<owner>#TRASH` |
 | 12 | Find assets whose retention has expired | `timeline_gsi`, trash partition, SK `<` cutoff |
+| 13 | List every owner in the deployment (for the purge sweep) | `REGISTRY#OWNERS`, `Query` on PK |
 
 Queries 4 and 5 collapse into one index: "contains a dog" and "shot on a Canon R5"
 are both *facets* — a `(type, value)` pair attached to a photo. One index, one code
@@ -115,10 +121,11 @@ identity provider stays swappable.
 ### Items
 
 ```text
-pk  O#<ownerId>            sk  #SETTINGS   the library
-pk  U#<userId>             sk  #PROFILE    the person
-pk  U#<userId>             sk  M#<ownerId> membership: role = owner|editor|viewer
-pk  IDP#<issuer>#<subject> sk  #PTR        → userId
+pk  O#<ownerId>            sk  #SETTINGS       the library
+pk  U#<userId>             sk  #PROFILE        the person
+pk  U#<userId>             sk  M#<ownerId>     membership: role = owner|editor|viewer
+pk  IDP#<issuer>#<subject> sk  #PTR            → userId
+pk  REGISTRY#OWNERS        sk  O#<ownerId>     one row per owner — see below
 ```
 
 ```text
@@ -127,6 +134,12 @@ ownerId       01J7XQ…
 displayName        "Home photos"
 homeTz             Europe/Paris   # IANA zone, not an offset — see below
 trashRetentionDays 30
+tombstoneRetentionDays 365    # TTL on purge tombstones; refreshed by a blocked
+                              # re-upload — see "Purge tombstones"
+encHashSecret      <b64>          # the owner's hash secret, wrapped by the master
+hashSecretKeyId    mk-3           # key. Written by the first client at enrolment;
+                                  # absent until then. See "`contentHash` is HMAC'd"
+masterKeyVerSeq    3              # allocator for master key versions — see below
 createdAt          2026-08-08T09:12:00.000Z
 
 # U#<userId> / #PROFILE
@@ -145,6 +158,20 @@ Memberships are stored on the user (`U#<userId>` + `M#<ownerId>`), so "which lib
 can I see" is one `Query` at session start. If shared libraries ever happen, the
 reverse direction — "who can see this library" — needs a mirrored item under
 `O#<ownerId>#MEMBERS`; not worth writing until there's a second member.
+
+### Owner registry
+
+Every other partition in this design is reachable only if you already know its
+`ownerId` — that's deliberate, it's what keeps most access patterns to a single
+partition. One job breaks that assumption: the purge sweep (see "Purging") has to
+visit *every* owner in the deployment on a schedule, not one named at request time.
+
+`REGISTRY#OWNERS` is a single sparse partition holding one small item per owner
+(`ownerId`, `createdAt`), written in the same transaction as user bootstrap. Listing
+owners is then one `Query` against a fixed pk, never a table `Scan`. At the
+single-tenant scale this design targets it's normally one row, but the sweep
+shouldn't assume that — a shared instance, or an operator running several
+households' worth of owners, still has to be swept correctly.
 
 ### `homeTz` is a zone, not an offset
 
@@ -228,7 +255,7 @@ width        4032                        # of the primary rendition
 height       3024
 enc          AES-256-GCM
 encDek       <b64>                       # one DEK per asset; every object in the group
-encKeyId     mk-2026-03                  # (renditions + thumbs) shares it, distinct IVs
+encKeyId     mk-3                        # (renditions + thumbs) shares it, distinct IVs
 takenAt      2026-07-14T09:22:05.000Z    # UTC
 tzOffsetMin  540                         # +09:00; render local as takenAt + offset
 tzSrc        upload-forced | exif-offset | gps | upload | device |
@@ -259,13 +286,22 @@ path         2026/summer/IMG_4021.HEIC   # this file's full path; mutable
 ext          heic                        # normalised lowercase
 mime         image/heic
 s3Bucket     archivist-originals
-s3Key        raw/01J7X…/01K2M9G7…        # keyed by renditionId, so renames never
-                                         # touch S3
-contentHash  hmac-sha256:…               # HMAC of plaintext, keyed by an owner secret
-bytes        4823931                     # ciphertext size as stored in S3
+s3Key        raw/01J7X…/01K2M9F3QR8V…/01K2M9G7…   # <ownerId>/<photoId>/<renditionId>
+                                         # keyed by ids, not path, so renames never
+                                         # touch S3. photoId is included, not just
+                                         # renditionId, so the S3-event Lambda can
+                                         # resolve which asset an object belongs to
+                                         # from the key alone — see plan step 1.10
+contentHash  hmac-sha256:…               # HMAC of plaintext, keyed by the owner's
+                                         # hash secret — see "`contentHash` is HMAC'd"
+bytes        4823935                     # ciphertext size as stored in S3;
+                                         # whole-object is plainBytes + a 16-byte tag
 plainBytes   4823919
 width / height                           # this file's own dimensions
-encIv        <b64>                       # 96-bit nonce, unique per encrypted object
+encIv        <b64>                       # 96-bit nonce, whole-object mode only —
+                                         # absent when encChunkSize > 0, where the
+                                         # salt and nonce prefix are in the ciphertext
+                                         # header. See crypto-format.md
 encChunkSize 0                           # 0 = whole-object, else 1048576 (1 MiB)
 addedAt      2026-08-04T11:31:00.000Z    # UTC
 ```
@@ -588,11 +624,46 @@ and stored per object, never derived from anything reusable.
 
 Rotation is cheap by construction: rotating the master key
 re-wraps `encDek` and nothing else. Image bytes in S3 are never touched — no download,
-no re-encrypt, no re-upload, no egress. It's one small DynamoDB write per photo,
-runnable as a background sweep, and `encKeyId` tells you which photos still hold an
-old wrapping, so the sweep is resumable and idempotent.
+no re-encrypt, no re-upload, no egress. It's one small DynamoDB write per photo, and
+`encKeyId` tells you which photos still hold an old wrapping, so the sweep is resumable
+and idempotent.
+
+**The sweep runs on a client, not on a Lambda.** Re-wrapping `encDek` means unwrapping
+it with the old master key and re-wrapping with the new one, and the server has never
+held either. So it is a client reading each `#META`, re-wrapping, and writing back
+through the API — one call per photo, not a background job on the server side. That
+distinction matters more than it looks:
+
+* It is interruptible by things the server doesn't control — an app backgrounded, a
+  phone that runs out of battery halfway through a 40,000-photo library.
+* `encKeyId` as a resume cursor stops being a nicety and becomes the mechanism. A
+  restarted sweep queries for photos still on the old version and continues.
+* Two clients could start one. That's what `masterKeyVerSeq` below is for.
 
 Rotating a *data* key is the expensive one, but there's no routine reason to.
+
+#### Master key versions
+
+`encKeyId`, `masterKeyVer` and `hashSecretKeyId` all hold the same value: `mk-<n>`,
+where `n` is an integer starting at 1.
+
+**The server allocates it**, atomically, by an `ADD 1` on `masterKeyVerSeq` on the
+`#SETTINGS` item, returning the new value. The client cannot: the master key is
+generated client-side and the server never sees it, so two clients rotating at once
+would both pick the same `n` for two *different* keys. `encKeyId` would then be
+actively lying — some photos wrapped with one key, some with another, both carrying the
+same label, and nothing in the table able to tell them apart. A counter that can
+collide is worse than no counter, because it looks trustworthy.
+
+Allocation costs no extra round trip, since rotation already has to POST the new `W#`
+items. It also gives the natural place to refuse a rotation while one is in flight —
+two concurrent sweeps chase a moving target.
+
+An earlier draft used `mk-<YYYY>-<MM>`. That encoded *data* in an *identifier*, the
+same mistake this design already rejects for `photoId` versus `path`, and it collided
+on a second rotation in one month — precisely the case an incident produces, when you
+revoke one device and then discover a second. The date it was encoding belongs in
+`rotatedAt` on the `W#` item, where it is exact rather than month-granular.
 
 ### Chunked encryption
 
@@ -602,17 +673,31 @@ files straddle it, video is always above. Because the value actually used is rec
 per object, the threshold is a pure client decision — it can be retuned any time and
 old objects keep working, with nothing server-side aware it exists.
 
-Per-chunk nonce is a 64-bit random base concatenated with a 32-bit chunk counter:
-deterministic, nothing extra to store, and no reuse within a DEK. The AAD binds
-`photoId` and the chunk index so chunks can't be relocated between files, and **the
-final chunk is marked in its AAD** — without that, dropping trailing chunks is an
-undetectable truncation attack, which is the classic way home-grown streaming AEAD
-fails. Tink's streaming AEAD already does all of this correctly; copy it rather than
-invent it.
+Three properties are non-negotiable here, and hand-rolled streaming AEAD gets the
+third one wrong almost every time:
 
-Range mapping is then arithmetic: chunk index from the plaintext offset, and
-ciphertext offset = `index × (chunkSize + 16)` for the 16-byte tag. That's what makes
-video seeking work.
+* **No nonce reuse within a DEK**, or GCM fails catastrophically.
+* **Chunks can't be relocated** — between files, or within one.
+* **Dropping trailing chunks must be detectable.** Otherwise truncation is a silent,
+  undetectable attack: a video that simply ends early, an archive missing its tail.
+
+Rather than invent a construction with those properties, adopt one — **Tink's
+`AES256_GCM_HKDF_1MB`**, which is the same choice "The crypto format is a published
+spec, not a shared library" arrives at from the interoperability side. It satisfies all
+three: a per-stream key derived by HKDF from a random salt, a 12-byte nonce built from
+a random per-stream prefix, a big-endian segment index and a final-segment flag byte.
+The index binds position, the flag makes truncation a decryption failure, and neither
+costs an attribute in DynamoDB because both live in the ciphertext.
+
+The exact byte layout is `crypto-format.md`, not this document — segment sizes, the
+40-byte header, where the associated data enters, and the plaintext↔ciphertext offset
+arithmetic that makes video seeking work. **That spec is authoritative over this
+paragraph**, and it is what the conformance vectors test.
+
+One consequence worth carrying here, because it surprises people reading sizes in
+`sample-data.md`: the stream header is charged against the first segment, so segment 0
+carries slightly less plaintext than the rest, and a file can need one more segment
+than dividing by 1 MiB suggests.
 
 ### What the server can no longer do
 
@@ -662,8 +747,20 @@ Worth deciding deliberately rather than adding it as an obvious feature.
 Dedup needs a stable hash of the *plaintext*, but a raw SHA-256 handed to DynamoDB
 would let anyone with table access confirm whether you hold a specific known image —
 a real leak even under "metadata is visible". Keying it as
-`HMAC-SHA256(owner_secret, plaintext)` keeps dedup working exactly as before while
+`HMAC-SHA256(hashSecret, plaintext)` keeps dedup working exactly as before while
 making the value meaningless outside your own library.
+
+The hash secret is a third key, and the constraint that shapes it is that **it must
+survive master key rotation unchanged**. Deriving it from the master key is the obvious
+move and is a bug: every `HASH#` pointer in the table would become unreachable the
+moment the master key rotated, silently breaking dedup and orphaning the purge
+tombstones. So it is its own random 256-bit key, generated once by the first client and
+wrapped by the master key exactly as a DEK is — `encHashSecret` on `#SETTINGS`, with
+`hashSecretKeyId` recording the wrapping version so the rotation sweep picks it up
+alongside the photos. The value itself never changes.
+
+The server stores it and never unwraps it, which is why the attribute is written at
+enrolment by the client rather than by the bootstrap that creates the settings item.
 
 ### Labelling, if Rekognition ever happens
 
@@ -699,7 +796,8 @@ type.
 wrapId        01K3…                    # ULID
 kind          device | passkey | recovery
 label         "Pixel 9" | "Firefox on desktop" | "Recovery code"
-masterKeyVer  mk-2026-03               # which master key version this wraps
+masterKeyVer  mk-3                     # which master key version this wraps
+rotatedAt     2026-03-14T08:02:11.000Z # when that version was minted
 wrapAlg       AES-KW | RSA-OAEP-256
 wrappedKey    <b64>
 credentialId  <b64>                    # passkey only
@@ -719,10 +817,14 @@ a catastrophe.
 
 ### Android
 
-Android Keystore holds a hardware-backed EC or RSA keypair that is non-exportable by
+Android Keystore holds a hardware-backed RSA keypair that is non-exportable by
 construction, optionally gated behind biometrics. The master key is wrapped to its
-public half (`kind: device`). Straightforward, because the platform provides exactly
-the primitive needed.
+public half with RSA-OAEP-256 (`kind: device`). Straightforward, because the platform
+provides exactly the primitive needed.
+
+RSA rather than EC only because `wrapAlg` has no ECDH mode in v1 — an EC Keystore key
+would be cheaper and better supported, and has nothing to record itself as. See open
+question 2.
 
 ### Web
 
@@ -800,9 +902,33 @@ IndexedDB key provides. Never persist the unwrapped master key; always re-derive
 
 ### Recovery code
 
-128 bits of entropy, base32, grouped for transcription
-(`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`). **Mandatory at enrolment** — signup is not complete
-until the user has confirmed the code back, since there is no support path afterwards.
+**26 Crockford base32 characters: 125 bits of entropy, plus a check symbol**, grouped
+for transcription (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXXX`). **Mandatory at enrolment** —
+signup is not complete until the user has confirmed the code back, since there is no
+support path afterwards.
+
+125 bits rather than a round 128 is a consequence of generating the code one character
+at a time instead of bit-packing a random integer, and it is not a security question.
+The margin is absurd either way: strip Argon2id out entirely, assume an ASIC farm at
+10^14 guesses a second, and 2^125 still takes 10^15 years. Chasing the round number
+costs something real — 128 bits needs 26 characters, which hold 130, so you are packing
+128 bits into a 130-bit space and three quarters of the possible final characters become
+unreachable. Implementations then disagree about whether a code is malformed, which is
+precisely the drift the conformance vectors exist to prevent.
+
+**The 26th character is a check symbol instead**, which is worth far more than three
+bits of entropy. It catches every single-character error and every length error locally
+and instantly — before the client spends a second on Argon2id and comes back with
+"that didn't work". In a system with no support path that distinction matters: "you
+typed it wrong" is a different message from "this is the wrong code, or your library is
+unrecoverable", and without a checksum the client cannot tell them apart. It also gives
+the enrolment confirmation step something to check against short of a full unwrap.
+
+It is not a security boundary — an uncaught error just falls through to the KDF and
+fails there, as it would anyway. `crypto-format.md` fixes the check symbol's
+computation and the normalisation rules, which matter more than the bit count:
+uppercase, strip the hyphens, and map `I`/`L`→`1` and `O`→`0`, so that a code
+transcribed by hand still unwraps.
 
 Two copies: 1Password, and the OS keychain on the laptops — with the laptops backed up,
 and the 1Password vault itself backed up to those laptops. The copies aren't fully
@@ -832,8 +958,9 @@ therefore a master key rotation: generate a new one, re-wrap every photo's `encD
 write fresh `W#` items for the remaining wrappings, delete the revoked one.
 
 Cheap in the sense established above — no S3 traffic, no re-encryption of image bytes —
-but it is one DynamoDB write per photo, so it runs as a background job with `encKeyId`
-as the resume cursor.
+but it is one DynamoDB write per photo, driven by a client that holds both the old and
+new master keys, with `encKeyId` as the resume cursor. See "Key rotation is cheap" for
+why the server cannot run it.
 
 ## Establishing `takenAt`
 
@@ -956,6 +1083,10 @@ implementations, so Android, a home-side Python importer and a Go CLI all get a
 correct implementation without writing crypto. Only the browser hand-rolls it over
 WebCrypto, because Tink's JavaScript implementation is unmaintained.
 
+That specification is `crypto-format.md`. **It is authoritative over this document
+wherever the two describe bytes** — this one argues for properties, that one fixes the
+layout, and where prose here drifts from the spec it is this document that is wrong.
+
 **Commit conformance test vectors generated from Tink.** Every implementation decrypts
 the same fixtures in its own test suite. Without that, format drift surfaces years
 later as a photo nobody can open — and no amount of shared Kotlin would have covered
@@ -1028,20 +1159,58 @@ pk    O#<ownerId>#HASH#<hmac>
 sk    #PTR
 kind  purged            # was: live, with photoId + renditionId
 purgedAt  <UTC>
+expiresAt 1818640811    # epoch seconds, the TTL attribute; retention past the
+                        # LAST attempt, not past purgedAt
+blockedAttempts 3       # re-uploads refused, across trash and purge
+lastAttemptAt   <UTC>   # each attempt bumps these and pushes expiresAt out
+lastAttemptBy   "home-server"
 ```
 
-Ingest treats a tombstone hit as "deliberately deleted, skip silently" unless
-`reAddDeleted` is set — the same flag, covering both the trashed and purged cases.
+Ingest treats a tombstone hit as "deliberately deleted, skip" unless `reAddDeleted` is
+set — the same flag, covering both the trashed and purged cases. Silent *on the wire*,
+since an automated sync has nowhere useful to put an error, but never silent in the
+library: the attempt is recorded and surfaced. See below.
 
 `PATH` and `STEM` pointers *are* deleted on purge. The asymmetry is deliberate: a path
 is a name and should become reusable, while a hash is content identity and is exactly
 what you don't want back.
 
-Tombstones are kept indefinitely. They're around 100 bytes, so a library with 100,000
-lifetime deletions carries about 10 MB of them — cheaper than the alternative, which is
-photos silently returning. **This is where DynamoDB TTL would fit**, if a ceiling is
-ever wanted: unlike trash purging, a tombstone has no S3 objects behind it, so TTL
-expiring one leaves nothing orphaned.
+#### Tombstones expire, and blocked attempts are surfaced
+
+A tombstone kept forever is a permanent record that specific bytes passed through this
+library. The hash is HMAC'd, so table access alone reveals only that deletions happened
+and when — an attacker cannot test a candidate image against it. The exposure is
+*deferred*: if the `hashSecret` is ever obtained, every tombstone becomes a confirmable
+record of past possession. That is a real cost to carry indefinitely for a guard whose
+job is finished once the source file is gone.
+
+So tombstones expire, on a **DynamoDB TTL** — which fits cleanly here and nowhere else
+in this design, because a tombstone has no S3 object behind it, so expiring one leaves
+nothing orphaned. `tombstoneRetentionDays` on owner settings, default 365.
+
+What makes the expiry safe is that **the user is warned before it can hurt them**:
+
+* Every blocked re-upload bumps `blockedAttempts`, `lastAttemptAt` and
+  `lastAttemptBy` on the pointer — during the trash window and after purge alike. It's
+  a write to an item that already exists.
+* The trash UI surfaces it: *"3 attempts to re-upload this from home-server — delete it
+  there too, or it returns."* A silent skip is the correct wire behaviour and the wrong
+  product behaviour; the user is the only one who can remove the source, and they can't
+  act on something they're never told about.
+* **A blocked attempt refreshes the TTL.** This is what makes a fixed window
+  unnecessary: while a source keeps offering the file, the tombstone keeps living;
+  once the source goes quiet, it expires after the retention window and the record is
+  gone. The tombstone lasts exactly as long as it is doing something.
+
+The honest gap: the warning only fires if something *tries* to re-upload. A copy on a
+laptop that is offline for two years, or an SD card in a drawer, produces no attempt, no
+warning, and no TTL refresh — so the photo can still return when that source eventually
+reappears. That case is unavoidable, since nothing here can see a disk it is never
+shown, and it is the same class of problem as the independent photo copy being outside
+the system by design.
+
+An explicit per-photo **"forget entirely"** remains the escape hatch for someone who
+wants the record gone now and knows they have dealt with the source.
 
 The device keeps its own local tombstone too, so a phone doesn't re-offer a file it
 just deleted even before the server sees it. The server-side record is the durable
@@ -1098,7 +1267,7 @@ Two buckets, not one:
 
 | Bucket | Holds | Storage class |
 | --- | --- | --- |
-| `…-originals` | encrypted originals, `raw/<ownerId>/<photoId>` | Intelligent-Tiering |
+| `…-originals` | encrypted originals, `raw/<ownerId>/<photoId>/<renditionId>` | Intelligent-Tiering |
 | `…-derived` | encrypted thumbnails, `th/<ownerId>/<photoId>/<size>` | Standard |
 
 Your instinct to keep them separable is the right one, and buckets rather than prefixes
@@ -1109,7 +1278,8 @@ to empty and rebuild the derived bucket wholesale without touching a single orig
 
 The bucket is recorded per object in `s3Bucket` and in each `thumbs` entry rather than
 resolved from config, so a future bucket move is a background item rewrite — the same
-shape of job as key rotation — instead of a flag day.
+shape of job as key rotation, though this one can run server-side, since it touches no
+keys — instead of a flag day.
 
 ### Tiering
 
@@ -1193,8 +1363,30 @@ for `facetSk`. Rare, bounded to one partition, and doable in a single transactio
 
 ## Open questions
 
-1. **A trash tombstone is a permanent record of a hash you once held.** Harmless in
-   practice, but worth noting that "delete everything and leave no trace" is not what
-   this system does — purge leaves ~100 bytes proving the bytes existed. A "forget
-   entirely" action that also drops the tombstone would close it, at the cost of the
-   file returning on the next sync.
+1. **There is no ECDH key-wrapping mode, and that may cost us StrongBox.** `wrapAlg` is
+   `AES-KW | RSA-OAEP-256`, so an Android device must enrol an RSA-3072 Keystore key.
+
+   The concern is not elegance. **StrongBox** — the dedicated secure element on Pixel 3
+   and later — supports a deliberately narrow algorithm set. EC P-256 is universally
+   available in it; larger RSA sizes are not guaranteed. If RSA-3072 won't generate in
+   StrongBox on target devices, requiring it means falling back to the TEE, trading a
+   hardware isolation guarantee for an algorithm convenience — the wrong direction for
+   the one key everything else hangs off. Secondary: RSA-3072 keygen in secure hardware
+   is slow enough to be felt, and it lands in the first-run enrolment flow.
+
+   It isn't a one-line addition to the enum, because **ECDH is key agreement, not key
+   transport**. Wrapping to an EC public key means ECDH-ES: an ephemeral keypair, ECDH
+   against the enrolled public key, HKDF into a KEK, then AES-KW as usual. The ephemeral
+   public key has to be stored, so the `W#` item grows an `epk` attribute (or carries it
+   prefixed inside `wrappedKey`) — a schema change, which is why this is a question
+   rather than an oversight.
+
+   Deferring is safe: `wrapAlg` is recorded per item, so adding ECDH-ES later is a new
+   value rather than a break, and a mixed RSA/EC fleet is harmless.
+
+   **What decides it is a measurement, not an argument** — whether StrongBox will take
+   an RSA-3072 key on real target hardware, and how long it takes when it does. Plan
+   step 2.4a runs it on a phone. If StrongBox refuses, ECDH-ES stops being optional and
+   the schema question (`epk`, curve, HKDF info string) has to be settled *before*
+   Android enrols its first device, because a fleet enrolled on RSA is a fleet that has
+   to be re-enrolled.

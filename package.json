@@ -1,0 +1,21 @@
+{
+  "name": "archivist-backend",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "src/core",
+    "src/lambda"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p src/core --noEmit && tsc -p src/lambda --noEmit"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

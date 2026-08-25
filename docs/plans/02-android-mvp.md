@@ -101,6 +101,42 @@ restart, and refreshes without re-prompting.
 
 ---
 
+## 2.4a — Keystore algorithm spike (throwaway)
+
+**Goal.** Settle open question 1 in `design.md` with a number instead of an argument:
+can we keep StrongBox while wrapping the master key with RSA-3072?
+
+**Files.** A temporary debug screen or instrumented test — `debug/KeystoreSpike.kt`.
+**Delete it once the result is recorded.** This is a measurement, not a feature.
+
+**Details.**
+- On a real device, not an emulator — emulators do not have StrongBox, so an emulator
+  run answers nothing. Repeat on the oldest phone in the target set, since StrongBox
+  capability varies by device and OS version.
+- For each of RSA-3072, RSA-2048 and EC P-256, attempt `KeyGenParameterSpec` generation
+  twice: once with `setIsStrongBoxBacked(true)`, once without. Record whether it throws
+  `StrongBoxUnavailableException`, and time each generation.
+- Also record `KeyInfo.getSecurityLevel()` for what actually got created — asking for
+  StrongBox and silently landing in the TEE is the outcome that would otherwise go
+  unnoticed.
+- Then do one wrap/unwrap of a 32-byte key through the RSA key with an explicit
+  `OAEPParameterSpec(SHA-256, MGF1-SHA-256)`, to confirm the parameters from
+  `crypto-format.md` work on-device before 2.5 depends on them.
+
+**What the result decides.**
+- *RSA-3072 works in StrongBox, keygen is tolerable* → no change; open question 1
+  closes as "RSA is fine", and 2.5 proceeds as written.
+- *RSA-3072 is refused, or lands in the TEE, or keygen is slow enough to be felt* →
+  ECDH-ES + AES-KW has to be added to `wrapAlg` first, along with the `epk` schema
+  question. **That must happen before 2.5 enrols a real device**, since a fleet
+  enrolled on RSA has to be re-enrolled.
+
+**Done when.** The numbers and the StrongBox verdict are written into open question 1
+in `design.md`, and the question is either closed or converted into a schema change.
+The spike code is deleted in the same change.
+
+---
+
 ## 2.5 — Key enrolment and recovery code
 
 **Goal.** The device can decrypt, and the user has a way back.
@@ -108,13 +144,29 @@ restart, and refreshes without re-prompting.
 **Files.** `crypto/KeyCustody.kt`, `ui/onboarding/Enrolment.kt`.
 
 **Details.**
-- First device: generate the master key on-device, generate a 128-bit recovery code
-  (base32, grouped `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`), wrap the master key under both an
-  Android Keystore keypair and an Argon2id KEK from the code, `POST` both wrappings.
+- First device: `POST /keys/version` to allocate `mk-<n>` — **never mint one locally**,
+  see plan step 1.8 — then generate the master key on-device, generate the recovery
+  code, wrap the master key under both an Android Keystore keypair and an Argon2id KEK
+  from the code, and `POST` both wrappings against that version. Also generate the owner's `hashSecret`, wrap it with the master
+  key and `PUT` it as `encHashSecret` — without it `contentHash` cannot be computed and
+  dedup silently does nothing.
+- **Recovery code format is `crypto-format.md`, not this step.** 26 Crockford base32
+  characters — 25 of entropy plus a check symbol — printed
+  `XXXXX-XXXXX-XXXXX-XXXXX-XXXXXX`. Implement the check symbol and the normalisation
+  rules from the spec, and run conformance vectors 18–20 against them.
 - **Enrolment is not complete until the user types the recovery code back.** Not a
-  "saved it" checkbox — actually confirm it. There is no recovery path afterwards.
+  "saved it" checkbox — actually confirm it. There is no recovery path afterwards. The
+  check symbol is what lets that screen say "that's mistyped" rather than making the
+  user wait on Argon2id for an ambiguous failure.
 - Later device: unwrap via the recovery code, then enrol a Keystore wrapping.
-- Keystore key: EC, hardware-backed, `setUserAuthenticationRequired(true)`.
+- **Keystore key: RSA-3072**, hardware-backed, `setUserAuthenticationRequired(true)`.
+  Not EC — v1 defines `wrapAlg` as `AES-KW | RSA-OAEP-256` and has no ECDH wrapping
+  mode, so an EC Keystore key has nothing to record itself as. **Do not start this step
+  until 2.4a has reported**: if StrongBox refuses RSA-3072, this becomes an ECDH-ES
+  enrolment and the schema changes with it.
+- Wrapping uses OAEP with SHA-256 **and MGF1-SHA-256**, passed explicitly as an
+  `OAEPParameterSpec`. The Android provider defaults MGF1 to SHA-1 despite the cipher
+  name, which yields a wrapping only this device can read — see `crypto-format.md`.
 - Handle `KeyPermanentlyInvalidatedException` — thrown when the user changes their lock
   screen — by re-enrolling from the recovery code rather than crashing.
 
@@ -290,9 +342,16 @@ for a photo lacking EXIF.
   the file still sitting on the phone.
 - Default keeps the local copy: the phone is one of the independent copies the whole
   design leans on, and deleting the last copy of something should never be a default.
+- **Surface blocked re-uploads in the trash list.** `GET /trash` returns
+  `blockedAttempts` / `lastAttemptBy`; show them as a warning on the entry — *"3
+  attempts to re-upload this from home-server — delete it there too, or it returns."*
+  Not decoration: purge tombstones expire on a TTL, and this warning is what makes that
+  expiry safe. See "Tombstones expire, and blocked attempts are surfaced" in
+  `design.md`.
 
 **Done when.** Archive-only removal makes the photo vanish from the timeline, leaves it
-in the gallery, and it is not re-uploaded on the next scan.
+in the gallery, and it is not re-uploaded on the next scan; and a trashed entry that
+another source keeps re-offering shows the attempt warning.
 
 ---
 

@@ -15,6 +15,9 @@ in the Terraform or the app may hardcode a domain, account or region. See
 * `docs/design/design.md` — the design plan. The authoritative document.
 * `docs/design/deployment.md` — the self-hosting model, and the author/operator/user
   split that determines who is responsible for what.
+* `docs/design/crypto-format.md` — the wire format spec: object encryption, key
+  wrapping, byte-range arithmetic, and the conformance vectors every client must pass.
+  Authoritative over prose in `design.md` wherever the two describe bytes.
 * `docs/design/sample-data.md` — worked example of ~8 assets as actual DynamoDB rows,
   plus every access pattern as a real query against those rows.
 * `docs/design/android.md` — design and tech stack for **Archivist**, the Android

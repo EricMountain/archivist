@@ -14,6 +14,15 @@ locals {
   # than replacing it, so an operator can't lock themselves out by setting it.
   web_origins = concat(["https://${var.domain_name}"], var.web_origins)
 
+  # Best-effort guess at the Route 53 zone that owns domain_name: strip the first
+  # label ("photos.example.com" -> "example.com"). Wrong for an apex domain or a
+  # zone delegated below the second level — var.route53_zone_name overrides it.
+  domain_labels = split(".", var.domain_name)
+  zone_name = coalesce(
+    var.route53_zone_name,
+    join(".", slice(local.domain_labels, 1, length(local.domain_labels))),
+  )
+
   tags = {
     Application = local.app
     Environment = var.environment
