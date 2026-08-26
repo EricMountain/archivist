@@ -26,6 +26,10 @@ in the Terraform or the app may hardcode a domain, account or region. See
   plus every access pattern as a real query against those rows.
 * `docs/design/android.md` — design and tech stack for **Archivist**, the Android
   client (`fr.enry.archivist`).
+* `docs/design/api.md` — every endpoint an instance exposes (method, path, what it
+  does) and exactly what gates access to it — the JWT authorizer, `authMode`, and the
+  three CloudFront surfaces (discovery doc, `/media/*`, `/thumbs/*`) that bypass it
+  entirely. Re-check whenever a route, `authMode`, or CloudFront behavior changes.
 * `docs/ops/` — operator runbooks: step-by-step, command-verified how-tos for running a
   deployed instance (e.g. `create-user.md`). Different job from `deployment.md`, which
   explains the model; these explain the exact commands.

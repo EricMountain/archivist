@@ -62,7 +62,8 @@ operator's real `prod` instance).
 | 2.1 Project scaffolding | done | `./gradlew assembleDebug` produces a debug APK. |
 | 2.2 Crypto module | done | `:core:crypto:testDebugUnitTest` — all 22 conformance vectors pass, plus a 100 MB streaming round-trip and a truncated-ciphertext-fails test. |
 | 2.3 Instance connection | partial | `data/remote/{DiscoveryDocument,DiscoveryApi,DiscoveryClient,NetworkModule}.kt`, `data/local/{InstanceStore,LocalStorageModule}.kt`, `data/repo/InstanceRepository.kt`, `ui/onboarding/{ConnectViewModel,ConnectScreen}.kt` written; `MainActivity` routes on connection state. HTTPS-only host input (bare host or explicit `https://`; `http://` and any other scheme rejected outright, no fallback); distinguishes `InvalidHost`/`HostNotFound`/`NotArchivist`/`ServerTooNew` per the plan's error-mode requirement; persists per-host to DataStore (map keyed by host + a "current" pointer, not a singleton). 22 unit tests pass (`:app:testDebugUnitTest`): `DiscoveryClientTest` (host normalization, all four error modes, cryptoVersion boundary) against a fake `DiscoveryApi`; `DiscoveryApiWireFormatTest` against a real MockWebServer, confirming the actual Retrofit/kotlinx.serialization stack throws `HttpException`/`SerializationException` where `DiscoveryClient` assumes it does; `InstanceStoreTest` (DataStore round-trip via a temp-file store, no Robolectric needed); `ConnectViewModelTest` (state machine, using a real `InstanceRepository`/`InstanceStore` backed by a temp-file DataStore sharing the test's `StandardTestDispatcher` scheduler — the naive version of this test was flaky/deadlocked because DataStore's default internal scope is real `Dispatchers.IO`, invisible to a test's virtual scheduler). `DiscoveryDocument`'s fields checked by hand against `terraform/wellknown.tf`'s real `jsonencode(...)` body — exact match. `./gradlew assembleDebug` still builds a debug APK; `:core:crypto:testDebugUnitTest` still green (no regression). **Not verified**: nothing has run on an emulator or device — no real `GET /.well-known/archivist.json` fetch from the app itself, no manual UI walkthrough of the error states, no Compose UI test. This build environment has JDK 21 + the Android SDK but no emulator/device attached, so device-level verification needs a follow-up pass. Introduced JUnit5 (Jupiter) for this module rather than the crypto module's JUnit4, matching the target test stack in `docs/design/android.md`; the two modules now use different test runners on purpose (`useJUnitPlatform()` set on `:app` only). |
-| 2.4 Authentication | not started | |
+| 2.4 Authentication | partial | `data/remote/{CognitoAuthApi,CognitoAuthClient,CognitoNetworkModule,ArchivistApi,ArchivistApiFactory}.kt`, `data/local/{TokenStore,LocalStorageModule addition}.kt`, `data/repo/AuthRepository.kt`, `ui/onboarding/{SignInViewModel,SignInScreen,PasskeyCeremony}.kt` written and wired into `MainActivity` after a successful connection. Scope grew beyond the plan's literal "sign in with a passkey": an invited account has no registered passkey and no hosted UI to bridge that gap, so the app also handles the temporary-password → `NEW_PASSWORD_REQUIRED` → passkey-registration path — see the new note under "Auth and key unlock" in `android.md`. Cognito's user API confirmed live to be plain unsigned HTTPS JSON-RPC (`X-Amz-Target` header) — no AWS SDK, no SigV4 — and that `application/json` silently fails (200 with `UnknownOperationException` in the body, ignoring `X-Amz-Target` entirely) where `application/x-amz-json-1.1` is required; also confirmed live: requesting a `WEB_AUTHN` challenge for an account with no registered passkey returns `ChallengeName: SELECT_CHALLENGE`, not an error. 64 unit tests pass (`:app:testDebugUnitTest`, up from 22 in 2.3), covering the Cognito wire client against a fake API, the token store, and — the part that couldn't be checked live — the OkHttp `Authenticator`'s refresh-on-401-exactly-once logic, verified against a real MockWebServer (attaches the stored token; refreshes and retries once on 401; never retries a second time even if the retry also 401s; a failed refresh clears the session and gives up). Caught and fixed two real bugs this pass: a `parseToJsonElement` call that threw instead of returning a typed failure for malformed credential JSON, and a StandardTestDispatcher/real-network race in the ViewModel tests (same class of issue as 2.3's DataStore one, this time from OkHttp's real thread pool — fixed with a bounded real-time poll rather than `advanceUntilIdle()` alone). **Not verified, and not fully verifiable in this environment**: the actual Credential Manager ceremony (`PasskeyCeremony.kt`) — no device, and additionally blocked by a real infrastructure gap found in the course of this work: the relying-party domain has no `/.well-known/assetlinks.json`, which Credential Manager requires before it will create or use a passkey scoped to that domain at all. Written up as open question 2 in `design.md` rather than guessed at. |
+| 2.4a Keystore algorithm spike | blocked | `app/src/androidTest/kotlin/fr/enry/archivist/debug/KeystoreSpike.kt` written per the plan (RSA-3072/2048 and EC-P256, StrongBox on and off, `KeyInfo.getSecurityLevel()`, then an OAEP-SHA256/MGF1-SHA256 wrap/unwrap round-trip) and confirmed to compile (`:app:compileDebugAndroidTestKotlin`). **Cannot run**: needs a real device (emulators have no StrongBox) and none is attached to this environment. Open question 1 in `design.md` is explicitly *not* closed by this — the file existing produces no numbers. |
 | 2.5 Key enrolment and recovery code | not started | |
 | 2.6 Local storage | not started | |
 | 2.7 Folder selection and scanning | not started | |
@@ -77,6 +78,38 @@ operator's real `prod` instance).
 | 2.16 CI and release | not started | |
 
 ## Last audit
+
+2026-08-27 — Claude (Sonnet 5). Started plan 02 step 2.4 (Authentication) and 2.4a
+(Keystore spike), plus wrote `docs/design/api.md` (every endpoint, method, and what
+gates access to it — JWT authorizer, `authMode`, and the CloudFront surfaces that
+bypass it). Before writing any Cognito client code, verified its wire format live
+against the real pool with a throwaway test user rather than working from memory:
+confirmed unsigned HTTPS JSON-RPC works with no AWS SDK/SigV4 (design.md's claim was
+correct), that `application/x-amz-json-1.1` is load-bearing (not `application/json`),
+the real shape of `StartWebAuthnRegistration`'s `CredentialCreationOptions`, and that a
+`WEB_AUTHN` challenge for an account with no registered passkey returns
+`SELECT_CHALLENGE` rather than erroring. Built the Cognito REST client, encrypted token
+store, an authenticated Archivist API client with an OkHttp `Authenticator` doing
+refresh-on-401-exactly-once, the auth repository, and a `SignInViewModel`/`SignInScreen`
+— scope grew to include the temporary-password-to-passkey-registration bridge an
+invited account actually needs, since there's no hosted UI to do it instead. Added 42
+tests (22 → 64 total for `:app`), including a real-MockWebServer-backed test of the
+Authenticator (the trickiest logic, and the one thing that couldn't be checked live).
+Fixed two bugs the test run caught: an uncaught `parseToJsonElement` exception on
+malformed credential JSON, and a StandardTestDispatcher/real-network race in the
+ViewModel tests (same shape as 2.3's DataStore race, this time from OkHttp real
+threads). Wrote 2.4a's `KeystoreSpike.kt` per the plan and confirmed it compiles; did
+not and could not run it — no device or emulator here. In the course of 2.4, found a
+real infrastructure gap: passkey creation needs a `/.well-known/assetlinks.json` on
+each instance's domain that nothing in `terraform/` serves yet, and the app's own
+signing certificate (needed to fill it in) doesn't exist since Play App Signing hasn't
+happened. Wrote this up as open question 2 in `design.md` rather than guessing at a
+fingerprint or the exact asset-links relation string. Updated `create-user.md`'s and
+`android.md`'s claims about 2.4/2.5 status to match. Neither 2.4's Credential Manager
+ceremony nor 2.4a could be exercised on real hardware in this session — both need a
+follow-up pass on an actual device once the asset-links gap is closed.
+
+---
 
 2026-08-26 (later same day) — Claude (Sonnet 5). Picked up from the audit below.
 Reconciled step 1.8 (removed client-supplied `masterKeyVer` from `POST /keys`, added

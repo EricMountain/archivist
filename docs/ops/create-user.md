@@ -84,9 +84,12 @@ aws cognito-idp list-users --user-pool-id eu-west-1_XXXXXXXXX \
 
 ## 3. Verifying the account works (optional, operator-side)
 
-There's no client app to hand the invitee yet — plan 02 (the Android app) hasn't
-reached authentication (step 2.4) or key enrolment (step 2.5). Until it does, "sign
-in" isn't something a real person can usefully do. But you *can* verify the account
+There's no client app to hand the invitee yet. Plan 02 step 2.4 (Authentication) has
+code now but nothing runnable — no build has ever been installed on a device, and
+passkey creation is additionally blocked on a Digital Asset Links file that doesn't
+exist yet (open question 2 in `design.md`). Key enrolment (step 2.5) is still not
+started. Until both are real, "sign in" isn't something a real person can usefully do.
+But you *can* verify the account
 and the backend's session-bootstrap step work, entirely from the CLI, without needing
 WebAuthn (the user pool's `sign_in_policy` allows plain password as a first factor,
 precisely so this kind of check doesn't need a browser):
@@ -151,10 +154,11 @@ so this doc is accurate about what's coming rather than silent about it:
 4. It generates the owner's hash secret (for `contentHash` dedup) and stores it wrapped,
    via `PUT /keys/hash-secret`.
 
-**None of this is possible today.** Plan 02's steps 2.4 (Authentication) and 2.5 (Key
-enrolment and recovery code) are `not started` per `STATUS.md` — there is no Android
-build, no web client, nothing that can generate or hold a master key on a user's
-behalf. An account created with this doc can sign in (step 3 above) and has a library,
+**None of this is possible today.** Plan 02 step 2.5 (Key enrolment and recovery code)
+is `not started` per `STATUS.md`, and step 2.4 (Authentication), while coded, has never
+run on a device — there is no installable Android build, no web client, nothing that
+can generate or hold a master key on a user's behalf. An account created with this doc
+can sign in (step 3 above, via the CLI) and has a library,
 but cannot yet upload anything or hold key material. Don't promise an invitee more than
 that until plan 02 catches up — update this section (and `STATUS.md`) when it does.
 

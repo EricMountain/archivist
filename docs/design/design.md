@@ -1404,3 +1404,32 @@ for `facetSk`. Rare, bounded to one partition, and doable in a single transactio
    the schema question (`epk`, curve, HKDF info string) has to be settled *before*
    Android enrols its first device, because a fleet enrolled on RSA is a fleet that has
    to be re-enrolled.
+
+2. **No Digital Asset Links file exists yet, and passkey creation needs one.** Found
+   while implementing plan step 2.4: `terraform/cognito.tf`'s
+   `web_authn_configuration.relying_party_id` is `var.domain_name` — each instance's own
+   domain, not a fixed one. Android's Credential Manager requires the relying party
+   domain to serve `/.well-known/assetlinks.json`, declaring this app's package
+   (`fr.enry.archivist`) and signing certificate SHA-256 fingerprint, before it will let
+   the app create or use a passkey scoped to that domain — the same mechanism App Links
+   verification uses. Nothing in `terraform/` serves this today; there's no
+   `wellknown.tf` entry for it alongside `.well-known/archivist.json`.
+
+   This is a hard blocker for real passkey creation on a device, independent of 2.4a's
+   StrongBox question above — the OS refuses the ceremony before Keystore is ever
+   involved. `PasskeyCeremony.register()` (`ui/onboarding/PasskeyCeremony.kt`) is written
+   against the documented Credential Manager API but has not been exercised on a device
+   for this reason as well as for lacking one in this environment.
+
+   Deferring is *not* obviously safe the way the ECDH question is: every operator's
+   instance needs this file, so it has to be Terraform-managed like the discovery
+   document, not something each operator hand-authors. What's unresolved is the content,
+   not the mechanism — the app's signing certificate fingerprint doesn't exist yet
+   either (`docs/design/android.md`: "Play Console: listing created, no build uploaded
+   yet", so Play App Signing hasn't happened). Once it has, the fingerprint is fixed and
+   public for every deployment (same app, same signing key), so the Terraform addition
+   is small: an `aws_s3_object` alongside `wellknown.tf`'s, publishing a constant
+   `sha256_cert_fingerprints` value and `fr.enry.archivist` as the package name, with
+   `"delegate_permission/common.get_login_creds"` as the relation — worth double-checking
+   against Google's current asset-links spec for passkeys specifically before writing it,
+   rather than assuming that relation string from memory the way this note is doing.

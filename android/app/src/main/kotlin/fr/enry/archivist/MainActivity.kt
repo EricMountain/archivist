@@ -12,6 +12,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -20,6 +23,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import fr.enry.archivist.ui.onboarding.ConnectScreen
 import fr.enry.archivist.ui.onboarding.ConnectUiState
 import fr.enry.archivist.ui.onboarding.ConnectViewModel
+import fr.enry.archivist.ui.onboarding.SignInScreen
 import fr.enry.archivist.ui.theme.ArchivistTheme
 
 @AndroidEntryPoint
@@ -36,20 +40,25 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ArchivistApp(viewModel: ConnectViewModel = hiltViewModel()) {
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
+private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
+    val connectState by connectViewModel.uiState.collectAsStateWithLifecycle()
+    var signedIn by remember { mutableStateOf(false) }
 
     Scaffold { innerPadding ->
-        when (val s = state) {
+        when (val s = connectState) {
             ConnectUiState.CheckingStoredInstance ->
                 Centered(Modifier.padding(innerPadding)) { CircularProgressIndicator() }
 
             is ConnectUiState.Connected ->
-                // Placeholder until 2.4 (Authentication) adds a real screen to land on.
-                Centered(Modifier.padding(innerPadding)) { Text("Connected to ${s.instanceName}") }
+                if (signedIn) {
+                    // Placeholder until 2.5+ adds a real screen to land on.
+                    Centered(Modifier.padding(innerPadding)) { Text("Signed in to ${s.instanceName}") }
+                } else {
+                    SignInScreen(onSignedIn = { signedIn = true }, modifier = Modifier.padding(innerPadding))
+                }
 
             is ConnectUiState.NeedsConnection ->
-                ConnectScreen(state = s, onConnect = viewModel::connect, modifier = Modifier.padding(innerPadding))
+                ConnectScreen(state = s, onConnect = connectViewModel::connect, modifier = Modifier.padding(innerPadding))
         }
     }
 }

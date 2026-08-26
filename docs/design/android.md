@@ -257,6 +257,18 @@ Two separate ceremonies, for the reasons in `design.md`:
 * **Auth**: Credential Manager → passkey → Cognito tokens, against *this instance's*
   user pool from the discovery document. Refresh tokens live in
   `EncryptedSharedPreferences`, scoped per instance; the app should not prompt daily.
+  **A returning user's passkey is only half the story.** An invited account
+  (`docs/ops/create-user.md`) starts with nothing but a temporary password and no
+  registered credential at all — there's no hosted UI to bridge that gap (the Cognito
+  domain in `cognito.tf` only exists when Google federation is on), so the app itself
+  has to: try a passkey first (`PREFERRED_CHALLENGE=WEB_AUTHN`; an account with none
+  registered gets `SELECT_CHALLENGE` back, not an error — confirmed live against a real
+  pool), fall back to password + `NEW_PASSWORD_REQUIRED`, then immediately offer to
+  register a passkey via `StartWebAuthnRegistration`/`CompleteWebAuthnRegistration`
+  before landing the user anywhere else. Implemented in `data/remote/CognitoAuthClient.kt`
+  and `ui/onboarding/SignInViewModel.kt`. Cognito's user-facing API is plain unsigned
+  HTTPS JSON-RPC (`X-Amz-Target` header, no SigV4) — confirmed live — which is what "not
+  using AWS Amplify" above assumes but is worth stating plainly here too.
 * **Key unlock**: an RSA-3072 keypair in Android Keystore, hardware-backed and
   `setUserAuthenticationRequired(true)` so it sits behind biometrics. It unwraps the
   master key into memory at app start. RSA rather than EC because v1's `wrapAlg` has no
