@@ -61,7 +61,7 @@ operator's real `prod` instance).
 | --- | --- | --- |
 | 2.1 Project scaffolding | done | `./gradlew assembleDebug` produces a debug APK. |
 | 2.2 Crypto module | done | `:core:crypto:testDebugUnitTest` — all 22 conformance vectors pass, plus a 100 MB streaming round-trip and a truncated-ciphertext-fails test. |
-| 2.3 Instance connection | not started | No longer blocked — plan 01 is deployed to the operator's instance and its discovery document is live. |
+| 2.3 Instance connection | partial | `data/remote/{DiscoveryDocument,DiscoveryApi,DiscoveryClient,NetworkModule}.kt`, `data/local/{InstanceStore,LocalStorageModule}.kt`, `data/repo/InstanceRepository.kt`, `ui/onboarding/{ConnectViewModel,ConnectScreen}.kt` written; `MainActivity` routes on connection state. HTTPS-only host input (bare host or explicit `https://`; `http://` and any other scheme rejected outright, no fallback); distinguishes `InvalidHost`/`HostNotFound`/`NotArchivist`/`ServerTooNew` per the plan's error-mode requirement; persists per-host to DataStore (map keyed by host + a "current" pointer, not a singleton). 22 unit tests pass (`:app:testDebugUnitTest`): `DiscoveryClientTest` (host normalization, all four error modes, cryptoVersion boundary) against a fake `DiscoveryApi`; `DiscoveryApiWireFormatTest` against a real MockWebServer, confirming the actual Retrofit/kotlinx.serialization stack throws `HttpException`/`SerializationException` where `DiscoveryClient` assumes it does; `InstanceStoreTest` (DataStore round-trip via a temp-file store, no Robolectric needed); `ConnectViewModelTest` (state machine, using a real `InstanceRepository`/`InstanceStore` backed by a temp-file DataStore sharing the test's `StandardTestDispatcher` scheduler — the naive version of this test was flaky/deadlocked because DataStore's default internal scope is real `Dispatchers.IO`, invisible to a test's virtual scheduler). `DiscoveryDocument`'s fields checked by hand against `terraform/wellknown.tf`'s real `jsonencode(...)` body — exact match. `./gradlew assembleDebug` still builds a debug APK; `:core:crypto:testDebugUnitTest` still green (no regression). **Not verified**: nothing has run on an emulator or device — no real `GET /.well-known/archivist.json` fetch from the app itself, no manual UI walkthrough of the error states, no Compose UI test. This build environment has JDK 21 + the Android SDK but no emulator/device attached, so device-level verification needs a follow-up pass. Introduced JUnit5 (Jupiter) for this module rather than the crypto module's JUnit4, matching the target test stack in `docs/design/android.md`; the two modules now use different test runners on purpose (`useJUnitPlatform()` set on `:app` only). |
 | 2.4 Authentication | not started | |
 | 2.5 Key enrolment and recovery code | not started | |
 | 2.6 Local storage | not started | |
@@ -105,6 +105,26 @@ exploitation (`aws cognito-idp list-users` — zero users) before fixing live. S
 | security fix, same day" row under 1.4 above for the full account. Worth naming
 directly: this should have been caught while writing 1.4/1.7, not after deploying, and
 wasn't until asked about it.
+
+---
+
+2026-08-26 (later still) — Claude (Sonnet 5). Started plan 02 step 2.3 (Instance
+connection), the first Android step past scaffolding/crypto. Added Retrofit +
+kotlinx.serialization + OkHttp + DataStore-preferences to the version catalog (none of
+this existed in the module before); wrote the discovery fetch, host validation, DataStore
+persistence, repository and ViewModel/Compose layers; wrote 22 unit tests (JUnit5, this
+module's first tests — the crypto module uses JUnit4, kept separate on purpose). Actually
+ran the build: found and fixed a wrong import (`retrofit2.converter...` instead of the
+real `com.jakewharton.retrofit2.converter...` package) that `:app:compileDebugKotlin`
+caught immediately, and a real test-flakiness bug in the ViewModel test (DataStore's
+default coroutine scope is real `Dispatchers.IO`, which a test's virtual `StandardTestDispatcher`
+can't see or wait for — fixed by binding DataStore's scope to the same test dispatcher and
+passing it into `runTest` too). `assembleDebug` and `:core:crypto:testDebugUnitTest` both
+still pass. Compared `DiscoveryDocument`'s fields against `terraform/wellknown.tf`'s real
+`jsonencode(...)` by hand — exact match. Did not run anything on an emulator or device —
+this environment has the Android SDK but no emulator; the plan step's literal "Done when"
+(connecting to a real instance from the running app) is therefore unverified, and stays
+`partial` in the table above until someone does that pass.
 
 ---
 
