@@ -9,8 +9,16 @@ composeBom = "2024.12.01"
 hilt = "2.54"
 hiltNavigationCompose = "1.2.0"
 kotlinxCoroutines = "1.9.0"
+tink = "1.15.0"
+bouncycastle = "1.79"
+json = "20240303"
+junit = "4.13.2"
 
 [libraries]
+tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
+bouncycastle-bcprov = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
+json = { group = "org.json", name = "json", version.ref = "json" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }

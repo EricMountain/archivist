@@ -1,0 +1,3 @@
+tink==1.16.1
+cryptography==50.0.0
+argon2-cffi==25.1.0

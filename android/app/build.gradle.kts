@@ -39,6 +39,13 @@ android {
     buildFeatures {
         compose = true
     }
+
+    packaging {
+        resources {
+            // BouncyCastle (via :core:crypto) and jspecify both ship this OSGi manifest.
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
 }
 
 dependencies {

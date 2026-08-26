@@ -22,6 +22,17 @@ android {
 }
 
 dependencies {
-    // Tink and conformance-vector tests land in plan 02 step 2.2, once
-    // docs/design/crypto-format.md and testdata/vectors/ exist (plan 01, step 1.16).
+    implementation(libs.tink.android)
+    implementation(libs.bouncycastle.bcprov)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.json)
+}
+
+tasks.withType<Test> {
+    // testdata/vectors/ lives at the repo root, one level above android/.
+    systemProperty(
+        "archivist.vectorsDir",
+        rootProject.projectDir.parentFile.resolve("testdata/vectors").absolutePath,
+    )
 }

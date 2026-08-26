@@ -1,0 +1,350 @@
+{
+  "cryptoVersion": 1,
+  "plainPatternSpec": "For cases that omit a .plain file: plaintext[32*i : 32*i+32] = SHA256(UTF8(plainPatternSeed) || be32(i)) for i = 0, 1, 2, ...; the final block is truncated to the remaining length. See tools/gen-vectors/generate.py:derive_bytes.",
+  "cases": [
+    {
+      "case": 1,
+      "id": "01-whole-empty",
+      "mode": "whole",
+      "dek": "57db6add3e5c7a6bb47d0acf9d0f27e64ab7256fe2d714f86e184ee4a68b4d78",
+      "iv": "a70e6c853febbd8b491ee531",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:r:01K5A2Q8ZCW4MB7XKQNV2HTRF3",
+      "plainLength": 0,
+      "plainPatternSeed": "whole-empty",
+      "files": {
+        "cipher": "01-whole-empty.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 2,
+      "id": "02-whole-1byte",
+      "mode": "whole",
+      "dek": "57db6add3e5c7a6bb47d0acf9d0f27e64ab7256fe2d714f86e184ee4a68b4d78",
+      "iv": "acd2d15468e297172c483530",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:r:01K5A2Q8ZCW4MB7XKQNV2HTRF3",
+      "plainLength": 1,
+      "plainPatternSeed": "whole-1byte",
+      "files": {
+        "cipher": "02-whole-1byte.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 3,
+      "id": "03-whole-typical",
+      "mode": "whole",
+      "dek": "57db6add3e5c7a6bb47d0acf9d0f27e64ab7256fe2d714f86e184ee4a68b4d78",
+      "iv": "756022abee3db25a10fe48f5",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:r:01K5A2Q8ZCW4MB7XKQNV2HTRF3",
+      "plainLength": 200000,
+      "plainPatternSeed": "whole-typical-jpeg",
+      "files": {
+        "cipher": "03-whole-typical.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 4,
+      "id": "04-whole-tag-bit-flipped",
+      "mode": "whole",
+      "dek": "57db6add3e5c7a6bb47d0acf9d0f27e64ab7256fe2d714f86e184ee4a68b4d78",
+      "iv": "756022abee3db25a10fe48f5",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:r:01K5A2Q8ZCW4MB7XKQNV2HTRF3",
+      "files": {
+        "cipher": "04-whole-tag-bit-flipped.cipher"
+      },
+      "expect": "fail"
+    },
+    {
+      "case": 5,
+      "id": "05-whole-aad-altered",
+      "mode": "whole",
+      "dek": "57db6add3e5c7a6bb47d0acf9d0f27e64ab7256fe2d714f86e184ee4a68b4d78",
+      "iv": "756022abee3db25a10fe48f5",
+      "aad": "archivist:1:01K5A2Q8ZD00000000000000A:r:01K5A2Q8ZCW4MB7XKQNV2HTRF3",
+      "files": {
+        "cipher": "05-whole-aad-altered.cipher"
+      },
+      "expect": "fail",
+      "note": "cipher is case 3's, unmodified; aad here is deliberately wrong"
+    },
+    {
+      "case": 6,
+      "id": "06-stream-empty",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "plainLength": 0,
+      "plainPatternSeed": "stream-empty",
+      "files": {
+        "cipher": "06-stream-empty.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 7,
+      "id": "07-stream-c0",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "plainLength": 1048520,
+      "plainPatternSeed": "stream-c0",
+      "files": {
+        "cipher": "07-stream-c0.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 8,
+      "id": "08-stream-c0-plus-1",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "plainLength": 1048521,
+      "plainPatternSeed": "stream-c0-plus-1",
+      "files": {
+        "cipher": "08-stream-c0-plus-1.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 9,
+      "id": "09-stream-c0-plus-cn",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "plainLength": 2097080,
+      "plainPatternSeed": "stream-c0-plus-cn",
+      "files": {
+        "cipher": "09-stream-c0-plus-cn.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 10,
+      "id": "10-stream-c0-plus-cn-plus-1",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "plainLength": 2097081,
+      "plainPatternSeed": "stream-c0-plus-cn-plus-1",
+      "files": {
+        "cipher": "10-stream-c0-plus-cn-plus-1.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 11,
+      "id": "11-stream-multi-mb",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "plainLength": 3500000,
+      "plainPatternSeed": "stream-multi-mb",
+      "files": {
+        "cipher": "11-stream-multi-mb.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 12,
+      "id": "12-stream-final-segment-dropped",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "files": {
+        "cipher": "12-stream-final-segment-dropped.cipher"
+      },
+      "expect": "fail",
+      "note": "case 10's ciphertext with the final (3rd) segment removed"
+    },
+    {
+      "case": 13,
+      "id": "13-stream-truncated-mid-segment",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "files": {
+        "cipher": "13-stream-truncated-mid-segment.cipher"
+      },
+      "expect": "fail",
+      "note": "case 11's ciphertext with the last 500 bytes dropped mid final-segment"
+    },
+    {
+      "case": 14,
+      "id": "14-stream-segments-swapped",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "files": {
+        "cipher": "14-stream-segments-swapped.cipher"
+      },
+      "expect": "fail",
+      "note": "case 10's ciphertext with segment index 1 and segment index 2 exchanged"
+    },
+    {
+      "case": 15,
+      "id": "15-stream-header-salt-altered",
+      "mode": "streaming",
+      "dek": "a094496f8d9ad12f8bcdbf6968c12cd9bdc24aa1ee08e1b598d1e01178206b16",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x",
+      "files": {
+        "cipher": "15-stream-header-salt-altered.cipher"
+      },
+      "expect": "fail",
+      "note": "case 11's ciphertext with one bit flipped in the header salt"
+    },
+    {
+      "case": 16,
+      "id": "16-aes-kw-dek",
+      "mode": "aes-kw",
+      "kek": "8db9526839c89efbce1fe9d942d4e876840ad934b3e42a0269bb2f856a211c78",
+      "plaintextKey": "275a1009bcf12611f093c55ff4477d8fbd71ae232234cb7ecb9cc54042778c6a",
+      "expectedWrapped": "ac603f22451478732b40d14722076b50365a805fa452d29fbc3f373a8fd549227f99e602e794a040",
+      "expect": "exact"
+    },
+    {
+      "case": 17,
+      "id": "17-rsa-oaep-unwrap",
+      "mode": "rsa-oaep",
+      "rsaModulus": "b9ead0e690f2588457b74b384d35cb47c67d0891fb0d754d8dd5d6c7e458c0885e622d5e2fd81cc20b844a1516527f0607fd46e6046351cb7e70418743a2a7c073959d740f3c0a502a1dc4f30a7e3f9c8e9f50a3b15c6e5c6a0d757f444946cffdedeb2b2351141cd36f55151ed0caa9f39f37c894139ab949abed784c2440765d435e4f2fb6ec0900187aaf8477fcc8303c5c578bc42a177c19ddb8647910b24789673cc01dfe0898ca89e6f9d787c3072c4b01d0913065891c0a5624bc46b91f46a2477450014402b7165cbc60814e7d622a2394a802cbe6979504a0cebc368a23696a753122046d8d649aad6760c4259abd13c20b82d1858945c8d9ee14d7b433de34ca4ca42436480be5e23dff001b5044002c4ff83452c4b2afecb0faf6d80118f4c4d3fa6f7dd2d7b4f34ca3fb139e527ef70b924def3f6baeb5e276ae9b1b9fad0ab87c14cf7d023ed0634215e1cb2714015a51daba91567f5ad93530043700994686c0e1966ebd32b4ae45129660a1d15823144b1e0da7f5827f61c9",
+      "rsaPublicExponent": 65537,
+      "rsaPrivateExponent": "1e92ec96b6287c810b11c40776bf0d7678c0501bfd9eb9772f078702295da50fe8019a375e83da3ad8fd00d7d5eb6c23384621162b8b8fc478bf0a2fade23e570a4b04f1349e298e04570fefedfe5404b179a69fbcc798088f92360bdf55739539cb99fc669aeb45504a03426d6665a5ac403742bf8337d317b7f3ddf01b98143f0318abca0b79668383030e0129604325978f9200149add70d5aa1e2c3bb290b6edf431cbe042c9f4227eaa22d51c68e8b19286325fe6071494ad687c33102812a4d7c277f4e55ae53b245da43ff7e0714f8138a33688c59913f7b828f3a2e3c3fc59971b722fc6ad3f6e7983a9f6d61cee696804c908869cb143be4718b96b8100c406bd39e66031dc04e70d853c6e7da107f458370bade0cb74adbb8b1c2d87d35870f1bd735434e66f54467b8333dd6aa5dbe381842c11142bf259da963e7cbadf0446906ac9da80431655728256c313c17ec72526a1ba56265923978f3f53a0e4450e9a80a5aa757f709fb8f731295706684b1c6c93cb9b2cb967e72ebf",
+      "expectedPlaintext": "69fec3943bd73e9c9211240a5701df02c4145b1baef963d7dac44a421df75b1c",
+      "files": {
+        "cipher": "17-rsa-oaep-unwrap.cipher"
+      },
+      "expect": "exact",
+      "note": "RSA-OAEP-256, MGF1-SHA256 explicit -- see crypto-format.md's Android warning"
+    },
+    {
+      "case": 18,
+      "id": "18-argon2id-kek",
+      "mode": "argon2id",
+      "password": "9HM0HP88T4T0009MQJCKPMYVK",
+      "salt": "b9b86e097c31e3c79d9bf42c39f593d9",
+      "params": {
+        "m": 65536,
+        "t": 3,
+        "p": 1,
+        "hashLen": 32,
+        "version": "0x13",
+        "type": "id"
+      },
+      "expectedKek": "7aabbe37c53db80c36f12c61b8e562ae1fc37120b4a72c146368de56d750d087",
+      "expect": "exact"
+    },
+    {
+      "case": 19,
+      "id": "19-recovery-normalisation",
+      "mode": "recovery-normalisation",
+      "rawInput": " 9hmoh-p88t4-tooo9-mqjck-pmyvkj\t\n",
+      "expectedNormalised": "9HM0HP88T4T0009MQJCKPMYVKJ",
+      "salt": "b9b86e097c31e3c79d9bf42c39f593d9",
+      "params": {
+        "m": 65536,
+        "t": 3,
+        "p": 1,
+        "hashLen": 32,
+        "version": "0x13",
+        "type": "id"
+      },
+      "expectedKek": "7aabbe37c53db80c36f12c61b8e562ae1fc37120b4a72c146368de56d750d087",
+      "expect": "exact",
+      "note": "normalise(rawInput) must equal expectedNormalised, and Argon2id over its first 25 chars must equal expectedKek (case 18's)"
+    },
+    {
+      "case": 20,
+      "id": "20-recovery-checksum",
+      "mode": "recovery-checksum",
+      "cases": [
+        {
+          "label": "valid",
+          "code": "WCVVFTH5Q69T0569YF4FJSK66X",
+          "expect": "accept"
+        },
+        {
+          "label": "one-char-altered",
+          "code": "XCVVFTH5Q69T0569YF4FJSK66X",
+          "expect": "reject"
+        },
+        {
+          "label": "adjacent-transposition",
+          "code": "WVCVFTH5Q69T0569YF4FJSK66X",
+          "expect": "reject"
+        },
+        {
+          "label": "25-chars",
+          "code": "WCVVFTH5Q69T0569YF4FJSK66",
+          "expect": "reject"
+        },
+        {
+          "label": "27-chars",
+          "code": "WCVVFTH5Q69T0569YF4FJSK66X5",
+          "expect": "reject"
+        },
+        {
+          "label": "u-in-middle",
+          "code": "WCVVFTH5Q69TU569YF4FJSK66X",
+          "expect": "reject"
+        }
+      ]
+    },
+    {
+      "case": 21,
+      "id": "21-hkdf-passkey-kek",
+      "mode": "hkdf-passkey",
+      "prfOutput": "122b88524ba8740feb8816a9c784fa4ee168ac5d994c4b0dba6e0c51745a2d0b",
+      "info": "archivist:1:passkey-kek",
+      "expectedKek": "ffa16440bdbd5511522942db28d391ca32df6163c15e0fa8ed75aa055b011876",
+      "expect": "exact"
+    },
+    {
+      "case": 22,
+      "id": "22-byte-range-table",
+      "mode": "byte-range",
+      "sourceCase": "11-stream-multi-mb",
+      "plainLength": 3500000,
+      "cipherLength": 3500104,
+      "ranges": [
+        {
+          "plainStart": 0,
+          "plainEnd": 99,
+          "cipherStart": 0,
+          "cipherEnd": 1048575,
+          "trimFront": 0
+        },
+        {
+          "plainStart": 1048519,
+          "plainEnd": 1048530,
+          "cipherStart": 0,
+          "cipherEnd": 2097151,
+          "trimFront": 1048519
+        },
+        {
+          "plainStart": 2097075,
+          "plainEnd": 2097085,
+          "cipherStart": 1048576,
+          "cipherEnd": 3145727,
+          "trimFront": 1048555
+        },
+        {
+          "plainStart": 3499990,
+          "plainEnd": 3499999,
+          "cipherStart": 3145728,
+          "cipherEnd": 3500103,
+          "trimFront": 354350
+        },
+        {
+          "plainStart": 0,
+          "plainEnd": 3499999,
+          "cipherStart": 0,
+          "cipherEnd": 3500103,
+          "trimFront": 0
+        }
+      ],
+      "expect": "exact"
+    }
+  ]
+}
