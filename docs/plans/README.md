@@ -7,6 +7,11 @@ Ordered, implementable plans. Work through them in sequence.
 | [01-aws-backend.md](01-aws-backend.md) | Every AWS resource: Cognito, API Gateway, Lambdas, CloudFront, plus the shared key-building library and the crypto format spec |
 | [02-android-mvp.md](02-android-mvp.md) | Archivist MVP: connect, sign in, back up, browse |
 
+**[STATUS.md](STATUS.md) tracks progress against both, step by step.** Read it before
+starting work here; update it in the same change when you finish. It is the source of
+truth for "is X done" — not this README, not a previous session's summary, and not a
+step's files simply existing.
+
 ## How to use these
 
 Each step has a **Goal**, the **Files** it touches, **Details** that constrain the
@@ -25,6 +30,13 @@ the design disagree, the design wins and the plan has a bug worth reporting.
 
 **If you change the data model, update `sample-data.md` in the same change.** That rule
 is in `CLAUDE.md` and it exists because a stale sample contradicts the design silently.
+
+**Read `STATUS.md` before starting a step, update it after.** Same reasoning as the
+sample-data rule, same place it's defined: `CLAUDE.md`'s "Keep the status file in sync".
+A step marked "done" there might not be — verify before trusting it, especially before
+building a later step on top of it. When you finish, mark exactly what you verified
+(a test run, a curl, a real deployment) versus what you didn't; don't upgrade a step to
+"done" on the strength of code existing alone.
 
 **Decisions in the design are settled.** Encryption is client-side, timestamps are UTC,
 identity is a ULID, deletion is soft, the app is self-hosted. These were argued through

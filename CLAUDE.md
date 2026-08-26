@@ -12,6 +12,10 @@ in the Terraform or the app may hardcode a domain, account or region. See
 ## Files
 
 * `docs/plans/` — ordered, implementable build plans. Start at `docs/plans/README.md`.
+* `docs/plans/STATUS.md` — step-by-step implementation status for both plans. **Read
+  this before starting any plan-related work, and update it in the same change when you
+  finish (or partially finish, or find a step already broken).** See "Keep the status
+  file in sync" below.
 * `docs/design/design.md` — the design plan. The authoritative document.
 * `docs/design/deployment.md` — the self-hosting model, and the author/operator/user
   split that determines who is responsible for what.
@@ -75,6 +79,27 @@ a changed key structure invalidates the existing ones.
 The sample deliberately covers the awkward cases — multi-rendition assets, missing
 EXIF, timestamp ties, chunked encryption. Keep that property: when the design grows a
 new edge case, the sample should grow an asset that exercises it.
+
+## Keep the status file in sync
+
+**`docs/plans/STATUS.md` is the source of truth for what's implemented.** Not memory of
+a past session, not a file's mere existence — a file can exist and still not meet its
+plan step's "Done when". This applies to every agent working from the plans, not just
+whichever one wrote a given step: a fresh session has no memory of what a previous one
+(human or agent) did, and `git log` alone doesn't say whether a step's "Done when" was
+actually met.
+
+**Before starting any plan step:** read `STATUS.md` for that step's current status
+rather than assuming it's untouched, and rather than assuming a prior "done" is still
+accurate — re-verify anything you're about to build on top of.
+
+**After finishing a change that touches a plan step** — whether you completed it, got
+partway, or just discovered it's broken or already done — update `STATUS.md` in the same
+change. Say what you verified (a test run, a curl, a deployment) and what you didn't;
+"partial" with a precise gap is more useful than an optimistic "done".
+
+This mirrors the sample-data rule above: a stale status is worse than none, because it
+silently contradicts the repo instead of admitting it doesn't know.
 
 ## Design conventions
 
