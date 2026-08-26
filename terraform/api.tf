@@ -45,7 +45,7 @@ resource "aws_apigatewayv2_api" "http" {
 
   cors_configuration {
     allow_origins = local.web_origins
-    allow_methods = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+    allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
     allow_headers = ["authorization", "content-type"]
     max_age       = 300
   }
@@ -103,6 +103,8 @@ locals {
     "GET /keys",
     "POST /keys",
     "DELETE /keys/{wrapId}",
+    "POST /keys/version",
+    "PUT /keys/hash-secret",
     "POST /uploads",
     "GET /photos",
     "GET /photos/{photoId}",

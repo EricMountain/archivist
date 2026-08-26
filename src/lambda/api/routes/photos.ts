@@ -5,6 +5,7 @@ import { toIsoUtc } from "@archivist/core/time";
 import { getAssetPartition } from "@archivist/core/repo/media";
 import { timelinePage, trashPage } from "@archivist/core/repo/timeline";
 import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
+import { getHashPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
 import { timelineEntryDto } from "../dto";
 import { noContent, ok, parseJsonBody } from "../http";
@@ -53,7 +54,32 @@ export const getTrash: RouteHandler = async (req: ApiRequest) => {
     cursor: req.query["cursor"],
     limit: parseLimit(req.query["limit"]),
   });
-  return ok({ items: page.items.map(timelineEntryDto), cursor: page.cursor });
+
+  // Each entry carries its primary rendition's HASH pointer blockedAttempts /
+  // lastAttemptAt / lastAttemptBy when non-zero, so the client can warn that a
+  // source still holds the file — see plan step 1.12. Bounded by page size (max
+  // 200) and this is not a hot path, so the extra reads per entry are cheap
+  // relative to the warning being reachable at all.
+  const items = await Promise.all(
+    page.items.map(async (entry) => {
+      const dto = timelineEntryDto(entry);
+      const { meta, renditions } = await getAssetPartition(ownerId, dto.photoId);
+      const primary = renditions.find((r) => r.renditionId === meta?.primaryRend);
+      if (!primary) return dto;
+
+      const ptr = await getHashPointer(ownerId, primary.contentHash);
+      if (!ptr?.blockedAttempts) return dto;
+
+      return {
+        ...dto,
+        blockedAttempts: ptr.blockedAttempts,
+        lastAttemptAt: ptr.lastAttemptAt,
+        lastAttemptBy: ptr.lastAttemptBy,
+      };
+    }),
+  );
+
+  return ok({ items, cursor: page.cursor });
 };
 
 interface RenameBody {

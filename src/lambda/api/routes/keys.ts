@@ -1,6 +1,14 @@
-// GET/POST /keys, DELETE /keys/{wrapId} — plan step 1.8.
+// GET/POST /keys, DELETE /keys/{wrapId}, POST /keys/version, PUT /keys/hash-secret
+// — plan step 1.8.
 import { ApiError } from "@archivist/core/errors";
-import { deleteKeyWrap, listKeyWraps, putKeyWrap } from "@archivist/core/repo/keys";
+import {
+  allocateMasterKeyVer,
+  deleteKeyWrap,
+  getCurrentMasterKeyVersion,
+  listKeyWraps,
+  putHashSecret,
+  putKeyWrap,
+} from "@archivist/core/repo/keys";
 import { newUlid } from "@archivist/core/ids";
 import { toIsoUtc } from "@archivist/core/time";
 import type { KeyWrapItem, WrapKind } from "@archivist/core/items";
@@ -10,7 +18,7 @@ import type { ApiRequest, RouteHandler } from "../http";
 // Metadata-only view: never returns another device's unwrapping material.
 type KeyWrapMeta = Pick<
   KeyWrapItem,
-  "wrapId" | "kind" | "label" | "masterKeyVer" | "createdAt" | "lastUsedAt"
+  "wrapId" | "kind" | "label" | "masterKeyVer" | "rotatedAt" | "createdAt" | "lastUsedAt"
 >;
 
 function toMeta(item: KeyWrapItem): KeyWrapMeta {
@@ -21,6 +29,7 @@ function toMeta(item: KeyWrapItem): KeyWrapMeta {
     masterKeyVer: item.masterKeyVer,
     createdAt: item.createdAt,
   };
+  if (item.rotatedAt) meta.rotatedAt = item.rotatedAt;
   if (item.lastUsedAt) meta.lastUsedAt = item.lastUsedAt;
   return meta;
 }
@@ -42,7 +51,6 @@ interface PostKeyBody {
   label: string;
   wrapAlg: "AES-KW" | "RSA-OAEP-256";
   wrappedKey: string;
-  masterKeyVer: string;
   credentialId?: string;
   prfSalt?: string;
   kdfSalt?: string;
@@ -58,8 +66,8 @@ export const postKey: RouteHandler = async (req: ApiRequest) => {
   if (!VALID_KINDS.includes(body.kind)) {
     throw ApiError.validation("kind must be device, passkey or recovery");
   }
-  if (!body.label || !body.wrapAlg || !body.wrappedKey || !body.masterKeyVer) {
-    throw ApiError.validation("label, wrapAlg, wrappedKey and masterKeyVer are required");
+  if (!body.label || !body.wrapAlg || !body.wrappedKey) {
+    throw ApiError.validation("label, wrapAlg and wrappedKey are required");
   }
   if (body.kind === "passkey" && (!body.credentialId || !body.prfSalt)) {
     throw ApiError.validation("passkey wrappings require credentialId and prfSalt");
@@ -68,12 +76,21 @@ export const postKey: RouteHandler = async (req: ApiRequest) => {
     throw ApiError.validation("recovery wrappings require kdfSalt and kdfParams");
   }
 
+  // masterKeyVer is never a request field — see "Master key versions" in
+  // design.md. A client that hasn't called POST /keys/version yet (a fresh
+  // owner, before its first enrolment) has nothing to wrap against.
+  const current = await getCurrentMasterKeyVersion(ownerId);
+  if (!current) {
+    throw ApiError.conflict("no master key version allocated — call POST /keys/version first");
+  }
+
   const wrapId = newUlid();
   const item: Omit<KeyWrapItem, "pk" | "sk"> = {
     wrapId,
     kind: body.kind,
     label: body.label.slice(0, 200),
-    masterKeyVer: body.masterKeyVer,
+    masterKeyVer: current.masterKeyVer,
+    rotatedAt: current.rotatedAt,
     wrapAlg: body.wrapAlg,
     wrappedKey: body.wrappedKey,
     createdAt: toIsoUtc(new Date()),
@@ -84,7 +101,7 @@ export const postKey: RouteHandler = async (req: ApiRequest) => {
   };
 
   await putKeyWrap(ownerId, item);
-  return created({ wrapId });
+  return created({ wrapId, masterKeyVer: current.masterKeyVer });
 };
 
 export const deleteKey: RouteHandler = async (req: ApiRequest) => {
@@ -93,5 +110,29 @@ export const deleteKey: RouteHandler = async (req: ApiRequest) => {
   if (!wrapId) throw ApiError.validation("wrapId is required");
 
   await deleteKeyWrap(ownerId, wrapId);
+  return noContent();
+};
+
+/** Mints the next master key version. Called once at the start of enrolment or
+ * rotation — never per-device — and the result is what POST /keys stamps on
+ * every wrapping written afterward. See "Master key versions" in design.md. */
+export const postKeyVersion: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const result = await allocateMasterKeyVer(ownerId);
+  return created(result);
+};
+
+interface PutHashSecretBody {
+  encHashSecret: string;
+  hashSecretKeyId: string;
+}
+
+export const putKeyHashSecret: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const body = parseJsonBody<PutHashSecretBody>(req);
+  if (!body.encHashSecret || !body.hashSecretKeyId) {
+    throw ApiError.validation("encHashSecret and hashSecretKeyId are required");
+  }
+  await putHashSecret(ownerId, body.encHashSecret, body.hashSecretKeyId);
   return noContent();
 };

@@ -15,3 +15,11 @@ export function toIsoUtc(date: Date | number): string {
 export function isIsoUtc(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value);
 }
+
+/** DynamoDB TTL attributes must be epoch **seconds**, not milliseconds and not
+ * ISO-8601 — a value it can't parse that way is silently never expired, which
+ * surfaces as "nothing ever expired" months later. Used only for purge
+ * tombstones' `expiresAt`; nothing else in this design carries a TTL. */
+export function epochSecondsAfterDays(fromIso: string, days: number): number {
+  return Math.floor(new Date(fromIso).getTime() / 1000) + days * 86400;
+}

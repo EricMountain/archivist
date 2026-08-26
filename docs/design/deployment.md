@@ -38,6 +38,23 @@ on the full controller obligations, and should read
 
 *Not legal advice — worth confirming if an instance ever grows beyond household use.*
 
+### Inviting someone
+
+"Invite-only" is enforced, not just claimed: the Cognito user pool has self-service
+sign-up disabled (`admin_create_user_config.allow_admin_create_user_only = true` in
+`terraform/cognito.tf`). It has to be — the discovery document at
+`/.well-known/archivist.json` publishes the pool ID and client ID unauthenticated, by
+design (the app needs them to attempt a login), so if self-service sign-up were left on,
+anyone who found the domain could register themselves an account directly against
+Cognito's API and the backend would mint them a fully-isolated library on their next
+sign-in. (This was in fact shipped open once, caught, and fixed the same day — see
+`STATUS.md`.)
+
+So the operator creates each account explicitly, with `aws cognito-idp
+admin-create-user`. See `docs/ops/create-user.md` for the exact, verified commands —
+including how to find the pool if you don't have `terraform output` handy, and what
+"enrolling a device" will involve once plan 02 reaches it (it doesn't yet).
+
 ## What an operator provides
 
 * An AWS account. They pay their own bill; see the cost notes in `design.md`.

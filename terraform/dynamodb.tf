@@ -75,6 +75,15 @@ resource "aws_dynamodb_table" "media" {
     enabled = true
   }
 
+  # Purge tombstones only — see "Purge tombstones" in design.md. Nothing else in
+  # this table carries expiresAt, so nothing else is at risk of TTL expiring it.
+  # The asset sweep itself is NOT TTL-driven (that would orphan S3 objects); this
+  # is exclusively for the HASH-pointer tombstones the sweep leaves behind.
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
   # No server_side_encryption block on purpose. Omitting it uses the AWS-owned key,
   # which is free; enabling it switches to an AWS-managed KMS key that bills per
   # request. Metadata being visible to AWS is an accepted decision (see design.md),

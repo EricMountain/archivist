@@ -22,6 +22,7 @@ export async function handler(): Promise<void> {
   for (const ownerId of ownerIds) {
     const settings = await getOwnerSettings(ownerId);
     const trashRetentionDays = settings?.trashRetentionDays ?? 30;
+    const tombstoneRetentionDays = settings?.tombstoneRetentionDays ?? 365;
     const cutoff = cutoffIso(now, trashRetentionDays);
 
     let cursor: string | undefined;
@@ -29,7 +30,7 @@ export async function handler(): Promise<void> {
       const page = await purgeCandidates(ownerId, cutoff, cursor);
       for (const entry of page.items) {
         const photoId = photoIdFromMediaPk(entry.pk);
-        await purgeAsset(ownerId, photoId, purgedAt);
+        await purgeAsset(ownerId, photoId, purgedAt, tombstoneRetentionDays);
       }
       cursor = page.cursor;
     } while (cursor);

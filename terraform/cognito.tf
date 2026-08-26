@@ -19,6 +19,17 @@ resource "aws_cognito_user_pool" "users" {
     }
   }
 
+  # Invite-only, per deployment.md — not a capacity limit, a deliberate choice
+  # about who the operator is a data controller for. Self-service sign-up would
+  # defeat it: the discovery document publishes this pool's client ID and pool ID
+  # unauthenticated (by design — see wellknown.tf), so anyone who finds the
+  # domain could otherwise call Cognito's public SignUp API directly and mint
+  # themselves a fully-isolated library via POST /session/bootstrap. The operator
+  # invites people with `aws cognito-idp admin-create-user`.
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
   password_policy {
     minimum_length    = 12
     require_lowercase = true

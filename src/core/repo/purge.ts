@@ -6,6 +6,7 @@ import { DeleteObjectsCommand } from "@aws-sdk/client-s3";
 import { ddb, tableName } from "../db";
 import { s3 } from "../s3";
 import { hashPtrPk, mediaPk, pathPtrPk, ptrSk, stemPtrPk } from "../keys";
+import { epochSecondsAfterDays } from "../time";
 import { getAssetPartition } from "./media";
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -30,6 +31,7 @@ export async function purgeAsset(
   ownerId: string,
   photoId: string,
   purgedAt: string,
+  tombstoneRetentionDays: number,
 ): Promise<PurgeAssetResult> {
   const { meta, renditions, facets } = await getAssetPartition(ownerId, photoId);
   if (!meta) return { itemsDeleted: 0, objectsDeleted: 0 };
@@ -99,8 +101,16 @@ export async function purgeAsset(
       new UpdateCommand({
         TableName: tableName(),
         Key: { pk: hashPtrPk(ownerId, rendition.contentHash), sk: ptrSk() },
-        UpdateExpression: "SET kind = :purged, purgedAt = :now REMOVE photoId, renditionId",
-        ExpressionAttributeValues: { ":purged": "purged", ":now": purgedAt },
+        // blockedAttempts/lastAttemptAt/lastAttemptBy are deliberately untouched:
+        // they carry over from any blocked re-upload attempts during the trash
+        // window — "re-uploads refused, across trash and purge" in design.md.
+        UpdateExpression:
+          "SET kind = :purged, purgedAt = :now, expiresAt = :exp REMOVE photoId, renditionId",
+        ExpressionAttributeValues: {
+          ":purged": "purged",
+          ":now": purgedAt,
+          ":exp": epochSecondsAfterDays(purgedAt, tombstoneRetentionDays),
+        },
       }),
     );
   }

@@ -4,7 +4,7 @@
 import type { RouteHandler } from "./http";
 import { getHealth } from "./routes/health";
 import { postSessionBootstrap } from "./routes/session";
-import { deleteKey, getKeys, postKey } from "./routes/keys";
+import { deleteKey, getKeys, postKey, postKeyVersion, putKeyHashSecret } from "./routes/keys";
 import { postUpload } from "./routes/uploads";
 import {
   deletePhoto,
@@ -39,6 +39,8 @@ export const routes: Record<string, RouteEntry> = {
   "GET /keys": { handler: getKeys, authMode: "owner" },
   "POST /keys": { handler: postKey, authMode: "owner" },
   "DELETE /keys/{wrapId}": { handler: deleteKey, authMode: "owner" },
+  "POST /keys/version": { handler: postKeyVersion, authMode: "owner" },
+  "PUT /keys/hash-secret": { handler: putKeyHashSecret, authMode: "owner" },
 
   "POST /uploads": { handler: postUpload, authMode: "owner" },
 

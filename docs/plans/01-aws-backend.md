@@ -117,6 +117,16 @@ facet query, trash move and restore.
 - Optional Google federation behind a `var.enable_google_idp` flag, default false — an
   operator may not want a Google dependency.
 - Output the user pool ID and client ID; the discovery document (1.14) serves them.
+- **`admin_create_user_config.allow_admin_create_user_only = true`. This is not
+  optional.** The discovery document (1.14) publishes the pool ID and client ID
+  unauthenticated, by design — that's fine only because getting in is supposed to
+  require an invitation. If self-service sign-up is left enabled (Cognito's
+  default), anyone who finds the domain can call Cognito's public `SignUp` API
+  directly, obtain a JWT with nothing but an email address, and `POST
+  /session/bootstrap` (1.7) will happily mint them a fully-isolated library. That
+  contradicts the invite-only model in `deployment.md` and was shipped live once
+  before being caught and fixed — see `STATUS.md`. With this set, the operator
+  invites people via `aws cognito-idp admin-create-user`.
 
 **Done when.** `terraform apply` creates the pool, and a passkey can be registered and
 used to obtain a JWT via the AWS CLI or hosted UI.

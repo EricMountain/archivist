@@ -26,6 +26,9 @@ in the Terraform or the app may hardcode a domain, account or region. See
   plus every access pattern as a real query against those rows.
 * `docs/design/android.md` — design and tech stack for **Archivist**, the Android
   client (`fr.enry.archivist`).
+* `docs/ops/` — operator runbooks: step-by-step, command-verified how-tos for running a
+  deployed instance (e.g. `create-user.md`). Different job from `deployment.md`, which
+  explains the model; these explain the exact commands.
 * `docs/play/data-safety.md` — answers for the Play Console Data Safety form.
 * `docs/play/privacy-policy.md` — the app's published privacy policy. Covers software
   that receives nothing; its central claim is "the app sends nothing to the author",

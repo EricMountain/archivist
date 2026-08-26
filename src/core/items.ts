@@ -292,6 +292,10 @@ export interface OwnerSettingsItem {
    * Server-owned: a client must never mint a version itself, or two concurrent
    * rotations label two different keys the same. Absent until first enrolment. */
   masterKeyVerSeq?: number;
+  /** When the current `masterKeyVerSeq` was minted, set atomically alongside it by
+   * `POST /keys/version`. Read back by `POST /keys` and stamped onto every `W#`
+   * item of that version — like `masterKeyVer` itself, never client-supplied. */
+  rotatedAt?: string;
   createdAt: string;
 }
 

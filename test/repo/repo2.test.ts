@@ -262,7 +262,7 @@ describe.skipIf(!RUN)("purge sweep", () => {
     });
     await trashAsset(OWNER, meta.photoId, toIsoUtc(new Date()), "test-device");
 
-    const result = await purgeAsset(OWNER, meta.photoId, toIsoUtc(new Date()));
+    const result = await purgeAsset(OWNER, meta.photoId, toIsoUtc(new Date()), 365);
     expect(result.objectsDeleted).toBe(1);
     expect(result.itemsDeleted).toBeGreaterThan(0);
 
@@ -303,7 +303,7 @@ describe.skipIf(!RUN)("account deletion", () => {
     // A pre-existing tombstone from an earlier, unrelated purge — deletion must
     // reach this too, not just live data.
     await trashAsset(ownerId, meta.photoId, toIsoUtc(new Date()), "test-device");
-    await purgeAsset(ownerId, meta.photoId, toIsoUtc(new Date()));
+    await purgeAsset(ownerId, meta.photoId, toIsoUtc(new Date()), 365);
     expect((await getHashPointer(ownerId, rend.contentHash))).toBeDefined();
 
     const result = await deleteOwnerData(ownerId, userId);

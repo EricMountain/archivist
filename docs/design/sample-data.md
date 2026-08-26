@@ -460,6 +460,7 @@ O#01J7XQP4M2N8VBKD3RTYFW9GHC          #SETTINGS     ownerId      01J7XQP4M2N8VBK
                                                     encHashSecret   <b64>
                                                     hashSecretKeyId mk-3
                                                     masterKeyVerSeq 3
+                                                    rotatedAt    2026-03-14T08:02:11.000Z
                                                     createdAt    2026-08-08T09:12:00.000Z
 
 U#01J7XRB6K3PQ8WNVD2MTYX4HFG          #PROFILE      userId       01J7XRB6K3PQ8WNVD2M…

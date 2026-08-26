@@ -140,6 +140,10 @@ encHashSecret      <b64>          # the owner's hash secret, wrapped by the mast
 hashSecretKeyId    mk-3           # key. Written by the first client at enrolment;
                                   # absent until then. See "`contentHash` is HMAC'd"
 masterKeyVerSeq    3              # allocator for master key versions — see below
+rotatedAt          2026-03-14T08:02:11.000Z # when masterKeyVerSeq was last bumped;
+                                  # set atomically alongside it, read back by
+                                  # POST /keys so it never needs the client to
+                                  # echo a value the server itself minted
 createdAt          2026-08-08T09:12:00.000Z
 
 # U#<userId> / #PROFILE
@@ -658,6 +662,16 @@ collide is worse than no counter, because it looks trustworthy.
 Allocation costs no extra round trip, since rotation already has to POST the new `W#`
 items. It also gives the natural place to refuse a rotation while one is in flight —
 two concurrent sweeps chase a moving target.
+
+Same reasoning extends to `rotatedAt`: it is stamped on `#SETTINGS` by the same
+`UpdateItem` that bumps `masterKeyVerSeq`, and `POST /keys` reads both back rather
+than accepting either from the client. The alternative — the client echoes back the
+`rotatedAt` `POST /keys/version` handed it a moment earlier, on every subsequent
+`POST /keys` call for that version — would work, but it's an unforced trust of
+client-supplied version metadata in a design that otherwise never accepts one
+(`ownerId`, `photoId`, `uploadedAt` are all server-derived at ingest for the same
+reason). Reading it back costs one extra attribute on a `GetItem` the handler already
+makes.
 
 An earlier draft used `mk-<YYYY>-<MM>`. That encoded *data* in an *identifier*, the
 same mistake this design already rejects for `photoId` versus `path`, and it collided

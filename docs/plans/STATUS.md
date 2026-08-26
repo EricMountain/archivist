@@ -21,32 +21,47 @@ Status values:
 | --- | --- | --- |
 | 1.1 Repo scaffolding | done | `make test` runs typecheck + vitest clean. |
 | 1.2 Key builders and item types | done | `test/keys.test.ts` — 22/22 pass, byte-equal against `sample-data.md`. |
-| 1.3 DynamoDB access layer | partial | `src/core/repo/*.ts` written. Its own integration tests (`test/repo/repo.test.ts`, `repo2.test.ts`) are gated on `DYNAMODB_ENDPOINT`/`S3_ENDPOINT` env vars and are skipped without them — not run this pass. |
-| 1.4 Cognito user pool | partial | `terraform/cognito.tf` written. Not verified applied — no `terraform plan`/`apply` run this pass. |
-| 1.5 API Gateway and API Lambda | partial | `terraform/api.tf`, `iam.tf`, `src/lambda/api/index.ts`, `router.ts` written, routes wired. Not verified deployed; `GET /health` not curled against a live URL. |
-| 1.6 Authorisation middleware | partial | `src/lambda/api/auth.ts` written. The cross-owner-read test the step requires needs a `dev` deployment — not run. |
-| 1.7 First sign-in bootstrap | partial | `routes/session.ts` wired. Integration test exists in `repo2.test.ts` but is skipped (see 1.3). |
-| **1.8 Key wrapping endpoints** | **partial, known-broken** | The plan's own "partly built, contradicts the design" note is still true as of 2026-08-26: `POST /keys` in `routes/keys.ts` still requires a client-supplied `masterKeyVer`; there is no `POST /keys/version` route, no `allocateMasterKeyVer` in `repo/keys.ts`, and no `PUT /keys/hash-secret` route. Needs the reconciliation the plan describes before anything else touches this file. |
-| 1.9 Upload API | partial | `routes/uploads.ts` written (~400 lines), covers the documented sequence (validate, hash check, stem resolution, transaction write, presign). Not independently verified end to end against a deployment. |
-| 1.10 S3 event handler | partial | `src/lambda/s3event/index.ts`, `terraform/s3_events.tf` written. `test/lambda/s3event.test.ts` exists but is skipped (see 1.3). |
-| 1.11 Read endpoints | partial | `routes/photos.ts`, `routes/facets.ts` written and wired into `router.ts` (`GET /photos`, `/photos/{id}`, `/facets`, `/facets/{type}/{value}`). Not independently verified. |
-| 1.12 Mutations | partial | `PATCH .../renditions/{rid}`, `DELETE /photos/{id}`, `DELETE .../renditions/{rid}`, `POST .../restore`, `GET /trash` all wired in `router.ts`. Not independently verified. |
-| **1.13 Purge sweep** | **partial, gap found** | `src/lambda/purge/index.ts` + `src/core/repo/purge.ts` implement the S3 `DeleteObjects` + `BatchWriteItem` sweep and convert each `HASH` pointer to `kind: purged`. But **`expiresAt` is never set on the tombstone**, and `terraform/dynamodb.tf` has no TTL attribute configured. The step's "Done when" (a tombstone carrying an `expiresAt` DynamoDB will actually expire) is not met. |
-| 1.14 CloudFront, certificate, discovery | partial | `terraform/cloudfront.tf`, `dns.tf`, `wellknown.tf` written. Not verified deployed; discovery document not curled. |
-| 1.15 Account deletion | partial | `routes/account.ts` written and wired (`DELETE /account`). Not independently verified. |
+| 1.3 DynamoDB access layer | done | Ran the DynamoDB-Local + MinIO gated suite this pass (`DYNAMODB_ENDPOINT`/`S3_ENDPOINT` etc. set): 47/47 pass across `test/keys.test.ts`, `test/repo/{repo,repo2,repo3}.test.ts`, `test/lambda/{s3event,keys,uploads}.test.ts` — create asset, attach rendition, timeline pagination + cursor, facet query, trash/restore, rename, primaryRend re-election, purge (S3 + DynamoDB), account deletion, key-wrap invariants, master-key allocation, hash secret, blocked-attempt tracking. |
+| 1.4 Cognito user pool | partial | **Deployed live** 2026-08-26 (`terraform apply` to the operator's real `prod` instance). Confirmed via `aws cognito-idp describe-user-pool`: `Policies.SignInPolicy.AllowedFirstAuthFactors = [WEB_AUTHN, PASSWORD]`, `MfaConfiguration: OFF`, `UsernameAttributes: [email]`. `WebAuthnConfiguration` doesn't appear in that API's response at all (not even null vs. absent — the field seems to not be surfaced by `DescribeUserPool` in this AWS CLI/API version); indirectly confirmed instead via `terraform plan` reporting zero drift after apply, which reads the resource back through the provider's own (different) code path. **Not verified**: the step's literal "Done when" — a passkey registered and used to obtain a JWT — needs an interactive WebAuthn ceremony (a real browser + authenticator), which nothing in this session can perform headlessly. |
+| — | **security fix, same day** | **`terraform/cognito.tf` shipped with self-service sign-up left on** (Cognito's default — `admin_create_user_config` was never set). Since the discovery document publishes the pool ID and client ID unauthenticated by design, this meant anyone who found the domain could call Cognito's public `SignUp` API directly and `POST /session/bootstrap` would mint them a fully-isolated library — not a read of the operator's data, but unauthorized resource provisioning against the operator's AWS bill, and a direct contradiction of `deployment.md`'s invite-only model. Caught by the user asking how bootstrap was actually gated, not by anything in this session's own review. Checked `aws cognito-idp list-users` before fixing: zero users existed, so the live exposure window (deploy → fix, a few hours) wasn't exploited. Fixed: `admin_create_user_config.allow_admin_create_user_only = true`, applied live, confirmed via `describe-user-pool` (`true`) and a zero-drift `terraform plan`. Step 1.4's plan text and `deployment.md` (new "Inviting someone" section, `admin-create-user`) updated so a future deployment doesn't reintroduce this. |
+| 1.5 API Gateway and API Lambda | done | **Deployed live.** The API Gateway's own invoke URL's `/health` → `200 {"status":"ok"}`; the same URL's `/photos` (no auth header) → `401`. Both also verified through CloudFront at `https://photos.example.com/api/health` → `200`. |
+| 1.6 Authorisation middleware | partial | `src/lambda/api/auth.ts` written and live (the 401s above prove the JWT authorizer is wired and rejecting unauthenticated calls). Every lambda-level *test* this pass still constructs `req.auth` directly rather than going through `resolveAuth`, so `resolveAuth`'s own JWT→ownerId resolution is unexercised by any test. The cross-owner-read test the step specifically requires needs two real signed-in identities — blocked on the same interactive passkey ceremony as 1.4. |
+| 1.7 First sign-in bootstrap | done | `test/repo/repo2.test.ts`'s bootstrap test (run this pass): two calls for the same issuer/subject return the same userId/ownerId and only the first reports `created: true`. |
+| 1.8 Key wrapping endpoints | done | Reconciled 2026-08-26: `POST /keys` no longer accepts `masterKeyVer` (server derives it from `#SETTINGS` via `getCurrentMasterKeyVersion`, added `rotatedAt` to `OwnerSettingsItem`/`design.md`/`sample-data.md` so it doesn't need echoing from the client either); added `POST /keys/version` (`allocateMasterKeyVer`, atomic `ADD`) and `PUT /keys/hash-secret` (`putHashSecret`), wired into `router.ts` and `terraform/api.tf`. Verified against DynamoDB Local: `test/lambda/keys.test.ts` — masterKeyVer field is ignored even when present, enrolment after allocation, **two concurrent `POST /keys/version` calls via `Promise.all` return `mk-1`/`mk-2`** (the specific race the step's "Done when" calls out), hash-secret round-trip. `test/repo/repo2.test.ts`'s existing wrap-invariant coverage (enrol two devices, delete-to-one rejected) still passes. |
+| 1.9 Upload API | partial | `routes/uploads.ts` covers the documented sequence. Added this pass: the hash-check now distinguishes a live-but-trashed hit (record a blocked attempt, or restore if `reAddDeleted`) from an ordinary live duplicate, and a tombstone hit now records `blockedAttempts`/`lastAttemptAt`/`lastAttemptBy` and pushes `expiresAt` forward — verified in `test/lambda/uploads.test.ts` against DynamoDB Local + MinIO (all three hash-check branches, S3 objects included). **Not verified**: the literal "IMG_1.CR3 then IMG_1.JPG → one asset, JPEG primary" and "concurrent uploads of both produce the same result" scenarios via `postUpload` itself — that grouping logic is only verified at the `repo/ingest.ts` layer (`test/repo/repo.test.ts`), not through the HTTP route end to end. |
+| 1.10 S3 event handler | done | `test/lambda/s3event.test.ts` run against DynamoDB Local + MinIO this pass: status stays `processing` until every declared object (original + each thumb) exists with the declared size, flips to `ready` once they all do, and flips to `failed` on a size mismatch. |
+| 1.11 Read endpoints | partial | `routes/photos.ts`, `routes/facets.ts` wired into `router.ts`. Not independently verified — no test exercises `GET /photos`, `/photos/{id}`, `/facets`, or `/facets/{type}/{value}` directly. |
+| 1.12 Mutations | partial | Rename/delete/restore verified at the repo layer (`test/repo/repo2.test.ts`: rename moves the PATH pointer, primaryRend re-election, last-rendition trashes the asset). Added this pass: `GET /trash` now enriches each entry with its primary rendition's `blockedAttempts`/`lastAttemptAt`/`lastAttemptBy` when non-zero — verified in `test/lambda/uploads.test.ts`. **Not verified**: `PATCH .../renditions/{rid}`, `DELETE /photos/{id}`, `DELETE .../renditions/{rid}`, `POST .../restore` through their actual route handlers (only through the repo functions they call). |
+| 1.13 Purge sweep | done | Fixed this pass: `purgeAsset` now takes `tombstoneRetentionDays` and sets `expiresAt` (epoch seconds, via the new `epochSecondsAfterDays` helper) on every tombstone conversion, without touching pre-existing `blockedAttempts`/`lastAttemptAt`/`lastAttemptBy`; `src/lambda/purge/index.ts` reads `tombstoneRetentionDays` from owner settings (default 365) and threads it through. `terraform/dynamodb.tf` now has `ttl { attribute_name = "expiresAt" enabled = true }`. Verified: `test/repo/repo3.test.ts` confirms `expiresAt` is set on purge and pushed further out by a later blocked attempt; `terraform validate`/`fmt` clean. **Not verified**: TTL actually expiring an item on a real table (DynamoDB Local doesn't emulate TTL expiry; needs a live deployment and a wait). |
+| 1.14 CloudFront, certificate, discovery | done | **Deployed live.** `curl https://photos.example.com/.well-known/archivist.json` → `200`, valid ACM cert (`SSL certificate verify ok`, issued by Amazon, matches the domain), correct body (`apiBase`, `region`, `cognito.userPoolId`/`clientId`, `cryptoVersion: 1`, `instanceName`). Direct S3 (`https://archivist-originals-....s3.eu-west-1.amazonaws.com/...` and the web bucket) → `403`. `/media/*`, `/thumbs/*`, `/api/*` all resolve through their CloudFront Functions and origins without routing errors. |
+| 1.15 Account deletion | partial | `routes/account.ts` written and wired. `deleteOwnerData` verified at the repo layer this pass (`test/repo/repo2.test.ts`: removes media, a pre-existing purge tombstone, S3 objects, and the owner-registry row). The route handler itself (confirmation-token check, Cognito `AdminDeleteUser` call) is not independently verified — would need a real signed-in user to delete, which nobody should do against the live `prod` instance just to test it. |
 | 1.16 Crypto format spec and conformance vectors | done | `docs/design/crypto-format.md` is the spec. `tools/gen-vectors/generate.py` produces all 22 required cases into `testdata/vectors/`; every case self-verified at generation time. |
 
-**Deployment status is untracked here on purpose** — none of plan 01's `terraform apply` has been verified against a live `dev` instance in a Claude session (no AWS credentials sourced). "done"/"partial" above means *code*, not *deployed*. Plan 02 steps 2.3+ need an actual deployed `dev` instance regardless of what this table says about the code.
+**Deployment status, as of 2026-08-26:** `terraform apply` run against the operator's
+real `prod` instance (see `private/instance/` for the actual account/region/domain)
+using the operator's own AWS profile, at the user's explicit direction — 65 resources
+added, 1 changed (DynamoDB TTL
+enabled in-place), 0 destroyed, no errors. A follow-up `terraform plan` reports zero
+drift. This is the operator's real self-hosted instance, not a throwaway `dev`
+environment — there is no separate `dev`; `environment = "prod"` in
+`private/instance/terraform.tfvars`. Live-verified this pass: `GET /health` (direct and
+via CloudFront), unauthenticated 401s, the discovery document over a valid cert, and
+direct-S3 403s on all three buckets. **Not live-verified:** anything requiring a signed-in
+user (passkey enrolment, uploads, cross-owner isolation, account deletion) — all of it
+needs an interactive WebAuthn ceremony this session cannot perform headlessly. The table
+above marks each step's status independently of this note; read both.
 
 ## Plan 02 — Android MVP
 
-Depends on plan 01 being deployed to `dev` and 1.16's vectors existing (they do).
+Depended on plan 01 being deployed and 1.16's vectors existing — both are now true (see
+the deployment note above; there is no separate `dev`, the app would connect to the
+operator's real `prod` instance).
 
 | Step | Status | Notes |
 | --- | --- | --- |
 | 2.1 Project scaffolding | done | `./gradlew assembleDebug` produces a debug APK. |
 | 2.2 Crypto module | done | `:core:crypto:testDebugUnitTest` — all 22 conformance vectors pass, plus a 100 MB streaming round-trip and a truncated-ciphertext-fails test. |
-| 2.3 Instance connection | not started | Blocked on plan 01 being deployed to `dev` to connect to. |
+| 2.3 Instance connection | not started | No longer blocked — plan 01 is deployed to the operator's instance and its discovery document is live. |
 | 2.4 Authentication | not started | |
 | 2.5 Key enrolment and recovery code | not started | |
 | 2.6 Local storage | not started | |
@@ -62,6 +77,36 @@ Depends on plan 01 being deployed to `dev` and 1.16's vectors existing (they do)
 | 2.16 CI and release | not started | |
 
 ## Last audit
+
+2026-08-26 (later same day) — Claude (Sonnet 5). Picked up from the audit below.
+Reconciled step 1.8 (removed client-supplied `masterKeyVer` from `POST /keys`, added
+`POST /keys/version` and `PUT /keys/hash-secret`, added `rotatedAt` to `#SETTINGS` —
+documented in `design.md`/`sample-data.md`); fixed step 1.13 (tombstone `expiresAt` +
+DynamoDB TTL); added the blocked-re-upload-attempt tracking steps 1.9/1.12 required
+(trashed-live hit records-or-restores, tombstone hit records and pushes `expiresAt`
+forward, `GET /trash` surfaces it). Ran the full DynamoDB-Local + MinIO gated suite throughout
+(47/47 passing by the end, across 7 test files — 11 tests added this pass for the new
+coverage) plus `make build`/`typecheck`/`terraform fmt`+`validate`. Then, at the user's explicit direction,
+sourced the operator's AWS profile and ran `terraform plan` (65 add / 1 change / 0 destroy,
+reviewed before proceeding) and `terraform apply` against the real `prod` instance —
+succeeded with 0 errors, confirmed with a zero-drift `terraform plan` afterward and live
+`curl`s of `/health`, an unauthenticated route, the discovery document, and direct-S3
+403s. Did not perform any interactive-auth-gated verification (passkey enrolment,
+authenticated uploads, cross-owner isolation, account deletion) — see the per-step notes
+above for exactly what that leaves unverified.
+
+**Same day, follow-up.** The user asked what actually stops a stranger from calling
+`POST /session/bootstrap` for themselves — a question this session's own review hadn't
+raised. Investigation found self-service Cognito sign-up was still enabled on the live
+pool (`admin_create_user_config` was never set in `cognito.tf`), which combined with the
+discovery document's unauthenticated `clientId`/`userPoolId` meant anyone who found the
+domain could self-register and get a fully-isolated library. Checked for actual
+exploitation (`aws cognito-idp list-users` — zero users) before fixing live. See the "—
+| security fix, same day" row under 1.4 above for the full account. Worth naming
+directly: this should have been caught while writing 1.4/1.7, not after deploying, and
+wasn't until asked about it.
+
+---
 
 2026-08-26 — Claude (Sonnet 5). Method: read every step's "Files" against the actual
 tree, ran `make test` (backend) and `./gradlew :core:crypto:testDebugUnitTest` (Android),
