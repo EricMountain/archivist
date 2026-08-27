@@ -23,6 +23,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import fr.enry.archivist.ui.onboarding.ConnectScreen
 import fr.enry.archivist.ui.onboarding.ConnectUiState
 import fr.enry.archivist.ui.onboarding.ConnectViewModel
+import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.SignInScreen
 import fr.enry.archivist.ui.theme.ArchivistTheme
 
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
 private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
     val connectState by connectViewModel.uiState.collectAsStateWithLifecycle()
     var signedIn by remember { mutableStateOf(false) }
+    var unlocked by remember { mutableStateOf(false) }
 
     Scaffold { innerPadding ->
         when (val s = connectState) {
@@ -50,11 +52,15 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                 Centered(Modifier.padding(innerPadding)) { CircularProgressIndicator() }
 
             is ConnectUiState.Connected ->
-                if (signedIn) {
-                    // Placeholder until 2.5+ adds a real screen to land on.
-                    Centered(Modifier.padding(innerPadding)) { Text("Signed in to ${s.instanceName}") }
-                } else {
-                    SignInScreen(onSignedIn = { signedIn = true }, modifier = Modifier.padding(innerPadding))
+                when {
+                    unlocked ->
+                        // Placeholder until 2.6+ adds a real screen to land on.
+                        Centered(Modifier.padding(innerPadding)) { Text("Unlocked on ${s.instanceName}") }
+
+                    signedIn ->
+                        EnrolmentScreen(onUnlocked = { unlocked = true }, modifier = Modifier.padding(innerPadding))
+
+                    else -> SignInScreen(onSignedIn = { signedIn = true }, modifier = Modifier.padding(innerPadding))
                 }
 
             is ConnectUiState.NeedsConnection ->

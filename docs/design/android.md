@@ -270,20 +270,58 @@ Two separate ceremonies, for the reasons in `design.md`:
   HTTPS JSON-RPC (`X-Amz-Target` header, no SigV4) — confirmed live — which is what "not
   using AWS Amplify" above assumes but is worth stating plainly here too.
 * **Key unlock**: an EC-P256 keypair in Android Keystore, `setUserAuthenticationRequired(true)`
-  so it sits behind biometrics. It unwraps the master key into memory at app start via
-  ECDH-ES+AES-KW (`EcdhEs.kt` in `:core:crypto`) — not RSA-OAEP-256, which plan step
+  so it sits behind the lock screen. It unwraps the master key into memory at app start
+  via ECDH-ES+AES-KW (`EcdhEs.kt` in `:core:crypto`) — not RSA-OAEP-256, which plan step
   2.4a found a real Keystore-resident RSA key's decrypt refuses on real hardware (see
   the resolved open question 1 in `design.md` and "Master key wrapping" in
   `crypto-format.md`). **Not confirmed hardware-backed on every device**: the one phone
   tested so far generated its EC-P256 key in software, not the TEE, when StrongBox
   wasn't requested — worth checking on more devices before assuming this key gets the
-  same isolation the RSA one was meant to.
+  same isolation the RSA one was meant to. **Needs API 31+**: `PURPOSE_AGREE_KEY` (the
+  Keystore purpose that lets an EC key be used with `KeyAgreement` at all) doesn't exist
+  before Android 12, and `minSdk` is 28 — see open question 3 in `design.md`, found
+  while implementing plan step 2.5. `DeviceKeystore.ensureKeyPair()` (`:core:crypto`)
+  fails clearly with `DeviceKeystoreUnsupportedException` below that rather than
+  crashing, but there is currently no working replacement route for API 28–30.
 
-The master key is held in memory only — never in SharedPreferences, never on disk, and
-cleared on `onTrimMemory`. Re-unwrapping is a biometric prompt, which is cheap.
+  **Time-based auth, not auth-per-use — a deliberate deviation from the original
+  "biometric prompt" framing above, found and fixed by actually running plan step 2.5 on
+  an emulator (API 37), not assumed.** The key is `setUserAuthenticationParameters(300,
+  AUTH_BIOMETRIC_STRONG or AUTH_DEVICE_CREDENTIAL)`: usable for 5 minutes after the user
+  last unlocked the device, with no explicit in-app prompt. The alternative —
+  auth-per-use, a fresh prompt for every unwrap — was tried first and found unusable:
+  it requires the operation to be driven through a `BiometricPrompt.CryptoObject`
+  ceremony, and the `CryptoObject(KeyAgreement)` overload that needs only exists in
+  `androidx.biometric` 1.4.0-alpha06+ — there is no stable release with it (stable is
+  still 1.1.0, from 2021), so shipping it would mean an indefinite alpha dependency for
+  this one feature. The platform-level `android.hardware.biometrics.BiometricPrompt`
+  (no AndroidX) does support it without the alpha dependency, but re-plumbing the whole
+  unwrap path through that ceremony wasn't attempted once the simpler, equally
+  official, time-based mode confirmed working end to end on real Keystore hardware.
+  `UserNotAuthenticatedException` (thrown when the window has lapsed — confirmed live
+  this is the *ordinary* case on a freshly booted or long-idle device, not just a
+  stale-window edge case) is handled explicitly: `EnrolmentRepository`/
+  `EnrolmentViewModel`/`EnrolmentScreen` show a "Unlock your device" screen backed by
+  `KeyguardManager.createConfirmDeviceCredentialIntent`, then retry.
 
-Enrolment writes a `kind: device` wrapping item. The recovery code path exists here
-too, for a phone that isn't the first device.
+The master key is held in memory only (`MasterKeyHolder`, `:app`) — never in
+SharedPreferences, never on disk — and cleared from `ArchivistApplication.onTrimMemory`,
+per plan step 2.5. Re-unwrapping needs the device to have been unlocked within the last
+5 minutes (see above); if not, the app asks the user to unlock rather than crashing.
+Nothing past the initial unlock screen yet re-prompts if the key is cleared mid-session
+by `onTrimMemory`; later steps that read the master key should check
+`MasterKeyHolder.current` rather than assume it stays set for the app's whole lifetime.
+
+Enrolment (`KeyCustody.kt` in `:core:crypto`, `EnrolmentRepository`/`EnrolmentViewModel`/
+`EnrolmentScreen` in `:app`) writes a `kind: device` wrapping item — generated in memory
+and only POSTed once the user has typed the recovery code back, per "Enrolment is not
+complete until..." in `crypto-format.md`. The recovery code path exists here too, for a
+phone that isn't the first device, and doubles as the re-enrolment path after
+`KeyPermanentlyInvalidatedException` (a lock-screen change): the dead Keystore entry and
+its server-side `W#` item are both retired, the latter only *after* a replacement wrap
+exists, since the server refuses a delete that would leave fewer than two wrappings.
+**A later device currently can't fetch the owner's `hashSecret`** — see open question 4
+in `design.md`; not a gap in this step's own scope, but one plan step 2.10 will hit.
 
 ## Cross-client format compatibility
 

@@ -1457,3 +1457,36 @@ for `facetSk`. Rare, bounded to one partition, and doable in a single transactio
    `"delegate_permission/common.get_login_creds"` as the relation — worth double-checking
    against Google's current asset-links spec for passkeys specifically before writing it,
    rather than assuming that relation string from memory the way this note is doing.
+
+3. **`PURPOSE_AGREE_KEY` needs API 31; `minSdk` is 28 — no device on API 28–30 has a
+   working hardware-backed device-wrap route at all.** Found while implementing plan
+   step 2.5, from the Android platform's own `ApiSince=31` annotation on
+   `KeyProperties.PURPOSE_AGREE_KEY` (confirmed via the platform docs, not a live device
+   — no API 28–30 device was available this session). 2.4a's own test device (a
+   Motorola Edge 20 Lite) happens to run Android 13, so it couldn't have surfaced this
+   either way. Since RSA-OAEP-256 decrypt on a Keystore-resident key was already ruled
+   out by 2.4a independent of StrongBox, this means: **on API 28–30 there is currently no
+   algorithm this design has that lets a Keystore-resident key wrap the master key at
+   all.**
+
+   `DeviceKeystore.ensureKeyPair()` (`:core:crypto`) guards this explicitly — it throws
+   `DeviceKeystoreUnsupportedException` below API 31 rather than letting the platform
+   fail with a confusing `IllegalArgumentException` out of `KeyGenParameterSpec.Builder`
+   — so the app fails clearly instead of crashing, but the underlying gap is a product
+   decision, not something 2.5 can resolve by itself. Two ways out, neither taken yet:
+   raise `minSdk` to 31 (losing Android 9–11 devices entirely), or design a
+   software-backed fallback wrap for older devices (closer to the web client's
+   non-extractable-`CryptoKey`-in-IndexedDB approach than to anything Android-specific
+   today, and a real design change, not a two-line fix). Worth resolving before this
+   ships to anyone running an older device, not necessarily before 2.6+ continues.
+
+4. **A later device has no way to fetch the owner's `hashSecret`.** Found while
+   implementing plan step 2.5. `encHashSecret`/`hashSecretKeyId` live on the `#SETTINGS`
+   item (see "`contentHash` is HMAC'd" above) and are written once, by the first device,
+   via `PUT /keys/hash-secret` — but no endpoint in `api.md`'s route table reads them
+   back. A second device can fully recover the master key via the recovery code (plan
+   step 2.5's own scope), but has no way to learn the wrapped `hashSecret` that key would
+   unwrap, which plan step 2.10 (upload worker) needs for dedup (`contentHash`). Not a
+   blocker for 2.5's own "Done when" — it only concerns what happens once a second
+   device starts uploading — but needs a route (e.g. `GET /keys/hash-secret`, `Owner`-gated
+   like everything else under `/keys`) added to plan 01 before 2.10 can rely on it.

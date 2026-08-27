@@ -9,6 +9,8 @@ import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.Module
+import fr.enry.archivist.crypto.DeviceKeyProvider
+import fr.enry.archivist.crypto.DeviceKeystore
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -54,4 +56,13 @@ object LocalStorageModule {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
     }
+
+    /** `:core:crypto` has no `javax.inject`/Hilt dependency of its own (deliberately —
+     * it's a plain crypto module, not an Android-app-framework one), so
+     * [DeviceKeystore]'s constructor can't carry `@Inject` itself; provided here
+     * instead, bound to the [DeviceKeyProvider] interface so tests can substitute a
+     * fake — see that interface's doc for why. */
+    @Provides
+    @Singleton
+    fun provideDeviceKeyProvider(): DeviceKeyProvider = DeviceKeystore()
 }
