@@ -12,6 +12,7 @@ import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.spec.RSAPrivateKeySpec
 import java.security.spec.RSAPublicKeySpec
+import javax.crypto.KeyAgreement
 
 /**
  * "Every client's test suite decrypts these fixtures. A client that cannot is broken,
@@ -72,6 +73,7 @@ class ConformanceVectorTest {
                 "recovery-checksum" -> runRecoveryChecksum(case)
                 "hkdf-passkey" -> runHkdfPasskey(case)
                 "byte-range" -> runByteRange(case)
+                "ecdh-es" -> runEcdhEs(case)
                 else -> fail("unknown vector mode: ${case.getString("mode")}")
             }
         }
@@ -204,6 +206,49 @@ class ConformanceVectorTest {
         val expected = hex(case.getString("expectedKek"))
 
         assertArrayEquals(id, expected, Hkdf.sha256(prfOutput, ByteArray(0), info, 32))
+    }
+
+    private fun runEcdhEs(case: JSONObject) {
+        val id = case.getString("id")
+        val staticPrivateKey = EcdhEs.privateKeyFromScalar(BigInteger(case.getString("staticPrivateScalar"), 16))
+        val staticPublicKey = EcdhEs.decodePoint(hex(case.getString("staticPublicKey")))
+        val ephemeralPrivateKey = EcdhEs.privateKeyFromScalar(BigInteger(case.getString("ephemeralPrivateScalar"), 16))
+        val epk = hex(case.getString("ephemeralPublicKey"))
+        val ephemeralPublicKey = EcdhEs.decodePoint(epk)
+        val info = case.getString("info").toByteArray(Charsets.US_ASCII)
+        val expectedSharedSecret = hex(case.getString("expectedSharedSecret"))
+        val expectedKek = hex(case.getString("expectedKek"))
+        val expectedWrapped = hex(case.getString("expectedWrapped"))
+        val expectedMasterKey = hex(case.getString("expectedMasterKey"))
+
+        // Both directions of the agreement must land on the same secret: the device
+        // (static private + ephemeral public) and the wrapper (ephemeral private +
+        // static public) never share more than their two public keys in the real
+        // protocol.
+        val fromDevice = KeyAgreement.getInstance("ECDH").apply {
+            init(staticPrivateKey)
+            doPhase(ephemeralPublicKey, true)
+        }.generateSecret()
+        val fromWrapper = KeyAgreement.getInstance("ECDH").apply {
+            init(ephemeralPrivateKey)
+            doPhase(staticPublicKey, true)
+        }.generateSecret()
+        assertArrayEquals(id, expectedSharedSecret, fromDevice)
+        assertArrayEquals(id, expectedSharedSecret, fromWrapper)
+
+        val kek = Hkdf.sha256(expectedSharedSecret, epk, info, 32)
+        assertArrayEquals(id, expectedKek, kek)
+        assertArrayEquals(id, expectedWrapped, AesKw.wrap(kek, expectedMasterKey))
+        assertArrayEquals(id, expectedMasterKey, AesKw.unwrap(kek, expectedWrapped))
+
+        // Exercise EcdhEs.unwrap itself too, not just the underlying primitives.
+        assertArrayEquals(id, expectedMasterKey, EcdhEs.unwrap(staticPrivateKey, epk, expectedWrapped))
+
+        // And EcdhEs.wrap, from the wrapper's side — a fresh ephemeral key each call
+        // means the ciphertext won't match, so re-derive and unwrap instead of
+        // comparing bytes directly.
+        val rewrapped = EcdhEs.wrap(staticPublicKey, expectedMasterKey)
+        assertArrayEquals(id, expectedMasterKey, EcdhEs.unwrap(staticPrivateKey, rewrapped.epk, rewrapped.wrappedKey))
     }
 
     private fun runByteRange(case: JSONObject) {

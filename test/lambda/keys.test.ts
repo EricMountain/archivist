@@ -79,6 +79,34 @@ describe.skipIf(!RUN)("POST /keys", () => {
     expect(own?.masterKeyVer).toBe("mk-1");
     expect(own?.rotatedAt).toBe(versionBody.rotatedAt);
   });
+
+  it("ECDH-ES+AES-KW wrappings require epk — key agreement, not key transport", async () => {
+    const { userId, ownerId } = await newOwner();
+    await postKeyVersion(req(ownerId, userId));
+
+    await expect(
+      postKey(
+        req(ownerId, userId, {
+          kind: "device",
+          label: "Pixel",
+          wrapAlg: "ECDH-ES+AES-KW",
+          wrappedKey: "w1",
+          // epk omitted
+        }),
+      ),
+    ).rejects.toThrow(/epk/i);
+
+    const res = await postKey(
+      req(ownerId, userId, {
+        kind: "device",
+        label: "Pixel",
+        wrapAlg: "ECDH-ES+AES-KW",
+        wrappedKey: "w1",
+        epk: "epk-bytes",
+      }),
+    );
+    expect(res.statusCode).toBe(201);
+  });
 });
 
 describe.skipIf(!RUN)("POST /keys/version", () => {

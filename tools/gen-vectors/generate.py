@@ -20,11 +20,12 @@ import tink
 from tink import cleartext_keyset_handle, streaming_aead
 from tink.proto import aes_gcm_hkdf_streaming_pb2, common_pb2, tink_pb2
 
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.keywrap import aes_key_wrap
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 import argon2.low_level as argon2_low_level
 
@@ -188,6 +189,20 @@ def argon2id_kek(password: bytes, salt: bytes, m_kib: int, t: int, p: int, lengt
 
 def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, length: int) -> bytes:
     return HKDF(algorithm=hashes.SHA256(), length=length, salt=salt or None, info=info).derive(ikm)
+
+
+def ec_point_bytes(public_key) -> bytes:
+    """SEC1 uncompressed point: 0x04 || X || Y, 65 bytes for P-256."""
+    return public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+
+
+def ecdh_shared_secret(private_key, peer_public_key) -> bytes:
+    """The X-coordinate only, big-endian, zero-padded to the field size (32 bytes for
+    P-256) -- what both `cryptography`'s `.exchange()` and Java/Kotlin's
+    `KeyAgreement.getInstance("ECDH").generateSecret()` produce natively, with no
+    further processing. Confirmed to match live on a real Android device's
+    AndroidKeyStore-backed ECDH before this vector was written."""
+    return private_key.exchange(ec.ECDH(), peer_public_key)
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +648,60 @@ def main() -> None:
         "cipherLength": total_len_11,
         "ranges": table,
         "expect": "exact",
+    })
+
+    # -- 23: ECDH-ES+AES-KW unwrap of a known wrapping ------------------------------
+    # The Android device route (see "Master key wrapping" in crypto-format.md), added
+    # after real-device testing found RSA-OAEP-256 decrypt unusable against a
+    # Keystore-resident key (AndroidKeyStore refuses MGF1-SHA256 on the private-key
+    # operation) -- see open question 1 in design.md.
+
+    static_priv23 = ec.generate_private_key(ec.SECP256R1())  # stands in for the enrolled Keystore keypair
+    static_pub23 = static_priv23.public_key()
+    ephemeral_priv23 = ec.generate_private_key(ec.SECP256R1())  # generated fresh per wrap, normally discarded
+    ephemeral_pub23 = ephemeral_priv23.public_key()
+
+    # Both directions of the agreement must land on the same secret: the wrapper only
+    # ever holds the static *public* key, the device only ever holds the static
+    # *private* key.
+    shared_from_wrapper = ecdh_shared_secret(ephemeral_priv23, static_pub23)
+    shared_from_device = ecdh_shared_secret(static_priv23, ephemeral_pub23)
+    assert shared_from_wrapper == shared_from_device
+    assert len(shared_from_device) == 32
+
+    epk23 = ec_point_bytes(ephemeral_pub23)
+    assert len(epk23) == 65
+
+    info23 = "archivist:1:ecdh-kek"
+    kek23 = hkdf_sha256(shared_from_device, epk23, info23.encode("ascii"), 32)
+
+    master_key23 = derive_bytes("masterkey:23", 32)
+    wrapped23 = aes_kw(kek23, master_key23)
+    assert aes_key_unwrap(kek23, wrapped23) == master_key23
+
+    vs.add({
+        "case": 23,
+        "id": "23-ecdh-es-unwrap",
+        "mode": "ecdh-es",
+        "curve": "P-256",
+        "staticPrivateScalar": format(static_priv23.private_numbers().private_value, "064x"),
+        "staticPublicKey": ec_point_bytes(static_pub23).hex(),
+        "ephemeralPrivateScalar": format(ephemeral_priv23.private_numbers().private_value, "064x"),
+        "ephemeralPublicKey": epk23.hex(),
+        "info": info23,
+        "expectedSharedSecret": shared_from_device.hex(),
+        "expectedKek": kek23.hex(),
+        "expectedWrapped": wrapped23.hex(),
+        "expectedMasterKey": master_key23.hex(),
+        "expect": "exact",
+        "note": (
+            "expectedSharedSecret must come out identically from both directions: "
+            "ECDH(staticPrivateScalar, ephemeralPublicKey) and "
+            "ECDH(ephemeralPrivateScalar, staticPublicKey). It is the X-coordinate "
+            "only, big-endian, 32 bytes for P-256 -- no further KDF at the ECDH step "
+            "itself. epk is SEC1 uncompressed (0x04||X||Y, 65 bytes) and doubles as "
+            "the HKDF salt."
+        ),
     })
 
     vs.save_manifest()

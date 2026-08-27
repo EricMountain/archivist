@@ -269,11 +269,15 @@ Two separate ceremonies, for the reasons in `design.md`:
   and `ui/onboarding/SignInViewModel.kt`. Cognito's user-facing API is plain unsigned
   HTTPS JSON-RPC (`X-Amz-Target` header, no SigV4) — confirmed live — which is what "not
   using AWS Amplify" above assumes but is worth stating plainly here too.
-* **Key unlock**: an RSA-3072 keypair in Android Keystore, hardware-backed and
-  `setUserAuthenticationRequired(true)` so it sits behind biometrics. It unwraps the
-  master key into memory at app start. RSA rather than EC because v1's `wrapAlg` has no
-  ECDH mode — see `crypto-format.md`, and open question 1 in `design.md`, which plan
-  step 2.4a is the measurement for.
+* **Key unlock**: an EC-P256 keypair in Android Keystore, `setUserAuthenticationRequired(true)`
+  so it sits behind biometrics. It unwraps the master key into memory at app start via
+  ECDH-ES+AES-KW (`EcdhEs.kt` in `:core:crypto`) — not RSA-OAEP-256, which plan step
+  2.4a found a real Keystore-resident RSA key's decrypt refuses on real hardware (see
+  the resolved open question 1 in `design.md` and "Master key wrapping" in
+  `crypto-format.md`). **Not confirmed hardware-backed on every device**: the one phone
+  tested so far generated its EC-P256 key in software, not the TEE, when StrongBox
+  wasn't requested — worth checking on more devices before assuming this key gets the
+  same isolation the RSA one was meant to.
 
 The master key is held in memory only — never in SharedPreferences, never on disk, and
 cleared on `onTrimMemory`. Re-unwrapping is a biometric prompt, which is cheap.

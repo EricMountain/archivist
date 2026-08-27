@@ -242,8 +242,13 @@ export interface KeyWrapItem {
   masterKeyVer: string;
   /** When this master key version was minted. */
   rotatedAt?: string;
-  wrapAlg: "AES-KW" | "RSA-OAEP-256";
+  wrapAlg: "AES-KW" | "RSA-OAEP-256" | "ECDH-ES+AES-KW";
   wrappedKey: string;
+  /** `wrapAlg: ECDH-ES+AES-KW` only — the ephemeral public key ECDH is key
+   * *agreement*, not key *transport*, so unlike the other wrapAlgs the recipient's
+   * static key alone isn't enough to unwrap; see "Master key wrapping" in
+   * crypto-format.md. */
+  epk?: string;
   credentialId?: string;
   prfSalt?: string;
   kdfSalt?: string;

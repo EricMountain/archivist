@@ -812,8 +812,9 @@ kind          device | passkey | recovery
 label         "Pixel 9" | "Firefox on desktop" | "Recovery code"
 masterKeyVer  mk-3                     # which master key version this wraps
 rotatedAt     2026-03-14T08:02:11.000Z # when that version was minted
-wrapAlg       AES-KW | RSA-OAEP-256
+wrapAlg       AES-KW | RSA-OAEP-256 | ECDH-ES+AES-KW
 wrappedKey    <b64>
+epk           <b64>                    # ECDH-ES+AES-KW only — the ephemeral public key
 credentialId  <b64>                    # passkey only
 prfSalt       <b64>                    # passkey only
 kdfSalt       <b64>                    # recovery only
@@ -831,14 +832,18 @@ a catastrophe.
 
 ### Android
 
-Android Keystore holds a hardware-backed RSA keypair that is non-exportable by
-construction, optionally gated behind biometrics. The master key is wrapped to its
-public half with RSA-OAEP-256 (`kind: device`). Straightforward, because the platform
-provides exactly the primitive needed.
+Android Keystore holds an EC-P256 keypair that is non-exportable by construction,
+optionally gated behind biometrics. The master key is wrapped to its public half via
+ECDH-ES+AES-KW (`kind: device`) — an ephemeral keypair, ECDH against the enrolled
+public key, HKDF into a KEK, then AES-KW, with the ephemeral public key stored as `epk`
+alongside the wrapping. See "Master key wrapping" in `crypto-format.md` for the exact
+bytes.
 
-RSA rather than EC only because `wrapAlg` has no ECDH mode in v1 — an EC Keystore key
-would be cheaper and better supported, and has nothing to record itself as. See open
-question 2.
+This was originally RSA-OAEP-256, wrapping directly with no `epk`. Real-device testing
+(plan step 2.4a) found a Keystore-resident RSA key's decrypt operation refuses the
+mandated MGF1-SHA256 parameter outright, on real hardware, independent of StrongBox
+availability — not a schema question, a "this route does not work" one. See the
+resolved open question 1 for the full account.
 
 ### Web
 
@@ -1377,33 +1382,52 @@ for `facetSk`. Rare, bounded to one partition, and doable in a single transactio
 
 ## Open questions
 
-1. **There is no ECDH key-wrapping mode, and that may cost us StrongBox.** `wrapAlg` is
-   `AES-KW | RSA-OAEP-256`, so an Android device must enrol an RSA-3072 Keystore key.
+1. **RESOLVED, 2026-08-27: Android device wrapping is `ECDH-ES+AES-KW`, not
+   `RSA-OAEP-256`.** This item originally asked whether StrongBox would accept an
+   RSA-3072 key on real hardware. Plan step 2.4a ran the actual measurement on a real
+   device — a Motorola Edge 20 Lite, Android 13, no StrongBox chip at all — and found
+   something more fundamental than a StrongBox-availability question:
 
-   The concern is not elegance. **StrongBox** — the dedicated secure element on Pixel 3
-   and later — supports a deliberately narrow algorithm set. EC P-256 is universally
-   available in it; larger RSA sizes are not guaranteed. If RSA-3072 won't generate in
-   StrongBox on target devices, requiring it means falling back to the TEE, trading a
-   hardware isolation guarantee for an algorithm convenience — the wrong direction for
-   the one key everything else hangs off. Secondary: RSA-3072 keygen in secure hardware
-   is slow enough to be felt, and it lands in the first-run enrolment flow.
+   | Test | Result |
+   | --- | --- |
+   | RSA-3072/2048 keygen, TEE (no StrongBox requested) | Works — 1.3s / 140–300ms |
+   | RSA-3072/2048 keygen, StrongBox requested | `StrongBoxUnavailableException` — no chip |
+   | RSA-OAEP-256 **encrypt** via the Keystore-issued public key, explicit MGF1-SHA256 | Works |
+   | RSA-OAEP-256 **decrypt** via the Keystore-resident private key, same parameters | **Fails**: `InvalidAlgorithmParameterException: Unsupported MGF1 digest: SHA-256. Only SHA-1 supported` |
+   | EC-P256 keygen, general purpose, no StrongBox requested | Works, but lands in **software**, not even the TEE |
+   | ECDH agreement: Keystore-resident EC-P256 private key ↔ a software ephemeral key | **Works** — both sides derive the identical shared secret |
+   | ECDH agreement, StrongBox requested | `StrongBoxUnavailableException` — no chip |
 
-   It isn't a one-line addition to the enum, because **ECDH is key agreement, not key
-   transport**. Wrapping to an EC public key means ECDH-ES: an ephemeral keypair, ECDH
-   against the enrolled public key, HKDF into a KEK, then AES-KW as usual. The ephemeral
-   public key has to be stored, so the `W#` item grows an `epk` attribute (or carries it
-   prefixed inside `wrappedKey`) — a schema change, which is why this is a question
-   rather than an oversight.
+   The decrypt failure is the load-bearing result: it's the one operation that can never
+   be routed around (the private key never leaves hardware), and it fails regardless of
+   StrongBox availability — a plain TEE Keymaster limitation, not the narrower
+   StrongBox-algorithm-set concern this question originally asked about. A wrap-only
+   test would have shipped this; the spike specifically isolated encrypt from decrypt
+   because of it.
 
-   Deferring is safe: `wrapAlg` is recorded per item, so adding ECDH-ES later is a new
-   value rather than a break, and a mixed RSA/EC fleet is harmless.
+   ECDH-ES+AES-KW was tested the same way and confirmed to work correctly end to end.
+   The schema and derivation are now specified in "Master key wrapping" in
+   `crypto-format.md`, implemented in `EcdhEs.kt` (`:core:crypto`), and covered by
+   conformance vector 23. `RSA-OAEP-256` stays a valid `wrapAlg` value (vector 17,
+   nothing forces its removal) but no v1 route uses it. See the "2026-08-27" entry in
+   `STATUS.md`'s audit log for exactly what was and wasn't run, and the full
+   session transcript for the two live-device iterations that pinned this down
+   (the first run's own stack trace was initially misread as an encrypt failure;
+   splitting the check into three independent probes — encrypt via the Keystore
+   key object, encrypt via a reconstructed plain key, decrypt via the Keystore
+   private key — is what actually isolated it to decrypt).
 
-   **What decides it is a measurement, not an argument** — whether StrongBox will take
-   an RSA-3072 key on real target hardware, and how long it takes when it does. Plan
-   step 2.4a runs it on a phone. If StrongBox refuses, ECDH-ES stops being optional and
-   the schema question (`epk`, curve, HKDF info string) has to be settled *before*
-   Android enrols its first device, because a fleet enrolled on RSA is a fleet that has
-   to be re-enrolled.
+   **What's still open, and different from what this item used to ask:** EC-P256
+   general-purpose keygen landed in *software* on this device, not the TEE — meaning
+   the replacement algorithm doesn't obviously get a stronger hardware guarantee than
+   RSA would have, on this hardware. Two things are unconfirmed: whether that's this
+   device's Keymaster/HAL specifically or broader, and whether requesting
+   `PURPOSE_AGREE_KEY` with different builder parameters changes it. This wasn't
+   re-tested with more devices this session — the phone available was deliberately the
+   oldest in the target set, on the reasoning that a newer device passing wouldn't
+   answer whether the oldest one does. Worth another pass with a broader device set
+   before treating "software-backed EC on old/mid-range hardware" as an accepted
+   baseline rather than a gap.
 
 2. **No Digital Asset Links file exists yet, and passkey creation needs one.** Found
    while implementing plan step 2.4: `terraform/cognito.tf`'s

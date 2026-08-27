@@ -505,7 +505,8 @@ O#01J7X…#DEVICES          D#nikon|d750|3021447            label       "Nikon D
 
 O#01J7X…#KEYS             W#01K5A2P4XNVBQ7MK3NTXWD9HF2    kind        device
                                                           label       "Pixel 9"
-                                                          wrapAlg     RSA-OAEP-256
+                                                          wrapAlg     ECDH-ES+AES-KW
+                                                          epk         <b64>
                                                           masterKeyVer mk-3
                                                           rotatedAt    2026-03-14T08:…
 O#01J7X…#KEYS             W#01K5A2P4XNWD3KQB8NMXVTRH5Y    kind        passkey

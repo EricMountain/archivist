@@ -35,14 +35,24 @@ silently decrypted as v1 even if the algorithms happen to line up.
 | Object encryption, large | AES-GCM-HKDF-STREAMING | Tink `AES256_GCM_HKDF_1MB` |
 | Key derivation | HKDF-SHA256 | inside the streaming construction, and for KEKs |
 | DEK wrapping | AES-KW (RFC 3394) | 256-bit KEK, 256-bit key, 40-byte output |
-| Master key wrapping, Android | RSA-OAEP-256 | SHA-256 digest **and** MGF1-SHA-256 |
+| Master key wrapping, Android | ECDH-ES + AES-KW | P-256, HKDF-SHA256 KEK derivation |
 | Master key wrapping, web | AES-KW | non-extractable WebCrypto key |
 | Recovery KDF | Argon2id v1.3 | m=65536 KiB, t=3, p=1, 32-byte output |
 | Dedup hash | HMAC-SHA256 | keyed, see "`contentHash`" |
 
 No other algorithm is permitted in v1. In particular the `wrapAlg` attribute on a `W#`
-item is the closed set `AES-KW | RSA-OAEP-256`. There is no ECDH wrapping mode in v1,
-so an Android device enrols an RSA Keystore key rather than the cheaper EC one.
+item is the closed set `AES-KW | RSA-OAEP-256 | ECDH-ES+AES-KW`. `RSA-OAEP-256` stays
+defined — it has its own conformance vector (17) and a mixed fleet is harmless, since
+`wrapAlg` is recorded per item — but **no v1 route uses it**. It was the original
+Android device route; real-device testing (plan step 2.4a) found that a Keystore-
+resident RSA key's decrypt operation refuses the mandated `MGF1-SHA256` parameter
+outright (`InvalidAlgorithmParameterException: Unsupported MGF1 digest: SHA-256. Only
+SHA-1 supported`, on a real Motorola Edge 20 Lite, Android 13) — not a StrongBox
+availability question, a plain TEE Keymaster limitation with no software workaround,
+since the private-key operation can never leave hardware. `ECDH-ES+AES-KW` replaced it
+after the same testing pass confirmed the full agreement protocol works correctly,
+end to end, against a Keystore-resident EC-P256 key on that device. See open question 1
+in `design.md` for the full account.
 
 All randomness comes from the platform CSPRNG: `SecureRandom` (Android),
 `crypto.getRandomValues` (web), `os.urandom` (Python). Never a seeded or userspace PRNG.
@@ -50,7 +60,7 @@ All randomness comes from the platform CSPRNG: `SecureRandom` (Android),
 ### Encoding
 
 Binary values stored as DynamoDB string attributes — `encDek`, `encIv`, `exifEnc`,
-`wrappedKey`, `prfSalt`, `kdfSalt`, `thumbs[*].iv` — are **standard base64 with padding**
+`wrappedKey`, `epk`, `prfSalt`, `kdfSalt`, `thumbs[*].iv` — are **standard base64 with padding**
 (RFC 4648 §4, `+/=` alphabet). This is deliberately *not* the base64url used for
 pagination cursors; those are URL components, these are not.
 
@@ -63,7 +73,7 @@ characters.
   master key  (256 bit, random, per owner, never leaves a client in plaintext)
       │
       ├── wrapped N times, once per enrolled route ──→  W# items
-      │     device (Android)   RSA-OAEP-256 to a Keystore public key
+      │     device (Android)   ECDH-ES+AES-KW to a Keystore public key (P-256)
       │     device (web)       AES-KW under a non-extractable IndexedDB key
       │     passkey            AES-KW under a KEK derived from WebAuthn PRF
       │     recovery           AES-KW under a KEK derived from the recovery code
@@ -302,18 +312,67 @@ a rotation sweep can find the photos it has not reached yet and resume.
 ### The master key
 
 The master key is 32 random bytes, generated once per owner on the first client, and
-wrapped once per enrolled route into a `W#` item. All four routes below produce a
-256-bit KEK and then use AES-KW, except Android, which wraps directly with RSA.
+wrapped once per enrolled route into a `W#` item. **All four routes below produce a
+256-bit KEK and then use AES-KW** — no exception, now that Android derives its KEK via
+ECDH rather than wrapping directly with RSA.
 
-**`kind: device`, Android.** `wrapAlg: RSA-OAEP-256`. A 3072-bit RSA keypair in the
-Android Keystore, non-exportable by construction, optionally biometric-gated. The master
-key is wrapped to the public half.
+**`kind: device`, Android.** `wrapAlg: ECDH-ES+AES-KW`. An EC-P256 keypair in the
+Android Keystore, non-exportable by construction, optionally biometric-gated
+(`setUserAuthenticationRequired`). Confirmed live on real hardware, not assumed: JCA
+routes `KeyAgreement.getInstance("ECDH")` to the Keystore's own implementation based on
+the key object's type, with no explicit provider needed — the same auto-routing
+`RsaOaep`'s plain `Cipher.getInstance` already relies on.
 
-> The Android provider's `RSA/ECB/OAEPWithSHA-256AndMGF1Padding` defaults its **MGF1**
-> digest to SHA-1 despite the name, and other platforms default it to SHA-256. Pass an
-> explicit `OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256,
-> PSource.PSpecified.DEFAULT)`. Getting this wrong produces a wrapping that only the
-> device that made it can read — which looks fine until the day it matters.
+*Wrapping* (done by whichever client holds the master key in plaintext — including the
+device enrolling itself, wrapping to the Keystore public key it just generated):
+
+```text
+(ePriv, ePub) = a fresh EC-P256 keypair, generated once per wrap and discarded after
+epk           = SEC1 uncompressed encoding of ePub                    65 bytes
+Z             = ECDH(ePriv, staticPublicKey)                          32 bytes, X-coordinate only
+kek           = HKDF-SHA256(ikm = Z, salt = epk, info = "archivist:1:ecdh-kek", L = 32)
+wrappedKey    = AES-KW(kek, masterKey)                                 40 bytes
+```
+
+`epk` is stored alongside `wrappedKey` on the `W#` item — ECDH is key *agreement*, not
+key *transport*, so unlike every other route here the recipient's static key alone
+isn't enough; the ephemeral public half has to travel with the wrapping.
+
+*Unwrapping* (done by the device, using its Keystore-resident private key — the one
+operation that can never be routed around, since that key material never leaves
+hardware):
+
+```text
+ePub = SEC1-decode(epk)
+Z    = ECDH(staticPrivateKey, ePub)                                    32 bytes
+kek  = HKDF-SHA256(ikm = Z, salt = epk, info = "archivist:1:ecdh-kek", L = 32)
+```
+
+then AES-KW-unwrap `wrappedKey` under `kek` as usual. Both directions must land on the
+identical `Z` — conformance vector 23 checks this explicitly, from both sides.
+
+`Z` is the ECDH shared secret's X-coordinate, big-endian, zero-padded to the field size
+(32 bytes for P-256) — no further processing before it becomes HKDF's `ikm`. Binding
+`epk` into the HKDF `salt` costs nothing and rules out a class of key-substitution
+concerns for free; it isn't a departure from this document's habit of keeping key
+derivation simple; it's the direct extension of it.
+
+> **Why this replaced RSA-OAEP-256.** The original v1 Android route wrapped directly
+> with `RSA-OAEP-256`, and the Android provider's `RSA/ECB/OAEPWithSHA-256AndMGF1Padding`
+> was known to default its **MGF1** digest to SHA-1 despite the name — passing an
+> explicit `OAEPParameterSpec` was believed to fix this, matching what other platforms
+> do by default. Plan step 2.4a tested that belief on real hardware (a Motorola Edge 20
+> Lite, Android 13) and found something worse than a silent default: a Keystore-resident
+> RSA key's **decrypt** operation refuses `MGF1-SHA256` outright —
+> `InvalidAlgorithmParameterException: Unsupported MGF1 digest: SHA-256. Only SHA-1
+> supported` — regardless of StrongBox availability, and with no workaround, since that
+> operation can never leave hardware to fall back to software. Encrypt (the public-key
+> half) worked fine either way, which is exactly the trap: a wrap-only test would have
+> shipped this. ECDH-ES+AES-KW was tested the same way on the same device and confirmed
+> to round-trip correctly. See open question 1 in `design.md` for the full account,
+> including the caveat that EC-P256 key generation landed in *software*, not even the
+> TEE, on that particular device — a separate, still-open question from the one this
+> resolved.
 
 **`kind: device`, web.** `wrapAlg: AES-KW`. A 256-bit AES-KW `CryptoKey` generated with
 `extractable: false` and stored in IndexedDB. Raw key bytes are never a readable
@@ -513,11 +572,15 @@ Required cases:
 | 20 | Recovery-code check symbol: valid code; one character altered; two adjacent swapped; 25 chars; 27 chars; a `U` in the middle | accept, then **reject** ×5 |
 | 21 | HKDF passkey KEK from a known PRF output | exact bytes |
 | 22 | Byte-range: for case 11, a table of plaintext ranges → ciphertext ranges | exact |
+| 23 | ECDH-ES+AES-KW unwrap: fixed static + ephemeral P-256 keypairs, checked from both agreement directions | exact bytes |
 
 Cases 7 and 9 are the boundary cases that decide the "no empty trailing segment"
 question. Case 20 must use a transposition whose character values differ by something
 other than 16, since that class is the checksum's documented blind spot. Case 22 is what
-stops a seeking bug from being found by a user scrubbing a video.
+stops a seeking bug from being found by a user scrubbing a video. Case 23 exists because
+a wrap-only test of the RSA route it replaced would have shipped a decrypt that doesn't
+work — it checks both `ECDH(staticPrivate, ephemeralPublic)` and
+`ECDH(ephemeralPrivate, staticPublic)` land on the same secret, not just one direction.
 
 ## Open items
 
@@ -528,13 +591,10 @@ streaming mode, `encHashSecret` / `hashSecretKeyId` on `#SETTINGS`, the rewritte
 versions. Nothing is outstanding between the three.
 
 What remains is genuinely undecided rather than contradictory, and is tracked in
-`design.md`'s "Open questions" so that decisions live in one place:
-
-* **No ECDH wrapping mode** — v1 is `AES-KW | RSA-OAEP-256`, so Android enrols RSA.
-  Adding ECDH-ES + AES-KW is a new `wrapAlg` value, not a break, but it needs an `epk`
-  attribute on the `W#` item since ECDH is key agreement rather than key transport.
-  Plan step 2.4a measures whether StrongBox accepts RSA-3072 on real hardware, which is
-  what decides it.
+`design.md`'s "Open questions" so that decisions live in one place — including the
+StrongBox-vs-software question that plan step 2.4a's real-device run raised for
+EC-P256 key generation specifically, which is still open even though the ECDH-vs-RSA
+question this section used to track is now resolved (see "Master key wrapping" above).
 
 One item lives only here, because nothing outside this document depends on it:
 

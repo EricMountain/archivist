@@ -159,14 +159,18 @@ The spike code is deleted in the same change.
   check symbol is what lets that screen say "that's mistyped" rather than making the
   user wait on Argon2id for an ambiguous failure.
 - Later device: unwrap via the recovery code, then enrol a Keystore wrapping.
-- **Keystore key: RSA-3072**, hardware-backed, `setUserAuthenticationRequired(true)`.
-  Not EC — v1 defines `wrapAlg` as `AES-KW | RSA-OAEP-256` and has no ECDH wrapping
-  mode, so an EC Keystore key has nothing to record itself as. **Do not start this step
-  until 2.4a has reported**: if StrongBox refuses RSA-3072, this becomes an ECDH-ES
-  enrolment and the schema changes with it.
-- Wrapping uses OAEP with SHA-256 **and MGF1-SHA-256**, passed explicitly as an
-  `OAEPParameterSpec`. The Android provider defaults MGF1 to SHA-1 despite the cipher
-  name, which yields a wrapping only this device can read — see `crypto-format.md`.
+- **Keystore key: EC-P256**, `setUserAuthenticationRequired(true)`. 2.4a has reported:
+  a real device's Keystore-resident RSA-3072 key refused `MGF1-SHA256` on decrypt
+  outright (not a StrongBox-availability question — a plain TEE Keymaster limitation,
+  with no software workaround since that operation never leaves hardware), while ECDH
+  agreement against a Keystore-resident EC-P256 key worked correctly end to end. See
+  the resolved open question 1 in `design.md` and "Master key wrapping" in
+  `crypto-format.md`. Wrap/unwrap via `EcdhEs.kt` in `:core:crypto`, already written and
+  conformance-vector-tested (vector 23) — this step wires it into enrolment, it doesn't
+  write the primitive. **Not yet confirmed hardware-backed on every device**: the one
+  phone tested generated its EC-P256 key in software, not the TEE, without an explicit
+  StrongBox request — worth a broader device check before this step ships, not
+  necessarily before it starts.
 - Handle `KeyPermanentlyInvalidatedException` — thrown when the user changes their lock
   screen — by re-enrolling from the recovery code rather than crashing.
 

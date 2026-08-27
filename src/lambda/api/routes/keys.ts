@@ -49,8 +49,9 @@ export const getKeys: RouteHandler = async (req: ApiRequest) => {
 interface PostKeyBody {
   kind: WrapKind;
   label: string;
-  wrapAlg: "AES-KW" | "RSA-OAEP-256";
+  wrapAlg: "AES-KW" | "RSA-OAEP-256" | "ECDH-ES+AES-KW";
   wrappedKey: string;
+  epk?: string;
   credentialId?: string;
   prfSalt?: string;
   kdfSalt?: string;
@@ -58,6 +59,7 @@ interface PostKeyBody {
 }
 
 const VALID_KINDS: WrapKind[] = ["device", "passkey", "recovery"];
+const VALID_WRAP_ALGS = ["AES-KW", "RSA-OAEP-256", "ECDH-ES+AES-KW"];
 
 export const postKey: RouteHandler = async (req: ApiRequest) => {
   const ownerId = req.auth!.ownerId;
@@ -69,11 +71,20 @@ export const postKey: RouteHandler = async (req: ApiRequest) => {
   if (!body.label || !body.wrapAlg || !body.wrappedKey) {
     throw ApiError.validation("label, wrapAlg and wrappedKey are required");
   }
+  if (!VALID_WRAP_ALGS.includes(body.wrapAlg)) {
+    throw ApiError.validation("wrapAlg must be AES-KW, RSA-OAEP-256 or ECDH-ES+AES-KW");
+  }
   if (body.kind === "passkey" && (!body.credentialId || !body.prfSalt)) {
     throw ApiError.validation("passkey wrappings require credentialId and prfSalt");
   }
   if (body.kind === "recovery" && (!body.kdfSalt || !body.kdfParams)) {
     throw ApiError.validation("recovery wrappings require kdfSalt and kdfParams");
+  }
+  // ECDH is key agreement, not key transport — the recipient's static key alone
+  // can't unwrap without the ephemeral public key it was agreed against. See
+  // "Master key wrapping" in crypto-format.md.
+  if (body.wrapAlg === "ECDH-ES+AES-KW" && !body.epk) {
+    throw ApiError.validation("ECDH-ES+AES-KW wrappings require epk");
   }
 
   // masterKeyVer is never a request field — see "Master key versions" in
@@ -94,6 +105,7 @@ export const postKey: RouteHandler = async (req: ApiRequest) => {
     wrapAlg: body.wrapAlg,
     wrappedKey: body.wrappedKey,
     createdAt: toIsoUtc(new Date()),
+    ...(body.epk ? { epk: body.epk } : {}),
     ...(body.credentialId ? { credentialId: body.credentialId } : {}),
     ...(body.prfSalt ? { prfSalt: body.prfSalt } : {}),
     ...(body.kdfSalt ? { kdfSalt: body.kdfSalt } : {}),
