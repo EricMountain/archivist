@@ -101,6 +101,31 @@ single place this is decided:
 
 Bucket names carry the account ID because the S3 namespace is global.
 
+## Running a second environment (e.g. `dev`) alongside `prod`
+
+Still one root module — no `environments/` split. A second environment is just a second
+Terraform workspace against the same backend bucket, with its own tfvars:
+
+```sh
+terraform workspace new dev        # once; state lands at env:/dev/<key> in the same bucket
+terraform workspace select dev
+terraform plan  -var-file=../private/instance/dev.tfvars
+terraform apply -var-file=../private/instance/dev.tfvars
+```
+
+`private/instance/dev.tfvars` sets `environment = "dev"` and a distinct `domain_name`
+(so it needs its own subdomain, delegated in the same Route 53 zone) — that's what keeps
+every resource name, the Cognito domain and the CloudFront distribution from colliding
+with `prod`. It is a plain tfvars file, *not* symlinked to `terraform.tfvars`, specifically
+so it never auto-loads and silently gets applied against the wrong workspace.
+
+`make deploy-dev` / `make plan-dev` wrap this (workspace select + `-var-file`, plus the
+usual build-before-apply). `make deploy` (prod) explicitly selects the `default`
+workspace first, so it can't accidentally apply against whatever workspace a previous
+`dev` session left checked out.
+
+Switch back with `terraform workspace select default` before touching `prod` by hand.
+
 ## Choosing a region
 
 The default is `eu-west-1` (Ireland). Operators should choose for themselves; the

@@ -42,20 +42,45 @@ real `prod` instance (see `private/instance/` for the actual account/region/doma
 using the operator's own AWS profile, at the user's explicit direction — 65 resources
 added, 1 changed (DynamoDB TTL
 enabled in-place), 0 destroyed, no errors. A follow-up `terraform plan` reports zero
-drift. This is the operator's real self-hosted instance, not a throwaway `dev`
-environment — there is no separate `dev`; `environment = "prod"` in
-`private/instance/terraform.tfvars`. Live-verified this pass: `GET /health` (direct and
+drift. Live-verified this pass: `GET /health` (direct and
 via CloudFront), unauthenticated 401s, the discovery document over a valid cert, and
 direct-S3 403s on all three buckets. **Not live-verified:** anything requiring a signed-in
 user (passkey enrolment, uploads, cross-owner isolation, account deletion) — all of it
 needs an interactive WebAuthn ceremony this session cannot perform headlessly. The table
 above marks each step's status independently of this note; read both.
 
+**A `dev` instance now exists (2026-08-29),** specifically to unblock the interactive
+verification above without touching the real library — see "Dev instance" below for how
+it's deployed and reached.
+
+## Dev instance
+
+A second, throwaway deployment for testing, at `archivist-dev.<the operator's domain>`
+(exact hostname in `private/instance/dev.tfvars`). Same AWS account and region as `prod`,
+same Terraform config, isolated by a separate Terraform workspace (`dev`) and
+`environment = "dev"` — separate DynamoDB table, S3 buckets, Cognito pool, Lambdas and
+CloudFront distribution; see "Running a second environment" in `terraform/README.md` for
+the workflow (`make plan-dev` / `make deploy-dev`).
+
+Deployed 2026-08-29: `terraform apply -var-file=../private/instance/dev.tfvars` against
+the `dev` workspace — 79 resources added, 0 changed, 0 destroyed. One transient error on
+first apply (`aws_s3_bucket_notification.derived`: `PutBucketNotificationConfiguration`
+`InvalidArgument`, S3 validating the Lambda invoke permission before its IAM propagation
+caught up) — a plain re-run of the same apply succeeded (1 added) with no config change
+needed; if this recurs, it's this known race, not a bug. Live-verified: discovery
+document and `/api/health` both `200` through CloudFront on the real domain;
+`admin_create_user_config.allow_admin_create_user_only = true` and zero users on the new
+pool (confirmed via `describe-user-pool`/`list-users` — the self-service-sign-up gap
+that hit `prod` did not reoccur here, since the fix is already in `cognito.tf`).
+
+Not yet done: no passkey has been enrolled against it, so it's ready for but hasn't yet
+been used for the interactive verification plan 01/02 steps below still need.
+
 ## Plan 02 — Android MVP
 
 Depended on plan 01 being deployed and 1.16's vectors existing — both are now true (see
-the deployment note above; there is no separate `dev`, the app would connect to the
-operator's real `prod` instance).
+the deployment note above). A `dev` instance now exists (see "Dev instance" above) for
+interactive testing that would otherwise risk the operator's real `prod` instance.
 
 | Step | Status | Notes |
 | --- | --- | --- |
