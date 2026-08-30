@@ -5,6 +5,7 @@ import android.security.keystore.UserNotAuthenticatedException
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import fr.enry.archivist.crypto.EcdhEs
 import fr.enry.archivist.crypto.KeyCustody
+import fr.enry.archivist.crypto.NoSecureLockScreenException
 import fr.enry.archivist.crypto.RecoveryCode
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
@@ -155,6 +156,18 @@ class EnrolmentRepositoryTest {
         }
 
     @Test
+    fun `first enrolment on a device with no secure lock screen fails cleanly, not a crash`() =
+        runTest {
+            deviceKeyProvider.noSecureLockScreenException = NoSecureLockScreenException(IllegalStateException())
+
+            val result = repository.beginFirstEnrolment()
+
+            assertTrue(result.isFailure)
+            assertTrue(result.exceptionOrNull() is NoSecureLockScreenException)
+            assertEquals(0, server.requestCount)
+        }
+
+    @Test
     fun `confirming the wrong code fails and leaves enrolment pending`() =
         runTest {
             repository.beginFirstEnrolment().getOrThrow()
@@ -267,6 +280,38 @@ class EnrolmentRepositoryTest {
             assertEquals("w-device-2", enrolmentStore.deviceWrapId(host))
             assertNotNull(masterKeyHolder.current.value)
             assertEquals(3, server.requestCount)
+        }
+
+    @Test
+    fun `recovering on a device with no secure lock screen fails cleanly, not a crash`() =
+        runTest {
+            connectInstance()
+            val sourceEnrolment = KeyCustody.enrolFirstDevice(freshEcKeyPair().public)
+            deviceKeyProvider.noSecureLockScreenException = NoSecureLockScreenException(IllegalStateException())
+
+            server.enqueue(
+                MockResponse().setBody(
+                    json.encodeToString(
+                        KeysResponse.serializer(),
+                        KeysResponse(listOf(KeyWrapDto("rec1", "recovery", "Recovery code", "mk-1"))),
+                    ),
+                ),
+            )
+            repository.determineStep()
+            server.enqueue(
+                MockResponse().setBody(
+                    json.encodeToString(
+                        KeysResponse.serializer(),
+                        KeysResponse(listOf(recoveryWrapDto("rec1", sourceEnrolment.recoveryWrap))),
+                    ),
+                ),
+            )
+
+            val result = repository.attemptRecovery(sourceEnrolment.recoveryCode.code)
+
+            assertTrue(result is RecoveryAttemptResult.Failed)
+            assertNull(enrolmentStore.deviceWrapId(host)) // never got as far as saving a new wrap
+            assertEquals(2, server.requestCount) // no POST /keys attempted
         }
 
     @Test

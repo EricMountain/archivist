@@ -6,6 +6,7 @@ import android.security.keystore.UserNotAuthenticatedException
 import fr.enry.archivist.crypto.DeviceKeyProvider
 import fr.enry.archivist.crypto.DeviceKeystoreUnsupportedException
 import fr.enry.archivist.crypto.KeyCustody
+import fr.enry.archivist.crypto.NoSecureLockScreenException
 import fr.enry.archivist.crypto.RecoveryCode
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
@@ -187,6 +188,8 @@ class EnrolmentRepository
                     Result.success(enrolment)
                 } catch (e: DeviceKeystoreUnsupportedException) {
                     Result.failure(e)
+                } catch (e: NoSecureLockScreenException) {
+                    Result.failure(e)
                 }
             }
 
@@ -321,6 +324,8 @@ class EnrolmentRepository
                     }
                 } catch (e: DeviceKeystoreUnsupportedException) {
                     return RecoveryAttemptResult.DeviceKeystoreUnsupported(e.sdkInt)
+                } catch (e: NoSecureLockScreenException) {
+                    return RecoveryAttemptResult.Failed(e.message ?: "no secure lock screen is set on this device")
                 }
 
             return try {

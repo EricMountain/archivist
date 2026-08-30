@@ -4,6 +4,7 @@ import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
 import fr.enry.archivist.crypto.DeviceKeyProvider
 import fr.enry.archivist.crypto.DeviceKeystoreUnsupportedException
+import fr.enry.archivist.crypto.NoSecureLockScreenException
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -21,6 +22,10 @@ class FakeDeviceKeyProvider : DeviceKeyProvider {
 
     /** When set, [ensureKeyPair] throws it instead of generating — simulates API < 31. */
     var unsupportedException: DeviceKeystoreUnsupportedException? = null
+
+    /** When set, [ensureKeyPair] throws it instead of generating — simulates a device
+     * with no PIN/pattern/password set at all. */
+    var noSecureLockScreenException: NoSecureLockScreenException? = null
 
     /** When set, the *next* call to [privateKey] throws it once and clears itself —
      * simulates a lock-screen change invalidating the key mid-use. */
@@ -51,6 +56,7 @@ class FakeDeviceKeyProvider : DeviceKeyProvider {
     override fun ensureKeyPair(): PublicKey {
         keyPair?.let { return it.public }
         unsupportedException?.let { throw it }
+        noSecureLockScreenException?.let { throw it }
         val generated =
             KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
         keyPair = generated

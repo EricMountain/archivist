@@ -3,6 +3,7 @@ package fr.enry.archivist.crypto
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import java.security.InvalidAlgorithmParameterException
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -96,7 +97,17 @@ class DeviceKeystore : DeviceKeyProvider {
                     KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL,
                 )
                 .build()
-        generator.initialize(spec)
+        try {
+            generator.initialize(spec)
+        } catch (e: InvalidAlgorithmParameterException) {
+            // Confirmed live: a device with no PIN/pattern/password set at all throws
+            // this (wrapping IllegalStateException: "Secure lock screen must be enabled
+            // to create keys requiring user authentication") the moment a fresh
+            // emulator or device tries to enrol, since setUserAuthenticationRequired(true)
+            // has nothing to bind to yet. A real, ordinary failure mode -- not a crash.
+            if (e.cause is IllegalStateException) throw NoSecureLockScreenException(e)
+            throw e
+        }
         return generator.generateKeyPair().public
     }
 
@@ -126,3 +137,8 @@ class DeviceKeystore : DeviceKeyProvider {
  * does not exist on the platform at all — see the class doc above. */
 class DeviceKeystoreUnsupportedException(val sdkInt: Int) :
     Exception("device key agreement needs Android 12 (API 31) or later; this device is API $sdkInt")
+
+/** Thrown by [DeviceKeystore.ensureKeyPair] when the device has no secure lock screen
+ * (PIN, pattern, or password) set up at all — see the call site above. */
+class NoSecureLockScreenException(cause: Throwable) :
+    Exception("set a PIN, pattern or password on this device, then try again", cause)
