@@ -37,6 +37,18 @@ android {
         compose = true
     }
 
+    testOptions {
+        unitTests {
+            // androidx.exifinterface's ExifInterface calls android.util.Log.isLoggable
+            // in a static initializer; the bare android.jar stub throws for every
+            // unmocked framework method by default, which would otherwise force
+            // Robolectric just to construct the class. This AGP flag (not
+            // Robolectric) makes unmocked stub methods return their default value
+            // instead -- see ExifExtractorTest and android/AGENTS.md.
+            isReturnDefaultValues = true
+        }
+    }
+
     packaging {
         resources {
             // BouncyCastle (via :core:crypto) and jspecify both ship this OSGi manifest.
@@ -87,6 +99,8 @@ dependencies {
 
     implementation(libs.androidx.room.runtime)
     ksp(libs.androidx.room.compiler)
+
+    implementation(libs.androidx.exifinterface)
 
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)

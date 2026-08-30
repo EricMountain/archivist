@@ -21,6 +21,7 @@ okhttp = "4.12.0"
 datastorePreferences = "1.1.1"
 room = "2.8.4"
 sqliteBundled = "2.7.0"
+exifinterface = "1.4.2"
 securityCrypto = "1.1.0"
 credentials = "1.3.0"
 turbine = "1.2.0"
@@ -54,6 +55,7 @@ androidx-room-compiler = { group = "androidx.room", name = "room-compiler", vers
 # loadable by the host JVM running the test) — pin the "-jvm" artifact explicitly so
 # `testDebugUnitTest` gets the desktop native instead. See TestDatabase.kt.
 androidx-sqlite-bundled = { group = "androidx.sqlite", name = "sqlite-bundled-jvm", version.ref = "sqliteBundled" }
+androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
 androidx-credentials-play-services-auth = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }

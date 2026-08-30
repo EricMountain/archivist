@@ -123,6 +123,45 @@ same bounded real-time poll as `EnrolmentRepositoryTest`'s `awaitState` helper (
 `advanceUntilIdle()` + a short real `Thread.sleep` until the expected state appears or a
 timeout elapses), not a single `advanceUntilIdle()` call. See `FoldersViewModelTest`.
 
+**`androidx.exifinterface`'s `ExifInterface` needs `testOptions.unitTests.isReturnDefaultValues
+= true` to even construct in a plain JVM test** (not Robolectric — an AGP flag). Its
+static initializer calls `android.util.Log.isLoggable`, which the bare `android.jar`
+stub throws `RuntimeException: ... not mocked` for by default; the flag makes unmocked
+stub methods return their default value (`false` here) instead, letting the class load.
+Already set in `app/build.gradle.kts`.
+
+**That same flag corrupts `android.util.Pair` used *internally* by `ExifInterface`'s
+*write* path (`setAttribute`/`saveAttributes`), silently.** `isReturnDefaultValues` stubs
+every unmocked `android.*` method — including, it turns out, `android.util.Pair`'s
+constructor, which the stub treats like any other method and replaces with a no-op that
+never assigns `first`/`second`. `ExifInterface.setAttribute()`'s own format-guessing
+logic builds one of these internally and immediately dereferences `.first`, so instead
+of a "field never assigned" symptom this surfaces several frames away as
+`NullPointerException: Cannot invoke "java.lang.Integer.intValue()" because
+"guess.first" is null` — confirmed by reflectively calling the library's private
+`guessDataFormat` directly and watching it return a `Pair` with both fields null. The
+*read* path (`getAttribute`, `getGpsDateTime`, etc.) never touches this and is
+unaffected. Don't generate EXIF test fixtures by writing tags through `ExifInterface` in
+this test environment — write them with an external tool instead (`ExifExtractorTest`'s
+`canon-with-gps.jpg`, a real image with real EXIF/GPS tags, was generated once with
+Python's Pillow — `Image.Exif`/`get_ifd()` — and committed under
+`app/src/test/resources/exif-fixtures/`) and only ever *read* it back through
+`ExifInterface` in the test itself.
+
+**`ExifInterface.getGpsDateTime()` is genuinely nullable (`Long?`), not a sentinel
+value.** Easy to assume otherwise — some library versions' docs describe a negative
+sentinel for "not present" — but 1.4.2's Kotlin-visible signature is `@Nullable Long`,
+and the Kotlin compiler will catch a `Long.takeIf { it >= 0 }` treatment of it
+immediately (unboxing a null throws "Operator call is prohibited on a nullable
+receiver"). Trust the compiler over a half-remembered API shape here.
+
+**`TAG_IMAGE_WIDTH`/`TAG_IMAGE_LENGTH` do get populated for a plain JPEG with no EXIF
+segment at all**, confirmed empirically against a real (if synthetic) `javax.imageio`-
+generated JPEG: `ExifInterface` derives them from the JPEG's own SOF marker when no
+EXIF tag supplies them, so `getAttributeInt(TAG_IMAGE_WIDTH, 0)` alone is a reasonable
+fallback even before trying the more commonly-populated `TAG_PIXEL_X_DIMENSION`/
+`TAG_PIXEL_Y_DIMENSION` (Exif SubIFD tags most real cameras actually write).
+
 **Robolectric has no native JUnit5 support**, as of this writing (checked directly,
 not from memory) — only a third-party bridge (`tech.apter.junit5.jupiter:
 robolectric-extension`, still pre-1.0 at last check). If a future step (Compose UI
