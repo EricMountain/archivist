@@ -12,4 +12,8 @@ abstract class SyncModule {
     @Binds
     @Singleton
     abstract fun bindMediaStoreSource(impl: AndroidMediaStoreSource): MediaStoreSource
+
+    @Binds
+    @Singleton
+    abstract fun bindThumbnailer(impl: AndroidThumbnailer): Thumbnailer
 }
