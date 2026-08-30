@@ -137,6 +137,34 @@ class ConnectViewModelTest {
         }
 
     @Test
+    fun `changeInstance backs a connected instance out to NeedsConnection, prefilled with its host`() =
+        runTest(dispatcher) {
+            dispatcher.scheduler.advanceUntilIdle()
+            fakeApi.response = { document }
+            viewModel.connect("photos.example.com")
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.changeInstance()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(
+                ConnectUiState.NeedsConnection(prefillHost = "photos.example.com"),
+                viewModel.uiState.value,
+            )
+        }
+
+    @Test
+    fun `changeInstance is a no-op unless currently connected`() =
+        runTest(dispatcher) {
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.changeInstance()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(ConnectUiState.NeedsConnection(), viewModel.uiState.value)
+        }
+
+    @Test
     fun `connecting again while already connecting is a no-op`() =
         runTest(dispatcher) {
             dispatcher.scheduler.advanceUntilIdle()

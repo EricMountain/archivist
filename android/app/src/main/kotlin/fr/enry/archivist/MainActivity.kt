@@ -60,7 +60,12 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                     signedIn ->
                         EnrolmentScreen(onUnlocked = { unlocked = true }, modifier = Modifier.padding(innerPadding))
 
-                    else -> SignInScreen(onSignedIn = { signedIn = true }, modifier = Modifier.padding(innerPadding))
+                    else ->
+                        SignInScreen(
+                            onSignedIn = { signedIn = true },
+                            onChangeServer = connectViewModel::changeInstance,
+                            modifier = Modifier.padding(innerPadding),
+                        )
                 }
 
             is ConnectUiState.NeedsConnection ->

@@ -28,7 +28,7 @@ fun ConnectScreen(
     onConnect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var hostInput by remember { mutableStateOf("") }
+    var hostInput by remember(state.prefillHost) { mutableStateOf(state.prefillHost ?: "") }
 
     Column(
         modifier = modifier.fillMaxSize().padding(24.dp),

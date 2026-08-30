@@ -36,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 fun SignInScreen(
     onSignedIn: () -> Unit,
+    onChangeServer: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SignInViewModel = hiltViewModel(),
     passkeyCeremony: PasskeyCeremony = remember { PasskeyCeremony() },
@@ -62,7 +63,12 @@ fun SignInScreen(
             Centered(modifier) { CircularProgressIndicator() }
 
         is SignInUiState.EnterUsername ->
-            UsernameForm(s, onContinue = viewModel::continueWithUsername, modifier = modifier)
+            UsernameForm(
+                s,
+                onContinue = viewModel::continueWithUsername,
+                onChangeServer = onChangeServer,
+                modifier = modifier,
+            )
 
         is SignInUiState.EnterPassword ->
             PasswordForm(s, onSubmit = viewModel::signInWithPassword, modifier = modifier)
@@ -100,6 +106,7 @@ fun SignInScreen(
 private fun UsernameForm(
     state: SignInUiState.EnterUsername,
     onContinue: (String) -> Unit,
+    onChangeServer: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var username by remember { mutableStateOf("") }
@@ -115,6 +122,11 @@ private fun UsernameForm(
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
         )
         if (state.error != null) ErrorText(state.error)
+        TextButton(
+            onClick = onChangeServer,
+            enabled = !state.isSubmitting,
+            modifier = Modifier.padding(top = 8.dp),
+        ) { Text("Change server") }
         Button(
             onClick = { onContinue(username) },
             enabled = !state.isSubmitting && username.isNotBlank(),

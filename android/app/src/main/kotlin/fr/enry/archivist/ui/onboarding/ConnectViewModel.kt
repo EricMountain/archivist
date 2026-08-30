@@ -22,6 +22,10 @@ sealed interface ConnectUiState {
     data class NeedsConnection(
         val isConnecting: Boolean = false,
         val error: ConnectError? = null,
+        /** Set when this state was reached via [ConnectViewModel.changeInstance] —
+         * the host the user is backing out of, offered as a starting point rather
+         * than an empty field. */
+        val prefillHost: String? = null,
     ) : ConnectUiState
 }
 
@@ -73,6 +77,19 @@ class ConnectViewModel
                                 error = ConnectError.ServerTooNew(outcome.serverVersion, SUPPORTED_CRYPTO_VERSION),
                             )
                     }
+            }
+        }
+
+        /** Back out of a connected instance to pick a different one — the stored
+         * instance (and any session against it) is left untouched until [connect]
+         * actually succeeds against a new host, so this is non-destructive. */
+        fun changeInstance() {
+            val state = _uiState.value
+            if (state !is ConnectUiState.Connected) return
+
+            viewModelScope.launch {
+                val host = instanceRepository.currentInstance.first()?.host
+                _uiState.value = ConnectUiState.NeedsConnection(prefillHost = host)
             }
         }
     }
