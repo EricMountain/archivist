@@ -26,6 +26,10 @@ in the Terraform or the app may hardcode a domain, account or region. See
   plus every access pattern as a real query against those rows.
 * `docs/design/android.md` — design and tech stack for **Archivist**, the Android
   client (`fr.enry.archivist`).
+* `android/AGENTS.md` — Android build/test toolchain gotchas (JDK, Gradle/AGP bump
+  fallout, Room/coroutine test quirks). Environment knowledge, not design or status —
+  check it before a `./gradlew` failure sends you down a debugging rabbit hole, and add
+  to it when you find another one.
 * `docs/design/api.md` — every endpoint an instance exposes (method, path, what it
   does) and exactly what gates access to it — the JWT authorizer, `authMode`, and the
   three CloudFront surfaces (discovery doc, `/media/*`, `/thumbs/*`) that bypass it

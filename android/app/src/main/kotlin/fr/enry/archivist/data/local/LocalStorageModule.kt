@@ -6,11 +6,19 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
+import androidx.room.Room
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.Module
 import fr.enry.archivist.crypto.DeviceKeyProvider
 import fr.enry.archivist.crypto.DeviceKeystore
+import fr.enry.archivist.data.local.db.AppDatabase
+import fr.enry.archivist.data.local.db.FolderSelectionDao
+import fr.enry.archivist.data.local.db.LocalTombstoneDao
+import fr.enry.archivist.data.local.db.PhotoDao
+import fr.enry.archivist.data.local.db.RenditionDao
+import fr.enry.archivist.data.local.db.TimelineCursorDao
+import fr.enry.archivist.data.local.db.UploadQueueDao
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -65,4 +73,30 @@ object LocalStorageModule {
     @Provides
     @Singleton
     fun provideDeviceKeyProvider(): DeviceKeyProvider = DeviceKeystore()
+
+    @Provides
+    @Singleton
+    fun provideAppDatabase(
+        @ApplicationContext context: Context,
+    ): AppDatabase =
+        Room.databaseBuilder(context, AppDatabase::class.java, "archivist.db")
+            .build()
+
+    @Provides
+    fun providePhotoDao(database: AppDatabase): PhotoDao = database.photoDao()
+
+    @Provides
+    fun provideRenditionDao(database: AppDatabase): RenditionDao = database.renditionDao()
+
+    @Provides
+    fun provideUploadQueueDao(database: AppDatabase): UploadQueueDao = database.uploadQueueDao()
+
+    @Provides
+    fun provideLocalTombstoneDao(database: AppDatabase): LocalTombstoneDao = database.localTombstoneDao()
+
+    @Provides
+    fun provideFolderSelectionDao(database: AppDatabase): FolderSelectionDao = database.folderSelectionDao()
+
+    @Provides
+    fun provideTimelineCursorDao(database: AppDatabase): TimelineCursorDao = database.timelineCursorDao()
 }

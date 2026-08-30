@@ -15,6 +15,7 @@ import {
   membershipSk,
   metaSk,
   ownerPk,
+  parseSortKey,
   pathPtrPk,
   profileSk,
   ptrSk,
@@ -214,6 +215,21 @@ describe("timeline_gsi keys", () => {
     expect(sortKey("2026-06-21T14:30:00.000Z", A5)).toBe(
       `2026-06-21T14:30:00.000Z#${A5}`,
     );
+  });
+
+  it("parseSortKey is the exact inverse of sortKey", () => {
+    const takenAt = "2026-07-14T09:22:05.000Z";
+    expect(parseSortKey(sortKey(takenAt, A1))).toEqual({ timestamp: takenAt, id: A1 });
+  });
+
+  it("parseSortKey still separates A6/A7 correctly despite the shared timestamp", () => {
+    const tie = "2026-07-15T11:03:12.000Z";
+    expect(parseSortKey(sortKey(tie, A6))).toEqual({ timestamp: tie, id: A6 });
+    expect(parseSortKey(sortKey(tie, A7))).toEqual({ timestamp: tie, id: A7 });
+  });
+
+  it("parseSortKey rejects a key with no separator", () => {
+    expect(() => parseSortKey("not-a-sort-key")).toThrow();
   });
 });
 

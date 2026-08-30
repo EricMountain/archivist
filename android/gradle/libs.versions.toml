@@ -19,9 +19,12 @@ junitPlatformLauncher = "1.11.3"
 retrofit = "2.11.0"
 okhttp = "4.12.0"
 datastorePreferences = "1.1.1"
+room = "2.8.4"
+sqliteBundled = "2.7.0"
 securityCrypto = "1.1.0"
 credentials = "1.3.0"
 turbine = "1.2.0"
+mockitoKotlin = "6.3.0"
 androidxTestExtJunit = "1.2.1"
 androidxTestRunner = "1.6.2"
 
@@ -44,6 +47,13 @@ androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePreferences" }
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+# The plain "sqlite-bundled" artifact is a Kotlin Multiplatform umbrella that a plain
+# Android module's test classpath resolves to its *Android* variant (native .so, not
+# loadable by the host JVM running the test) — pin the "-jvm" artifact explicitly so
+# `testDebugUnitTest` gets the desktop native instead. See TestDatabase.kt.
+androidx-sqlite-bundled = { group = "androidx.sqlite", name = "sqlite-bundled-jvm", version.ref = "sqliteBundled" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
 androidx-credentials-play-services-auth = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
@@ -60,6 +70,7 @@ retrofit-kotlinx-serialization-converter = { group = "com.jakewharton.retrofit",
 okhttp-core = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
+mockito-kotlin = { group = "org.mockito.kotlin", name = "mockito-kotlin", version.ref = "mockitoKotlin" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

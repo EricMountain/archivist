@@ -45,6 +45,13 @@ android {
     }
 }
 
+ksp {
+    // Room schema JSON, one file per version — plan step 2.6's "migrations are
+    // exported". Nothing to diff yet at version 1; this is what a future bump diffs
+    // against.
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(project(":core:crypto"))
 
@@ -78,11 +85,20 @@ dependencies {
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)
 
+    implementation(libs.androidx.room.runtime)
+    ksp(libs.androidx.room.compiler)
+
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.turbine)
+    // DAO tests run as plain JVM unit tests against an in-memory database driven by
+    // BundledSQLiteDriver, rather than Robolectric or an instrumented test — no
+    // emulator/device in this build environment. See TestDatabase.kt for why a mocked
+    // Context (mockito-kotlin) is enough to satisfy Room's builder here.
+    testImplementation(libs.androidx.sqlite.bundled)
+    testImplementation(libs.mockito.kotlin)
 
     // 2.4a's KeystoreSpike only — a real-device measurement, not app functionality.
     androidTestImplementation(libs.junit)

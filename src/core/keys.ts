@@ -200,3 +200,17 @@ export function parseFacetGsiPk(facetPk: string): { type: string; value: string 
   }
   return { type: rest.slice(0, sep), value: rest.slice(sep + 1) };
 }
+
+/** Inverse of `sortKey`: recovers `{ timestamp, id }` from a `timelineSk` or
+ * `facetSk` value. `timestamp` is fixed-width `toIsoUtc` output and never
+ * contains `#`, so the first separator is always the boundary — unlike
+ * `parseFacetGsiPk`'s `value`, `id` (a ULID) can't contain `#` either, but even
+ * if a caller passed something stranger, splitting on the *first* `#` is still
+ * correct here since `timestamp` is always exactly one field. */
+export function parseSortKey(sk: string): { timestamp: string; id: string } {
+  const i = sk.indexOf(SEP);
+  if (i === -1) {
+    throw new Error(`malformed sort key: ${sk}`);
+  }
+  return { timestamp: sk.slice(0, i), id: sk.slice(i + 1) };
+}
