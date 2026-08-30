@@ -1,6 +1,8 @@
 package fr.enry.archivist
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -8,17 +10,49 @@ import dagger.hilt.android.HiltAndroidApp
 import dagger.hilt.components.SingletonComponent
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
+import fr.enry.archivist.data.local.db.UploadQueueDao
+import fr.enry.archivist.sync.UploadScheduler
+import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @HiltAndroidApp
-class ArchivistApplication : Application() {
-    /** `Application` isn't itself a Hilt field-injection target — this is the
-     * standard way to reach a `SingletonComponent` binding from here. */
+class ArchivistApplication : Application(), Configuration.Provider {
+    /** Plain `@Inject` fields on a `@HiltAndroidApp` class work fine (Hilt injects them
+     * during `attachBaseContext`, before [onCreate]/[workManagerConfiguration] can run)
+     * — [workerFactory] below uses that directly. [EntryPointAccessors] is only needed
+     * where a *plain, non-Hilt* caller (a `CoroutineWorker` isn't one, but the pattern
+     * predates this file's WorkManager wiring) needs a `SingletonComponent` binding
+     * without its own injection point. */
     @EntryPoint
     @InstallIn(SingletonComponent::class)
     interface MasterKeyHolderEntryPoint {
         fun masterKeyHolder(): MasterKeyHolder
 
         fun hashSecretHolder(): HashSecretHolder
+
+        fun uploadQueueDao(): UploadQueueDao
+
+        fun uploadScheduler(): UploadScheduler
+    }
+
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
+
+    override fun onCreate() {
+        super.onCreate()
+        // Re-enqueue anything a process death dropped before WorkManager itself could
+        // persist the enqueue — see UploadQueueDao.getActiveIds's doc. Cheap and
+        // idempotent either way: enqueueUniqueWork/KEEP is a no-op for anything
+        // WorkManager already knows about.
+        CoroutineScope(Dispatchers.Default).launch {
+            val holders = EntryPointAccessors.fromApplication(this@ArchivistApplication, MasterKeyHolderEntryPoint::class.java)
+            holders.uploadScheduler().enqueueAll(holders.uploadQueueDao().getActiveIds())
+        }
     }
 
     /** Per [MasterKey][fr.enry.archivist.crypto.MasterKey]'s own contract: "call clear

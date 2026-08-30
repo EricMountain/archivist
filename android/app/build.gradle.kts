@@ -102,7 +102,12 @@ dependencies {
 
     implementation(libs.androidx.exifinterface)
 
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
+    ksp(libs.androidx.hilt.compiler)
+
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.androidx.work.testing)
     testRuntimeOnly(libs.junit.platform.launcher)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)

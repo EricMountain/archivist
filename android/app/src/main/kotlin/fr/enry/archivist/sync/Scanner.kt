@@ -82,8 +82,18 @@ class Scanner
                                 folderUri = folder.folderUri,
                                 contentHash = contentHash,
                                 state = state,
+                                // Free from the same MediaStore row the scan already
+                                // read (AndroidMediaStoreSource.listFiles) — plan step
+                                // 2.10's upload worker needs both before it can even
+                                // start (plainBytes for the POST body, fileMtimeEpochSec
+                                // as Timestamps.resolve's file-mtime fallback rung), and
+                                // there's no cheaper time to capture them than now.
+                                plainBytes = file.size,
+                                fileMtimeEpochSec = file.dateModified,
                                 takenAt = null,
                                 tzOffsetMin = null,
+                                takenAtSrc = null,
+                                tzSrc = null,
                                 mime = null,
                                 width = null,
                                 height = null,

@@ -12,6 +12,15 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- Plan step 2.10: the upload worker runs as a foreground service (via
+         WorkManager's own SystemForegroundService) so Android doesn't kill it
+         mid-transfer. POST_NOTIFICATIONS is declared but not requested at runtime
+         yet — see STATUS.md; the worker still runs without it, the notification just
+         won't be visible on API 33+ until a future step adds that permission prompt. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".ArchivistApplication"
         android:allowBackup="false"

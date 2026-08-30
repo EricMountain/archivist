@@ -3,9 +3,11 @@ package fr.enry.archivist.ui.settings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.db.FolderSelectionDao
 import fr.enry.archivist.data.local.db.FolderSelectionEntity
+import fr.enry.archivist.data.local.db.UploadQueueDao
 import fr.enry.archivist.data.repo.EnrolmentRepository
 import fr.enry.archivist.sync.MediaStoreSource
 import fr.enry.archivist.sync.Scanner
+import fr.enry.archivist.sync.UploadScheduler
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import javax.inject.Inject
@@ -55,6 +57,8 @@ class FoldersViewModel
         private val folderSelectionDao: FolderSelectionDao,
         private val scanner: Scanner,
         private val enrolmentRepository: EnrolmentRepository,
+        private val uploadQueueDao: UploadQueueDao,
+        private val uploadScheduler: UploadScheduler,
     ) : ViewModel() {
         private val _uiState = MutableStateFlow<FoldersUiState>(FoldersUiState.NeedsPermission)
         val uiState: StateFlow<FoldersUiState> = _uiState.asStateFlow()
@@ -129,6 +133,14 @@ class FoldersViewModel
             }
 
             val result = scanner.scan()
+            // "Selecting a folder queues its unsynced files" (this step's own "Done
+            // when") reads as an immediate consequence, and plan step 2.10's worker is
+            // what actually acts on the queue -- enqueue every unfinished row, not
+            // just what this particular scan added, so a previous scan's leftovers
+            // (e.g. from before the app had a master key) get picked up too.
+            if (result.isSuccess) {
+                uploadScheduler.enqueueAll(uploadQueueDao.getActiveIds())
+            }
             _uiState.value =
                 (_uiState.value as? FoldersUiState.Loaded)?.copy(
                     isScanning = false,

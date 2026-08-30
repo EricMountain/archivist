@@ -543,10 +543,38 @@ The client can override rather than predict: an explicit `groupWith: <photoId>` 
 For each incoming file: compute the stem, then conditionally put the `STEM` pointer
 with `attribute_not_exists(pk)`.
 
-* **Succeeds** — this is a new asset. Mint a `photoId`, write `#META` plus the first
-  `R#`.
+* **Succeeds** — this is a new asset. Mint a `photoId` — or, if the client proposed one
+  (see below), use that — and write `#META` plus the first `R#`.
 * **Fails** — an asset already owns this stem. Read the `photoId` from the pointer and
   write only an `R#` into its partition.
+
+**Why the client gets to propose a `photoId`.** `crypto-format.md`'s AAD embeds
+`photoId`, and thumbnails/EXIF are encrypted and included in the same `POST /uploads`
+call that decides grouping — so by the time the outcome is known, it's too late to
+choose the AAD they were already encrypted against. `POST /uploads` therefore accepts
+an optional client-minted `photoId` (a ULID) and uses it exactly when this asset turns
+out to be new; the response's `created` flag says whether that happened, and echoes back
+whichever `encDek`/`encKeyId` is now authoritative (the client's own, if `created`; the
+existing asset's, if not). On attach, the client's candidate is discarded along with
+whatever it pre-encrypted against it — which is fine for thumbnails/EXIF specifically
+because neither is persisted on an attach today regardless (see plan step 2.10's
+STATUS.md note), but it does mean an attaching rendition's original bytes must be
+re-encrypted, after the fact, under the real `photoId`/DEK before they're streamed to
+`originalUpload.url`.
+
+**Resuming an interrupted upload.** The hash/stem pointers commit before any ciphertext
+is sent, so a live hash-duplicate can point at an asset still `status: processing` —
+its uploader died mid-PUT (a process kill, a lost connection). `POST /uploads` treats
+that specifically, not a bare `duplicate: true` (which carries no presigned URL to
+retry with — the asset would otherwise be stuck in `processing` forever): it re-presigns
+the same deterministic S3 keys, re-records `#META.thumbs` from this call's fresh
+descriptors, and responds `resumed: true` alongside the same `encDek`/`encKeyId`/
+`created: false` shape an attach uses, so the client's handling is identical either way
+except that a `resumed` response is safe to also re-upload thumbnails against (the
+attach case isn't, until `#META.thumbs` is kept in sync with a later-arriving primary
+rendition too — a known, separate gap; see plan step 2.10's STATUS.md note). Only
+`status: ready` still gets the bare `duplicate: true` short-circuit, since there's
+nothing left to finish.
 
 The conditional put also settles the race when a RAW and a JPEG upload concurrently:
 one creates the asset, the loser re-reads the pointer and attaches. No locking, and the
@@ -744,6 +772,14 @@ What stays in the clear is everything a query actually needs: `takenAt`, the res
 `tzOffsetMin`, dimensions, MIME, sizes, and the derived facets. The offset ladder runs
 on the *client* at ingest and stores only its result, so the GPS-delta trick keeps
 working without the coordinates ever reaching the server.
+
+The blob's own shape isn't specified here or in `crypto-format.md` — it's a JSON summary
+of whichever fields a client already extracted (camera make/model/serial, lens, the raw
+`DateTimeOriginal`/`OffsetTimeOriginal` strings, the resolved GPS UTC instant), not the
+raw EXIF binary segment. See `ExifBlob` in Android's `domain/ExifExtractor.kt` for the
+concrete shape one client uses; nothing requires other clients to match it byte-for-byte,
+only to encrypt *something* under `exifEnc`/`exifIv` that their own detail screen can
+decode back.
 
 Nothing is lost from search, because no query ever wanted raw coordinates. What is lost
 is the ability to derive *new* facets from EXIF later — the same shape of problem as

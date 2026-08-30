@@ -12,10 +12,12 @@ import fr.enry.archivist.data.repo.EnrolmentRepository
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.sync.Scanner
+import fr.enry.archivist.sync.UploadScheduler
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeDeviceKeyProvider
 import fr.enry.archivist.testutil.FakeMediaStoreSource
 import fr.enry.archivist.testutil.FakeSharedPreferences
+import fr.enry.archivist.testutil.FakeUploadScheduler
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +51,7 @@ class FoldersViewModelTest {
     private lateinit var tempDir: File
     private lateinit var db: AppDatabase
     private lateinit var mediaStoreSource: FakeMediaStoreSource
+    private lateinit var uploadScheduler: FakeUploadScheduler
     private lateinit var viewModel: FoldersViewModel
 
     @BeforeEach
@@ -95,12 +98,15 @@ class FoldersViewModelTest {
                 hashSecretHolder = hashSecretHolder,
             )
 
+        uploadScheduler = FakeUploadScheduler()
         viewModel =
             FoldersViewModel(
                 mediaStoreSource = mediaStoreSource,
                 folderSelectionDao = db.folderSelectionDao(),
                 scanner = scanner,
                 enrolmentRepository = enrolmentRepository,
+                uploadQueueDao = db.uploadQueueDao(),
+                uploadScheduler = uploadScheduler,
             )
     }
 
@@ -163,6 +169,9 @@ class FoldersViewModelTest {
             assertTrue(state.folders.single().enabled)
             assertEquals(1, state.lastScanQueued)
             assertEquals(false, state.isScanning)
+            // The newly queued row was handed to the scheduler -- plan step 2.10's
+            // worker is what actually acts on it.
+            assertEquals(1, uploadScheduler.enqueuedCalls.flatten().size)
         }
 
     @Test

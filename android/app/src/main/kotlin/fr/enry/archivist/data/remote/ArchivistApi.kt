@@ -75,6 +75,19 @@ interface ArchivistApi {
     suspend fun getHashSecret(
         @Url url: String,
     ): Response<HashSecretResponse>
+
+    /** Plan step 2.10: the stem/hash handshake — see `POST /uploads` in `api.md` and
+     * "Ingest"/"Resuming an interrupted upload" in `design.md`. Never throws on a
+     * `4xx`/`5xx` on its own ([Response] rather than a bare return type), because
+     * [fr.enry.archivist.data.repo.UploadRepository] has to tell a permanent failure
+     * (bad metadata — stop retrying) apart from a transient one (retry with backoff),
+     * which `HttpException` alone doesn't distinguish as cleanly as a status code does.
+     */
+    @POST
+    suspend fun postUpload(
+        @Url url: String,
+        @Body body: PostUploadRequest,
+    ): Response<PostUploadResponse>
 }
 
 @Serializable
@@ -151,3 +164,72 @@ data class HashSecretResponse(val encHashSecret: String, val hashSecretKeyId: St
  * Archivist API (not Cognito's) uses — see `src/lambda/api/index.ts`. */
 @Serializable
 data class ArchivistErrorBody(val error: String? = null)
+
+@Serializable
+data class ThumbDescriptorDto(val bytes: Long, val iv: String)
+
+/** `src/lambda/api/routes/uploads.ts`'s `UploadBody`. [photoId] is this device's
+ * candidate — see design.md's "Why the client gets to propose a photoId". [encIv] is
+ * whole-object mode only (`encChunkSize == 0L`); left `null` for streaming mode, per
+ * crypto-format.md, and kotlinx.serialization's default `encodeDefaults = false` then
+ * drops it from the JSON entirely rather than sending an explicit `null` — matching
+ * `uploads.ts`'s own "encIv is required for whole-object mode" check, not just
+ * satisfying it by accident. */
+@Serializable
+data class PostUploadRequest(
+    val path: String,
+    val plainBytes: Long,
+    val bytes: Long,
+    val mime: String,
+    val width: Int,
+    val height: Int,
+    val contentHash: String,
+    val takenAt: String,
+    val takenAtSrc: String,
+    val tzOffsetMin: Int,
+    val tzSrc: String,
+    val deviceKey: String? = null,
+    val exifEnc: String? = null,
+    val exifIv: String? = null,
+    val encDek: String,
+    val encKeyId: String,
+    val encIv: String? = null,
+    val encChunkSize: Long,
+    val thumbs: Map<String, ThumbDescriptorDto>? = null,
+    val reAddDeleted: Boolean? = null,
+    val groupWith: String? = null,
+    val noGroup: Boolean? = null,
+    val photoId: String? = null,
+)
+
+@Serializable
+data class OriginalUploadDto(val url: String)
+
+/** Every shape `postUpload` (server-side) can return, collapsed into one class with
+ * variant-specific fields left null — same pattern as [KeyWrapDto]. See
+ * `routes/uploads.ts` for which fields are set together:
+ * - `duplicate`/`trashed`/`restored`/`skipped` — no upload needed, nothing to encrypt.
+ * - `created`/`resumed`/`encDek`/`encKeyId`/`originalUpload`/`thumbUploads` — proceed;
+ *   see [fr.enry.archivist.data.repo.UploadRepository] for exactly how the three
+ *   combinations of `created`/`resumed` change what gets (re-)encrypted and PUT. */
+@Serializable
+data class PostUploadResponse(
+    val photoId: String? = null,
+    val renditionId: String? = null,
+    val duplicate: Boolean? = null,
+    val trashed: Boolean? = null,
+    val restored: Boolean? = null,
+    val skipped: Boolean? = null,
+    val created: Boolean? = null,
+    val resumed: Boolean? = null,
+    val encDek: String? = null,
+    val encKeyId: String? = null,
+    /** Set only when [resumed] is true — the rendition's own `encIv`/`encChunkSize`
+     * were fixed by whichever attempt's transaction actually committed and are never
+     * rewritten afterwards, so a resuming client must reuse them exactly rather than
+     * generating fresh ones (see "Resuming an interrupted upload" in design.md). */
+    val encIv: String? = null,
+    val encChunkSize: Long? = null,
+    val originalUpload: OriginalUploadDto? = null,
+    val thumbUploads: Map<String, String>? = null,
+)

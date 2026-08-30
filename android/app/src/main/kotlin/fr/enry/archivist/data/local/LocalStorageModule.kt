@@ -80,6 +80,9 @@ object LocalStorageModule {
         @ApplicationContext context: Context,
     ): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, "archivist.db")
+            // See AppDatabase's version-2 doc: no install has ever shipped version 1,
+            // so there's nothing worth writing a real migration to preserve yet.
+            .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
 
     @Provides

@@ -6,7 +6,7 @@ import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ApiError } from "@archivist/core/errors";
 import { ddb, tableName } from "@archivist/core/db";
 import { mediaPk, metaSk } from "@archivist/core/keys";
-import { newUlid } from "@archivist/core/ids";
+import { isUlid, newUlid } from "@archivist/core/ids";
 import { toIsoUtc } from "@archivist/core/time";
 import { resolveRole, roleOutranks, stemFromPath, takenAtSrcOutranks } from "@archivist/core/paths";
 import {
@@ -62,6 +62,17 @@ interface UploadBody {
   reAddDeleted?: boolean;
   groupWith?: string;
   noGroup?: boolean;
+  /** Client-minted candidate photoId (a ULID). Every object that isn't the bare
+   * original rendition — thumbnails, the EXIF blob, and the original itself once it's
+   * streamed — is encrypted client-side under an AAD that embeds `photoId`
+   * (`crypto-format.md`), and that encryption has to happen before this call returns
+   * whatever ID the server would otherwise mint. So the client picks one up front and
+   * this call uses it *when creating a new asset* — see the response's `created` flag.
+   * When this upload instead attaches to an existing asset, the candidate is discarded
+   * in favour of the existing photoId/DEK (echoed back as `encDek`/`encKeyId`), and
+   * whatever the client pre-encrypted against its candidate is simply never persisted
+   * — see 2.10's STATUS.md note on why thumbnails/EXIF aren't re-uploaded on attach. */
+  photoId?: string;
 }
 
 const MIN_TAKEN_AT = Date.UTC(1990, 0, 1);
@@ -89,11 +100,17 @@ function validate(body: UploadBody): void {
   if (!Number.isFinite(body.bytes) || body.bytes <= 0) {
     throw ApiError.validation("bytes must be a positive number");
   }
-  if (!body.encDek || !body.encKeyId || !body.encIv) {
-    throw ApiError.validation("encDek, encKeyId and encIv are required");
+  if (!body.encDek || !body.encKeyId) {
+    throw ApiError.validation("encDek and encKeyId are required");
   }
   if (body.encChunkSize === undefined || body.encChunkSize < 0) {
     throw ApiError.validation("encChunkSize must be 0 or a positive chunk size");
+  }
+  // encIv is whole-object-mode only (crypto-format.md: the streaming format carries
+  // its salt/nonce prefix in the ciphertext header instead) — required exactly when
+  // encChunkSize says whole-object, never required otherwise.
+  if (body.encChunkSize === 0 && !body.encIv) {
+    throw ApiError.validation("encIv is required for whole-object mode (encChunkSize: 0)");
   }
   const takenAtMs = Date.parse(body.takenAt);
   if (!Number.isFinite(takenAtMs)) {
@@ -104,6 +121,9 @@ function validate(body: UploadBody): void {
   }
   if (body.exifEnc && body.exifEnc.length > MAX_EXIF_BLOB_CHARS) {
     throw ApiError.validation("exifEnc exceeds the maximum size");
+  }
+  if (body.photoId !== undefined && !isUlid(body.photoId)) {
+    throw ApiError.validation("photoId must be a ULID");
   }
 }
 
@@ -198,6 +218,21 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
       await recordBlockedHashAttempt(ownerId, body.contentHash, attemptBy, uploadedAt);
       return ok({ photoId: hashPtr.photoId, renditionId: hashPtr.renditionId, duplicate: true, trashed: true });
     }
+    // The hash/stem pointers and the #META/#R# items commit in one transaction
+    // *before* any ciphertext is sent (see "Ingest" in design.md) — so a rendition
+    // can be a live hash-duplicate while its bytes never actually arrived (the
+    // client died mid-PUT: a process kill or a lost connection, exactly what plan
+    // step 2.10's "Done when" tests). A bare `duplicate: true` would leave that
+    // asset stuck in `processing` forever, since it carries no presigned URL to
+    // retry with. Re-presigning instead — same deterministic S3 keys, cheap — lets
+    // whoever holds these exact bytes (almost certainly the same device, resuming)
+    // finish the job. Harmless even for a genuine coincidental dedup from a
+    // different caller: same plaintext, so identical ciphertext once encrypted
+    // under the returned encDek, and thumbs get re-recorded from *this* call's
+    // descriptors same as a fresh create would.
+    if (target && target.status === "processing" && hashPtr.renditionId) {
+      return resumeUpload(ownerId, hashPtr.photoId, hashPtr.renditionId, body, target);
+    }
     return ok({ photoId: hashPtr.photoId, renditionId: hashPtr.renditionId, duplicate: true });
   }
 
@@ -239,7 +274,7 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
   // 3. Stem resolution: try creating a new asset first. noGroup forces a unique
   // effective stem so this branch always wins.
   const effectiveStem = body.noGroup ? `${stem} ${renditionId}` : stem;
-  const candidatePhotoId = newUlid();
+  const candidatePhotoId = body.photoId ?? newUlid();
   const role = resolveRole(ext, undefined);
 
   try {
@@ -297,6 +332,13 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
     return ok({
       photoId: candidatePhotoId,
       renditionId,
+      // created: true tells the client its candidate photoId/DEK (see UploadBody.photoId)
+      // was actually used, so whatever it pre-encrypted against them is valid to upload
+      // as-is. encDek/encKeyId are echoed back for symmetry with the attach branch below
+      // rather than because the client doesn't already know them here.
+      created: true,
+      encDek: body.encDek,
+      encKeyId: body.encKeyId,
       originalUpload: {
         url: await presignPut(
           originalsBucket(),
@@ -404,12 +446,68 @@ async function attachAndRespond(args: AttachAndRespondArgs): Promise<ApiResponse
   return ok({
     photoId: existing.photoId,
     renditionId,
+    // created: false tells the client its candidate photoId/DEK were discarded in
+    // favour of the existing asset's — whatever it pre-encrypted against its own
+    // candidate (thumbnails, exifEnc) is bound to the wrong AAD/key and must not be
+    // uploaded. encDek/encKeyId are the *existing* asset's, wrapped under the same
+    // master key version the client already holds — unwrap and re-encrypt the original
+    // rendition against these before streaming it to originalUpload.url. Note thumbUploads
+    // here is presigned but nothing re-persists #META.thumbs/exifEnc for this rendition
+    // even when it becomesPrimary — see STATUS.md's note on plan step 2.10 for why the
+    // client deliberately skips PUTting to these URLs.
+    created: false,
+    encDek: existing.encDek,
+    encKeyId: existing.encKeyId,
     originalUpload: {
       url: await presignPut(
         originalsBucket(),
         originalKey(ownerId, existing.photoId, renditionId),
         { storageClass: "INTELLIGENT_TIERING" },
       ),
+    },
+    thumbUploads: uploads,
+  });
+}
+
+// Re-presigns an already-committed-but-still-processing rendition's upload URLs —
+// see the `target.status === "processing"` branch in postUpload above. Nothing
+// about identity (photoId/renditionId/hash+stem pointers/encDek) changes here;
+// only thumbs are re-recorded, from this call's fresh descriptors, same as the
+// create path does on a first attempt.
+async function resumeUpload(
+  ownerId: string,
+  photoId: string,
+  renditionId: string,
+  body: UploadBody,
+  target: MetaItem,
+): Promise<ApiResponse> {
+  const { thumbs, uploads } = await presignedThumbs(ownerId, photoId, body.thumbs);
+  if (Object.keys(thumbs).length > 0) {
+    await setThumbs(ownerId, photoId, thumbs);
+  }
+
+  // The R# item's own encIv/encChunkSize were fixed by whichever attempt's
+  // createAsset/attachRendition transaction actually committed, and are never
+  // rewritten afterwards (unlike #META.thumbs above) — a resuming client MUST
+  // reuse them bit-for-bit rather than generating a fresh IV, or the ciphertext it
+  // PUTs won't match what this item already (and permanently) claims decrypts it.
+  const existingRendition = (await getRenditionItems(ownerId, photoId)).find(
+    (r) => r.renditionId === renditionId,
+  );
+
+  return ok({
+    photoId,
+    renditionId,
+    resumed: true,
+    created: false,
+    encDek: target.encDek,
+    encKeyId: target.encKeyId,
+    encIv: existingRendition?.encIv,
+    encChunkSize: existingRendition?.encChunkSize,
+    originalUpload: {
+      url: await presignPut(originalsBucket(), originalKey(ownerId, photoId, renditionId), {
+        storageClass: "INTELLIGENT_TIERING",
+      }),
     },
     thumbUploads: uploads,
   });

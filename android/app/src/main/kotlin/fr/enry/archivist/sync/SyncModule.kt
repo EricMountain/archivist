@@ -16,4 +16,8 @@ abstract class SyncModule {
     @Binds
     @Singleton
     abstract fun bindThumbnailer(impl: AndroidThumbnailer): Thumbnailer
+
+    @Binds
+    @Singleton
+    abstract fun bindUploadScheduler(impl: WorkManagerUploadScheduler): UploadScheduler
 }

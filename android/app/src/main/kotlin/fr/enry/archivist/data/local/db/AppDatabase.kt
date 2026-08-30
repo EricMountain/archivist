@@ -10,8 +10,13 @@ import androidx.room.TypeConverters
  * is the source of truth the UI reads — nothing binds directly to a network response.
  *
  * `exportSchema = true` so a future schema change has something to diff a migration
- * against; version 1 has no migration of its own yet, since nothing has shipped this
- * schema before.
+ * against.
+ *
+ * Version 2 (plan step 2.10) added four `upload_queue` columns (`plainBytes`,
+ * `fileMtimeEpochSec`, `takenAtSrc`, `tzSrc`) the upload worker needs. No real migration
+ * — [fr.enry.archivist.data.local.LocalStorageModule] falls back to a destructive one,
+ * which only ever drops a local cache/queue (nothing server-side), and nothing has
+ * shipped this schema to a real install yet.
  */
 @Database(
     entities = [
@@ -22,7 +27,7 @@ import androidx.room.TypeConverters
         FolderSelectionEntity::class,
         TimelineCursorEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

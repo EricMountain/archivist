@@ -3,6 +3,7 @@ package fr.enry.archivist.domain
 import androidx.exifinterface.media.ExifInterface
 import java.io.InputStream
 import java.time.Instant
+import kotlinx.serialization.Serializable
 
 /**
  * Everything plan step 2.8's timestamp/offset ladders ([Timestamps]) need out of a
@@ -32,6 +33,43 @@ data class ExifData(
      * that. */
     val gpsDateTimeUtc: Instant?,
 )
+
+/**
+ * What plan step 2.10 encrypts and uploads as `exifEnc`: a JSON summary of the fields
+ * [ExifData] already extracted, rather than the raw EXIF binary segment — nothing
+ * downstream needs the original bytes, only these same values (2.12's photo-detail
+ * screen reads them back the same way [fr.enry.archivist.domain.Timestamps] does here).
+ * `design.md`'s "Encrypted EXIF" specifies *that* the blob is encrypted, not its exact
+ * shape; this is that choice, made concrete. [gpsDateTimeUtc] is an ISO-8601 string
+ * since kotlinx.serialization has no built-in serializer for `java.time` types.
+ */
+@Serializable
+data class ExifBlob(
+    val cameraMake: String? = null,
+    val cameraModel: String? = null,
+    val cameraSerial: String? = null,
+    val lens: String? = null,
+    val dateTimeOriginal: String? = null,
+    val offsetTimeOriginal: String? = null,
+    val gpsDateTimeUtc: String? = null,
+) {
+    companion object {
+        /** Null when every field would be null — nothing worth encrypting. */
+        fun from(exif: ExifData): ExifBlob? {
+            val blob =
+                ExifBlob(
+                    cameraMake = exif.cameraMake,
+                    cameraModel = exif.cameraModel,
+                    cameraSerial = exif.cameraSerial,
+                    lens = exif.lens,
+                    dateTimeOriginal = exif.dateTimeOriginal,
+                    offsetTimeOriginal = exif.offsetTimeOriginal,
+                    gpsDateTimeUtc = exif.gpsDateTimeUtc?.toString(),
+                )
+            return if (blob == ExifBlob()) null else blob
+        }
+    }
+}
 
 /**
  * The client-side half of "EXIF extraction, dimensions, MIME sniffing" (`design.md`,

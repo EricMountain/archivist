@@ -30,7 +30,10 @@ enum class UploadState {
  * outlive the UI — android.md). [contentHash] is null until the scanner computes it,
  * and [photoId]/[renditionId] are null until `POST /uploads` assigns them — the client
  * proposes a path, the server decides identity and grouping (design.md, "Who
- * decides").
+ * decides"). [plainBytes]/[fileMtimeEpochSec] come from `MediaStore` at scan time (free,
+ * already in hand — see [fr.enry.archivist.sync.Scanner]); [takenAt]/[tzOffsetMin]/
+ * [mime]/[width]/[height]/[takenAtSrc]/[tzSrc] are filled in later, by plan step 2.10's
+ * upload worker, once it's actually read the file's EXIF.
  */
 @Entity(
     tableName = "upload_queue",
@@ -43,8 +46,16 @@ data class UploadQueueEntity(
     val folderUri: String,
     val contentHash: String?,
     val state: UploadState,
+    val plainBytes: Long?,
+    val fileMtimeEpochSec: Long?,
     val takenAt: String?,
     val tzOffsetMin: Int?,
+    /** Wire value of [fr.enry.archivist.domain.TakenAtSrc] — plain `String`, not the
+     * enum itself, matching how every other wire-shaped column here (`mime`, `state`
+     * aside) is stored; Room's `Converters` are for types that don't already have an
+     * obvious wire string. */
+    val takenAtSrc: String?,
+    val tzSrc: String?,
     val mime: String?,
     val width: Int?,
     val height: Int?,
@@ -81,8 +92,12 @@ interface UploadQueueDao {
         UPDATE upload_queue SET
             contentHash = :contentHash,
             state = :state,
+            plainBytes = :plainBytes,
+            fileMtimeEpochSec = :fileMtimeEpochSec,
             takenAt = :takenAt,
             tzOffsetMin = :tzOffsetMin,
+            takenAtSrc = :takenAtSrc,
+            tzSrc = :tzSrc,
             mime = :mime,
             width = :width,
             height = :height,
@@ -98,8 +113,12 @@ interface UploadQueueDao {
         id: Long,
         contentHash: String?,
         state: UploadState,
+        plainBytes: Long?,
+        fileMtimeEpochSec: Long?,
         takenAt: String?,
         tzOffsetMin: Int?,
+        takenAtSrc: String?,
+        tzSrc: String?,
         mime: String?,
         width: Int?,
         height: Int?,
@@ -115,8 +134,12 @@ interface UploadQueueDao {
             entry.id,
             entry.contentHash,
             entry.state,
+            entry.plainBytes,
+            entry.fileMtimeEpochSec,
             entry.takenAt,
             entry.tzOffsetMin,
+            entry.takenAtSrc,
+            entry.tzSrc,
             entry.mime,
             entry.width,
             entry.height,
@@ -126,6 +149,21 @@ interface UploadQueueDao {
             entry.lastError,
             entry.updatedAt,
         )
+
+    @Query("SELECT * FROM upload_queue WHERE id = :id")
+    suspend fun getById(id: Long): UploadQueueEntity?
+
+    /** Every row [fr.enry.archivist.sync.UploadWorker] still has work to do on —
+     * everything except [UploadState.DONE] (finished) and [UploadState.FAILED]
+     * (permanently gave up; a retriable failure is WorkManager's own `Result.retry()`,
+     * which keeps a row's state at whatever stage it failed in, not [UploadState.FAILED]
+     * — see [fr.enry.archivist.data.repo.UploadRepository]). Used both right after a
+     * scan and at app startup, to re-enqueue anything a process death might have dropped
+     * before WorkManager itself could persist it. */
+    @Query(
+        "SELECT id FROM upload_queue WHERE state IN ('PENDING', 'EXTRACTING', 'THUMBNAILING', 'UPLOADING')",
+    )
+    suspend fun getActiveIds(): List<Long>
 
     @Query("SELECT * FROM upload_queue ORDER BY createdAt ASC")
     fun observeAll(): Flow<List<UploadQueueEntity>>

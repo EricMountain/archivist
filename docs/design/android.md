@@ -186,7 +186,20 @@ Durable across process death, because a 500-photo import will outlive the UI:
 
 The metadata `POST` happens *before* the bytes, matching the pending-`#META` handshake
 in `design.md`. The server assigns identity and decides grouping; the client only
-proposes a path.
+proposes a path — and, since plan step 2.10, a candidate `photoId` too, for the reason
+design.md's "Why the client gets to propose a photoId" explains: the AAD that
+encryption needs is chosen before the server would otherwise mint one.
+
+**Not true S3 multipart, despite this doc's own "align S3 multipart parts to crypto
+segments" above.** `POST /uploads` presigns one PUT per object (`src/lambda/api/routes/uploads.ts`
+never did — and still doesn't — offer `CreateMultipartUpload`/per-part presigned URLs),
+so 2.10's `UploadRepository` streams the whole ciphertext through a single OkHttp PUT
+whose `RequestBody` wraps `StreamingCipher`'s/`WholeObjectCipher`'s encrypting
+`OutputStream` — internally still exactly the 1 MiB Tink segments `crypto-format.md`
+specifies, just not chunked into separate S3 parts at the transport layer. Real
+multipart (parallel parts, true mid-object resume) would need a backend change this
+step didn't need to make; see STATUS.md's note on plan step 2.10 for what resuming an
+interrupted upload does instead.
 
 ### Battery and data policy
 

@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Archivist</string>
+
+    <!-- Plan step 2.10: the foreground notification a long-running upload shows so
+         Android doesn't kill the worker mid-transfer. -->
+    <string name="upload_notification_channel_name">Backup</string>
+    <string name="upload_notification_title">Backing up %1$s</string>
 </resources>
