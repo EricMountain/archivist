@@ -2,6 +2,12 @@ package fr.enry.archivist.ui.onboarding
 
 import android.app.Activity
 import android.app.KeyguardManager
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
+import android.os.PersistableBundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +34,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 
 /**
  * Plan step 2.5. Shown after [SignInScreen] and before anything that needs to decrypt.
@@ -159,6 +166,16 @@ private fun ShowRecoveryCodeView(
     onSaved: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    var justCopied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(justCopied) {
+        if (justCopied) {
+            delay(2000)
+            justCopied = false
+        }
+    }
+
     Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
         Text("Save your recovery code", style = MaterialTheme.typography.headlineSmall)
         Text(
@@ -170,10 +187,34 @@ private fun ShowRecoveryCodeView(
         Text(
             state.formattedCode,
             style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace),
-            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 24.dp),
+            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp),
         )
+        TextButton(
+            onClick = {
+                copyToClipboard(context, state.formattedCode)
+                justCopied = true
+            },
+            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 16.dp),
+        ) { Text(if (justCopied) "Copied" else "Copy code") }
         Button(onClick = onSaved, modifier = Modifier.align(Alignment.End)) { Text("I've saved it") }
     }
+}
+
+/**
+ * Marked sensitive (API 33+) so launchers/keyboards that preview clipboard contents
+ * don't surface this secret on screen — no such flag exists below API 33, so it's
+ * plain-text in the clipboard there like anything else copied on those versions.
+ */
+private fun copyToClipboard(
+    context: Context,
+    text: String,
+) {
+    val clipboardManager = context.getSystemService(ClipboardManager::class.java) ?: return
+    val clip = ClipData.newPlainText("Archivist recovery code", text)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        clip.description.extras = PersistableBundle().apply { putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true) }
+    }
+    clipboardManager.setPrimaryClip(clip)
 }
 
 @Composable
