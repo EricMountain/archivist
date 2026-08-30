@@ -1,5 +1,7 @@
-// GET/POST /keys, DELETE /keys/{wrapId}, POST /keys/version, PUT /keys/hash-secret
-// — plan step 1.8.
+// GET/POST /keys, DELETE /keys/{wrapId}, POST /keys/version, GET/PUT /keys/hash-secret
+// — plan step 1.8. GET /keys/hash-secret added later, closing design.md open question 4
+// (a later device recovering the master key had no way to fetch the wrapped hashSecret
+// it needs for contentHash dedup — plan step 2.7/2.10's blocker).
 import { ApiError } from "@archivist/core/errors";
 import {
   allocateMasterKeyVer,
@@ -9,6 +11,7 @@ import {
   putHashSecret,
   putKeyWrap,
 } from "@archivist/core/repo/keys";
+import { getOwnerSettings } from "@archivist/core/repo/identity";
 import { newUlid } from "@archivist/core/ids";
 import { toIsoUtc } from "@archivist/core/time";
 import type { KeyWrapItem, WrapKind } from "@archivist/core/items";
@@ -132,6 +135,23 @@ export const postKeyVersion: RouteHandler = async (req: ApiRequest) => {
   const ownerId = req.auth!.ownerId;
   const result = await allocateMasterKeyVer(ownerId);
   return created(result);
+};
+
+/** A device that already has the master key (enrolled fresh, or recovered via code)
+ * still needs this to compute `contentHash` for dedup — the hash secret is wrapped
+ * by the master key exactly like a DEK, so the client unwraps it the same way once
+ * it has both. 404 until the first device has ever called `PUT /keys/hash-secret`
+ * (design.md: "absent until then"). */
+export const getKeyHashSecret: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const settings = await getOwnerSettings(ownerId);
+  if (!settings?.encHashSecret || !settings.hashSecretKeyId) {
+    throw ApiError.notFound("no hash secret has been set for this owner yet");
+  }
+  return ok({
+    encHashSecret: settings.encHashSecret,
+    hashSecretKeyId: settings.hashSecretKeyId,
+  });
 };
 
 interface PutHashSecretBody {

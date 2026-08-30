@@ -71,6 +71,7 @@ authorization model in one sentence.
 | `POST /keys` | Uploads a new key wrapping (device, passkey, or recovery) against the owner's *current* master key version, which the server derives — never accepts a client-supplied `masterKeyVer`. | Owner |
 | `DELETE /keys/{wrapId}` | Removes a key wrapping (e.g. de-enrolling a lost device). | Owner |
 | `POST /keys/version` | Atomically mints the next master key version (`mk-<n>`) — called once at first enrolment or at rotation, never per-device. | Owner |
+| `GET /keys/hash-secret` | Returns the owner's wrapped `hashSecret` (`encHashSecret`/`hashSecretKeyId`) — a device with the master key unwraps it the same way it would a DEK. `404` until the first device has ever called the `PUT` below. | Owner |
 | `PUT /keys/hash-secret` | Stores the owner's wrapped `hashSecret`, used to HMAC `contentHash` for dedup. | Owner |
 | `POST /uploads` | The stem/hash handshake: validates client-asserted metadata, checks for an existing live/trashed/purged match by content hash, creates or attaches to an asset, and returns **presigned S3 PUT URLs** for the ciphertext and thumbnails. | Owner |
 | `GET /photos` | Timeline page, paginated. | Owner |

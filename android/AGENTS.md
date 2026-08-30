@@ -96,6 +96,33 @@ Whether this is specific to the `-jvm` driver artifact or a broader Room 2.8.4 i
 unconfirmed — if `@Upsert` gets reached for again anywhere in this codebase, verify it
 against a real device/emulator before trusting it, not just the JVM test suite.
 
+**A Room `Flow`-returning query (`observeXxx()`), collected from a coroutine context
+where `Dispatchers.Main` is resolvable, needs `ArchTaskExecutor` initialized — which a
+bare JVM test never does.** DAO tests calling `.observeAll().first()` from a plain
+`runTest { }` (see `PhotoDaoTest`, `ScannerTest`) never hit this — only a `ViewModel`
+test does, because `viewModelScope` is `Dispatchers.Main.immediate`, and once a test has
+called `Dispatchers.setMain(...)`, Room's `TriggerBasedInvalidationTracker` routes its
+invalidation callback through `ArchTaskExecutor`, whose default delegate posts to a
+real `Handler(Looper.getMainLooper())` — nonexistent here. Symptom: `RuntimeException:
+Method getMainLooper in android.os.Looper not mocked`, wrapped in
+`MissingMainCoroutineDispatcher`/`CoroutinesInternalError`, thrown from deep inside
+`TriggerBasedInvalidationTracker$createFlow`. Fixed once, centrally: `TestDatabase.kt`'s
+`buildTestDatabase()` installs a synchronous `TaskExecutor` delegate via
+`ArchTaskExecutor.getInstance().setDelegate(...)` before building the database — every
+test using that helper is covered, whether or not it happens to need it.
+
+**A Room suspend DAO call can resume on a real thread, not the caller's test
+dispatcher — `advanceUntilIdle()` alone doesn't wait for it.** Same failure shape as
+the `DataStore`/OkHttp entry above (one more instance of "test passes alone, flakes
+under a `ViewModel` + `StandardTestDispatcher`"), different source: Room's Bundled-driver
+connection pool does its actual query execution on its own internal executor. A
+`ViewModel` test that fires a `viewModelScope.launch` touching Room and then calls a
+bare `dispatcher.scheduler.advanceUntilIdle()` can read `uiState.value` before that work
+lands — not consistently; enough to pass in isolation and fail as flakiness. Fix: the
+same bounded real-time poll as `EnrolmentRepositoryTest`'s `awaitState` helper (retry
+`advanceUntilIdle()` + a short real `Thread.sleep` until the expected state appears or a
+timeout elapses), not a single `advanceUntilIdle()` call. See `FoldersViewModelTest`.
+
 **Robolectric has no native JUnit5 support**, as of this writing (checked directly,
 not from memory) — only a third-party bridge (`tech.apter.junit5.jupiter:
 robolectric-extension`, still pre-1.0 at last check). If a future step (Compose UI

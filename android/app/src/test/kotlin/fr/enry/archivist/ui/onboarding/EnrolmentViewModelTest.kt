@@ -11,6 +11,7 @@ import fr.enry.archivist.data.remote.DiscoveryDocument
 import fr.enry.archivist.data.remote.KeyWrapDto
 import fr.enry.archivist.data.remote.KeysResponse
 import fr.enry.archivist.data.repo.EnrolmentRepository
+import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeDeviceKeyProvider
@@ -73,6 +74,7 @@ class EnrolmentViewModelTest {
                 enrolmentStore = EnrolmentStore(FakeSharedPreferences()),
                 deviceKeystore = deviceKeyProvider,
                 masterKeyHolder = MasterKeyHolder(),
+                hashSecretHolder = HashSecretHolder(),
             )
 
         runTest(dispatcher) {

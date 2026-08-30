@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "e95fbafef1a2359207d3a3c60556b1ad",
+    "identityHash": "39676cd8ced8b1858cd5200493e27e05",
     "entities": [
       {
         "tableName": "photos",
@@ -301,6 +301,15 @@
             "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_upload_queue_contentHash` ON `${TABLE_NAME}` (`contentHash`)"
           },
           {
+            "name": "index_upload_queue_localUri",
+            "unique": true,
+            "columnNames": [
+              "localUri"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_upload_queue_localUri` ON `${TABLE_NAME}` (`localUri`)"
+          },
+          {
             "name": "index_upload_queue_state",
             "unique": false,
             "columnNames": [
@@ -403,7 +412,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'e95fbafef1a2359207d3a3c60556b1ad')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '39676cd8ced8b1858cd5200493e27e05')"
     ]
   }
 }

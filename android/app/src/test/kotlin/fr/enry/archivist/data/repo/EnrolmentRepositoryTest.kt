@@ -5,6 +5,7 @@ import android.security.keystore.UserNotAuthenticatedException
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import fr.enry.archivist.crypto.EcdhEs
 import fr.enry.archivist.crypto.KeyCustody
+import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.crypto.NoSecureLockScreenException
 import fr.enry.archivist.crypto.RecoveryCode
 import fr.enry.archivist.data.local.EnrolmentStore
@@ -30,6 +31,7 @@ import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -44,6 +46,7 @@ class EnrolmentRepositoryTest {
     private lateinit var enrolmentStore: EnrolmentStore
     private lateinit var deviceKeyProvider: FakeDeviceKeyProvider
     private lateinit var masterKeyHolder: MasterKeyHolder
+    private lateinit var hashSecretHolder: HashSecretHolder
     private lateinit var repository: EnrolmentRepository
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -60,6 +63,7 @@ class EnrolmentRepositoryTest {
         enrolmentStore = EnrolmentStore(FakeSharedPreferences())
         deviceKeyProvider = FakeDeviceKeyProvider()
         masterKeyHolder = MasterKeyHolder()
+        hashSecretHolder = HashSecretHolder()
 
         val archivistApiFactory =
             ArchivistApiFactory(
@@ -76,6 +80,7 @@ class EnrolmentRepositoryTest {
                 enrolmentStore = enrolmentStore,
                 deviceKeystore = deviceKeyProvider,
                 masterKeyHolder = masterKeyHolder,
+                hashSecretHolder = hashSecretHolder,
             )
     }
 
@@ -203,6 +208,10 @@ class EnrolmentRepositoryTest {
 
             assertEquals("w-device", enrolmentStore.deviceWrapId(host))
             assertNotNull(masterKeyHolder.current.value)
+            // The device generated this itself, so it's cached straight from
+            // `beginFirstEnrolment`'s result — no separate GET was needed (only 4
+            // requests total, asserted above, none of them a hash-secret fetch).
+            assertArrayEquals(enrolment.hashSecret, hashSecretHolder.current.value)
         }
 
     // ------------------------------------------------------------------
@@ -462,5 +471,73 @@ class EnrolmentRepositoryTest {
             val deleteRequest = server.takeRequest()
             assertEquals("DELETE", deleteRequest.method)
             assertTrue(deleteRequest.path!!.endsWith("/keys/w-stale"))
+        }
+
+    // ------------------------------------------------------------------
+    // ensureHashSecret — plan step 2.7's dedup dependency, closing design.md open
+    // question 4's Android half (the backend GET route itself is plan step 1.8).
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `ensureHashSecret fails cleanly with no master key, before any network call`() =
+        runTest {
+            connectInstance()
+
+            val result = repository.ensureHashSecret()
+
+            assertTrue(result.isFailure)
+            assertEquals(0, server.requestCount)
+        }
+
+    @Test
+    fun `ensureHashSecret fetches, unwraps and caches it`() =
+        runTest {
+            connectInstance()
+            val masterKey = MasterKey.of(ByteArray(32) { it.toByte() })
+            masterKeyHolder.set(masterKey)
+            val rawHashSecret = ByteArray(32) { (it * 3).toByte() }
+            val wrapped = masterKey.wrapHashSecret(rawHashSecret)
+
+            server.enqueue(
+                MockResponse().setBody(
+                    """{"encHashSecret":"${encode(wrapped)}","hashSecretKeyId":"mk-1"}""",
+                ),
+            )
+
+            val result = repository.ensureHashSecret()
+
+            assertTrue(result.isSuccess)
+            assertArrayEquals(rawHashSecret, result.getOrThrow())
+            assertArrayEquals(rawHashSecret, hashSecretHolder.current.value)
+            assertEquals("/api/keys/hash-secret", server.takeRequest().path)
+        }
+
+    @Test
+    fun `ensureHashSecret returns the cached value without a second network call`() =
+        runTest {
+            connectInstance()
+            val masterKey = MasterKey.of(ByteArray(32) { it.toByte() })
+            masterKeyHolder.set(masterKey)
+            val rawHashSecret = ByteArray(32) { (it * 3).toByte() }
+            hashSecretHolder.set(rawHashSecret)
+
+            val result = repository.ensureHashSecret()
+
+            assertTrue(result.isSuccess)
+            assertArrayEquals(rawHashSecret, result.getOrThrow())
+            assertEquals(0, server.requestCount)
+        }
+
+    @Test
+    fun `ensureHashSecret fails, not crashes, when no device has ever PUT one`() =
+        runTest {
+            connectInstance()
+            masterKeyHolder.set(MasterKey.of(ByteArray(32) { it.toByte() }))
+            server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not found"}"""))
+
+            val result = repository.ensureHashSecret()
+
+            assertTrue(result.isFailure)
+            assertNull(hashSecretHolder.current.value)
         }
 }

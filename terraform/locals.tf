@@ -42,4 +42,13 @@ locals {
     "tzOffsetMin",
     "status",
   ]
+
+  # fr.enry.archivist is the one hardcodable exception to "nothing deployment-specific
+  # in the committed tree" — see CLAUDE.md. debug builds get `.debug` appended
+  # (`applicationIdSuffix` in android/app/build.gradle.kts), which makes it a genuinely
+  # different Android package with its own Digital Asset Links entry — see wellknown.tf.
+  android_package_names = {
+    debug   = "fr.enry.archivist.debug"
+    release = "fr.enry.archivist"
+  }
 }

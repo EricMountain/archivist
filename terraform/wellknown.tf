@@ -76,3 +76,33 @@ resource "aws_s3_object" "wellknown" {
     instanceName  = var.instance_name
   })
 }
+
+# GET https://<domain>/.well-known/assetlinks.json — Android's Credential Manager
+# requires this before it will create or use a passkey scoped to this domain at all
+# (the same Digital Asset Links mechanism App Links verification uses), independent of
+# anything Keystore-side. See design.md open question 2 for how this was found.
+#
+# Deliberately uses only the "delegate_permission/common.get_login_creds" relation, not
+# the "delegate_permission/common.handle_all_urls" it's usually paired with for App
+# Links — this app has no deep-link handling to offer, and that relation would opt the
+# domain into Android routing its own links through the app.
+#
+# Empty by default (var.passkey_cert_fingerprints unset), which serializes to `[]`: no
+# entry matches any app, so Credential Manager fails closed rather than anything unsafe.
+resource "aws_s3_object" "assetlinks" {
+  bucket        = aws_s3_bucket.web.id
+  key           = ".well-known/assetlinks.json"
+  content_type  = "application/json"
+  cache_control = "public, max-age=300"
+
+  content = jsonencode([
+    for variant, fingerprints in var.passkey_cert_fingerprints : {
+      relation = ["delegate_permission/common.get_login_creds"]
+      target = {
+        namespace                = "android_app"
+        package_name             = local.android_package_names[variant]
+        sha256_cert_fingerprints = fingerprints
+      }
+    }
+  ])
+}

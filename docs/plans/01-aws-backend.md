@@ -227,6 +227,12 @@ bootstrap twice produces no duplicates.
 - `PUT /keys/hash-secret` stores `encHashSecret` and `hashSecretKeyId` on `#SETTINGS`.
   Opaque to the server, like every other wrapped value, but `contentHash` cannot be
   computed without it.
+- `GET /keys/hash-secret` returns the same, `404` until the first device has ever
+  called the `PUT` above. Without this, only the device that generated the hash secret
+  could ever compute `contentHash` — a second device (recovery, or the same device
+  after a restart with nothing cached) unwraps the master key just fine but has no way
+  to learn what the hash secret even is. Added 2026-08-30, closing design.md open
+  question 4.
 - `DELETE /keys/{wrapId}` refuses if it would leave fewer than two wrappings, or if it
   would remove the last `recovery` wrapping. **The invariant is enforced server-side**,
   not just in the UI.

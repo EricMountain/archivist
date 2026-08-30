@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
@@ -31,7 +32,10 @@ enum class UploadState {
  * proposes a path, the server decides identity and grouping (design.md, "Who
  * decides").
  */
-@Entity(tableName = "upload_queue", indices = [Index("contentHash", unique = true), Index("state")])
+@Entity(
+    tableName = "upload_queue",
+    indices = [Index("contentHash", unique = true), Index("localUri", unique = true), Index("state")],
+)
 data class UploadQueueEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val localUri: String,
@@ -60,6 +64,17 @@ interface UploadQueueDao {
      * conflict on yet — see [update] for advancing an existing row instead. */
     @Insert
     suspend fun insert(entry: UploadQueueEntity): Long
+
+    /** Same as [insert], except a `contentHash` collision (two different local files
+     * with identical bytes — a real scenario, e.g. an auto-backup app copying camera
+     * photos into a second folder) is silently ignored rather than thrown: the content
+     * is already queued or handled under its other URI, so there's nothing more to do
+     * for this one. Plan step 2.7's scanner uses this, not [insert] — and must check
+     * the returned id: Room/SQLite report `-1` when `INSERT OR IGNORE` drops the row,
+     * the only way to tell "ignored" apart from "inserted" since both otherwise look
+     * identical from the caller's side. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfNewContent(entry: UploadQueueEntity): Long
 
     @Query(
         """
@@ -120,6 +135,13 @@ interface UploadQueueDao {
 
     @Query("SELECT * FROM upload_queue WHERE contentHash = :contentHash LIMIT 1")
     suspend fun getByContentHash(contentHash: String): UploadQueueEntity?
+
+    /** Plan step 2.7's scanner checks this before re-hashing a file it's already seen
+     * — computing [UploadQueueEntity.contentHash] means reading the whole file once,
+     * and a row existing here (whatever its state) means that's already been done for
+     * this exact local file. */
+    @Query("SELECT * FROM upload_queue WHERE localUri = :localUri LIMIT 1")
+    suspend fun getByLocalUri(localUri: String): UploadQueueEntity?
 
     @Query("DELETE FROM upload_queue WHERE id = :id")
     suspend fun deleteById(id: Long)

@@ -66,6 +66,15 @@ interface ArchivistApi {
         @Url url: String,
         @Body body: PutHashSecretRequest,
     ): Response<ResponseBody>
+
+    /** `Response<T>` rather than a bare `HashSecretResponse` for the same reason as
+     * [deleteKey]: a `404` (no device has ever called [putHashSecret] for this owner
+     * yet) is an ordinary, expected outcome the caller checks for via `isSuccessful`,
+     * not something that should throw `HttpException` on its own. */
+    @GET
+    suspend fun getHashSecret(
+        @Url url: String,
+    ): Response<HashSecretResponse>
 }
 
 @Serializable
@@ -134,6 +143,9 @@ data class MasterKeyVersionResponse(val masterKeyVer: String, val rotatedAt: Str
 
 @Serializable
 data class PutHashSecretRequest(val encHashSecret: String, val hashSecretKeyId: String)
+
+@Serializable
+data class HashSecretResponse(val encHashSecret: String, val hashSecretKeyId: String)
 
 /** The generic `{"error": "..."}` shape every non-`ApiError` response from the
  * Archivist API (not Cognito's) uses — see `src/lambda/api/index.ts`. */

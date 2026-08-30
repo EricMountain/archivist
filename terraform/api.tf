@@ -104,6 +104,7 @@ locals {
     "POST /keys",
     "DELETE /keys/{wrapId}",
     "POST /keys/version",
+    "GET /keys/hash-secret",
     "PUT /keys/hash-secret",
     "POST /uploads",
     "GET /photos",

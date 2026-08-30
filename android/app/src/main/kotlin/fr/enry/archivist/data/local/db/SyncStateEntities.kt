@@ -47,6 +47,11 @@ interface FolderSelectionDao {
     @Query("SELECT * FROM sync_state ORDER BY addedAt ASC")
     fun observeAll(): Flow<List<FolderSelectionEntity>>
 
+    /** So a caller toggling an already-selected folder can preserve its original
+     * `addedAt` through [upsert] rather than bumping it on every enable/disable. */
+    @Query("SELECT * FROM sync_state WHERE folderUri = :folderUri")
+    suspend fun getByFolderUri(folderUri: String): FolderSelectionEntity?
+
     /** Selections live in Room and are re-evaluated on each scan (android.md), so
      * disabling a folder here — not deleting the row — is what "deselecting stops
      * future uploads" (plan step 2.7's "Done when") actually means: the scanner just

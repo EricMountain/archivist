@@ -1429,34 +1429,55 @@ for `facetSk`. Rare, bounded to one partition, and doable in a single transactio
    before treating "software-backed EC on old/mid-range hardware" as an accepted
    baseline rather than a gap.
 
-2. **No Digital Asset Links file exists yet, and passkey creation needs one.** Found
-   while implementing plan step 2.4: `terraform/cognito.tf`'s
-   `web_authn_configuration.relying_party_id` is `var.domain_name` — each instance's own
-   domain, not a fixed one. Android's Credential Manager requires the relying party
-   domain to serve `/.well-known/assetlinks.json`, declaring this app's package
-   (`fr.enry.archivist`) and signing certificate SHA-256 fingerprint, before it will let
-   the app create or use a passkey scoped to that domain — the same mechanism App Links
-   verification uses. Nothing in `terraform/` serves this today; there's no
-   `wellknown.tf` entry for it alongside `.well-known/archivist.json`.
+2. **PARTIALLY ADDRESSED, then found not to be the actual blocker, 2026-08-30.**
+   `terraform/wellknown.tf` now serves `/.well-known/assetlinks.json` (declaring the
+   app's package and signing certificate SHA-256 fingerprint, via a new
+   `passkey_cert_fingerprints` variable — details below), on the reasoning that Android's
+   Credential Manager requires this before letting an app create or use a passkey scoped
+   to a domain, the same mechanism App Links verification uses. That reasoning came from
+   Android's own documentation, not from having tested it, and **a live test the same
+   day contradicted it**: on a Pixel 8a emulator, `PasskeyCeremony.register()` against
+   the `dev` instance completed successfully — a real Credential Manager bottom sheet
+   ("create a passkey on another device?") appeared and the ceremony finished — and this
+   had *already worked on an earlier run, before `assetlinks.json` existed at all*, on
+   the same emulator, same account. So whatever this file does, it wasn't what was
+   letting passkey creation through here; either Credential Manager's real enforcement
+   is narrower than the docs suggest (perhaps it applies to some passkey paths — same-
+   device local creation, autofill/suggestion flows — and not the cross-device/hybrid
+   path exercised here), or this emulator/Play-Services combination doesn't perform the
+   check the documented way. **Genuinely unresolved** — not verified on real (non-
+   emulator) hardware, and not root-caused via logcat or a controlled before/after
+   comparison, just the plain fact that the ceremony succeeded both without and with the
+   file present.
 
-   This is a hard blocker for real passkey creation on a device, independent of 2.4a's
-   StrongBox question above — the OS refuses the ceremony before Keystore is ever
-   involved. `PasskeyCeremony.register()` (`ui/onboarding/PasskeyCeremony.kt`) is written
-   against the documented Credential Manager API but has not been exercised on a device
-   for this reason as well as for lacking one in this environment.
+   The file is still deployed to `dev` and kept: it's correct per Google's spec
+   regardless of whether it turned out to be load-bearing here, costs nothing to serve,
+   and may matter on hardware, Android versions, or Credential Manager code paths this
+   emulator doesn't exercise. But it should no longer be treated as "the fix" for
+   passkey creation, and this open question stays open rather than resolved. A future
+   session with access to a real device (and ideally `adb logcat` during the ceremony,
+   filtered for Digital Asset Links / Credential Manager verification) should try to
+   actually pin down what, if anything, gates this.
 
-   Deferring is *not* obviously safe the way the ECDH question is: every operator's
-   instance needs this file, so it has to be Terraform-managed like the discovery
-   document, not something each operator hand-authors. What's unresolved is the content,
-   not the mechanism — the app's signing certificate fingerprint doesn't exist yet
-   either (`docs/design/android.md`: "Play Console: listing created, no build uploaded
-   yet", so Play App Signing hasn't happened). Once it has, the fingerprint is fixed and
-   public for every deployment (same app, same signing key), so the Terraform addition
-   is small: an `aws_s3_object` alongside `wellknown.tf`'s, publishing a constant
-   `sha256_cert_fingerprints` value and `fr.enry.archivist` as the package name, with
-   `"delegate_permission/common.get_login_creds"` as the relation — worth double-checking
-   against Google's current asset-links spec for passkeys specifically before writing it,
-   rather than assuming that relation string from memory the way this note is doing.
+   Implementation details, still accurate regardless of the above: the relation used is
+   `"delegate_permission/common.get_login_creds"` specifically (verified against
+   Google's current spec, not assumed from memory per this note's own earlier caveat),
+   deliberately *not* paired with `"delegate_permission/common.handle_all_urls"` (the one
+   App Links verification uses) — this app has no deep-link handling to offer, and that
+   relation would opt the domain into Android routing its own links through the app. The
+   fingerprint content couldn't be a project-wide constant: the app's *release* signing
+   certificate still doesn't exist (Play App Signing hasn't happened —
+   `android.md`'s "Play Console" row is unchanged), and `applicationIdSuffix = ".debug"`
+   (`app/build.gradle.kts`) makes a locally-built debug APK a genuinely different Android
+   package (`fr.enry.archivist.debug`), needing its own entry rather than standing in for
+   the release one. So `terraform/variables.tf`'s `passkey_cert_fingerprints` is a
+   `map(list(string))` keyed by `"debug"`/`"release"` (see `locals.android_package_names`
+   for the package-name mapping), empty by default. A developer's debug keystore
+   fingerprint is specific to their machine, so it's supplied via
+   `private/instance/*.tfvars`, never committed — see `android/AGENTS.md` for how to get
+   one (`keytool -list -v -keystore ~/.android/debug.keystore`). Deployed to `dev` and
+   confirmed serving correctly: `curl -i https://<dev-domain>/.well-known/assetlinks.json`
+   → `200`, `content-type: application/json`, correct body, no redirect.
 
 3. **`PURPOSE_AGREE_KEY` needs API 31; `minSdk` is 28 — no device on API 28–30 has a
    working hardware-backed device-wrap route at all.** Found while implementing plan
@@ -1480,13 +1501,23 @@ for `facetSk`. Rare, bounded to one partition, and doable in a single transactio
    today, and a real design change, not a two-line fix). Worth resolving before this
    ships to anyone running an older device, not necessarily before 2.6+ continues.
 
-4. **A later device has no way to fetch the owner's `hashSecret`.** Found while
-   implementing plan step 2.5. `encHashSecret`/`hashSecretKeyId` live on the `#SETTINGS`
-   item (see "`contentHash` is HMAC'd" above) and are written once, by the first device,
-   via `PUT /keys/hash-secret` — but no endpoint in `api.md`'s route table reads them
-   back. A second device can fully recover the master key via the recovery code (plan
-   step 2.5's own scope), but has no way to learn the wrapped `hashSecret` that key would
-   unwrap, which plan step 2.10 (upload worker) needs for dedup (`contentHash`). Not a
-   blocker for 2.5's own "Done when" — it only concerns what happens once a second
-   device starts uploading — but needs a route (e.g. `GET /keys/hash-secret`, `Owner`-gated
-   like everything else under `/keys`) added to plan 01 before 2.10 can rely on it.
+4. **RESOLVED (backend), 2026-08-30: `GET /keys/hash-secret` added.** Found while
+   implementing plan step 2.5, and turned out to matter sooner than expected — while
+   implementing plan step 2.7, not just 2.10: `encHashSecret`/`hashSecretKeyId` live on
+   the `#SETTINGS` item (see "`contentHash` is HMAC'd" above) and were written once, by
+   the first device, via `PUT /keys/hash-secret`, but nothing read them back — not just
+   a second device recovering via code, but even the *same* device on its next app
+   process, since `EnrolmentRepository.finishFirstEnrolment()` discards the raw secret
+   from memory the moment enrolment finishes and never persists it locally either. So a
+   scanner running in any session after the one that generated it had no way to compute
+   a `contentHash` that would agree with the server's, at all — this wasn't a "second
+   device" edge case, it was the ordinary case.
+
+   `GET /keys/hash-secret` (`Owner`-gated like everything else under `/keys`, `404`
+   until the first `PUT`) closes the backend half: `src/lambda/api/routes/keys.ts`,
+   `terraform/api.tf`, `docs/design/api.md`. Verified against DynamoDB Local:
+   `test/lambda/keys.test.ts` — 404 for an owner that's never PUT one, 200 with the
+   exact stored value for one that has. **Still open**: the Android client side — a
+   repository method to call it and a holder to cache the unwrapped secret in memory
+   (mirroring `MasterKeyHolder`) — which is what plan step 2.7 is actually blocked on
+   using this for.

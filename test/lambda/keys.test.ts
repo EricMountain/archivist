@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { newUlid } from "../../src/core/ids";
 import { bootstrapUser } from "../../src/core/repo/session";
 import { getOwnerSettings } from "../../src/core/repo/identity";
-import { getKeys, postKey, postKeyVersion, putKeyHashSecret } from "../../src/lambda/api/routes/keys";
+import { getKeyHashSecret, getKeys, postKey, postKeyVersion, putKeyHashSecret } from "../../src/lambda/api/routes/keys";
 import type { ApiRequest } from "../../src/lambda/api/http";
 
 const RUN =
@@ -136,5 +136,21 @@ describe.skipIf(!RUN)("PUT /keys/hash-secret", () => {
     const settings = await getOwnerSettings(ownerId);
     expect(settings?.encHashSecret).toBe("wrapped");
     expect(settings?.hashSecretKeyId).toBe("mk-1");
+  });
+});
+
+describe.skipIf(!RUN)("GET /keys/hash-secret", () => {
+  it("404s for an owner that has never PUT one — design.md: absent until then", async () => {
+    const { userId, ownerId } = await newOwner();
+    await expect(getKeyHashSecret(req(ownerId, userId))).rejects.toThrow(/hash secret/i);
+  });
+
+  it("a second device can fetch what the first device PUT — closes design.md open question 4", async () => {
+    const { userId, ownerId } = await newOwner();
+    await putKeyHashSecret(req(ownerId, userId, { encHashSecret: "wrapped", hashSecretKeyId: "mk-1" }));
+
+    const res = await getKeyHashSecret(req(ownerId, userId));
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ encHashSecret: "wrapped", hashSecretKeyId: "mk-1" });
   });
 });

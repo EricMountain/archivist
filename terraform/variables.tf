@@ -83,3 +83,14 @@ variable "google_client_secret" {
   default     = null
   sensitive   = true
 }
+
+variable "passkey_cert_fingerprints" {
+  description = "SHA-256 fingerprints (colon-separated hex, as `keytool -list -v` prints them) of the Android signing certificate(s) allowed to create or use passkeys against this instance, keyed by \"debug\" and/or \"release\" — see local.android_package_names in locals.tf for why those are different Android packages. Android's Credential Manager refuses the passkey ceremony entirely for a domain with no matching entry in its assetlinks.json (see wellknown.tf and design.md open question 2), so this is empty by default: passkey creation fails closed, not silently insecure, until an operator sets it — typically in private/instance/*.tfvars, since a debug keystore's fingerprint is specific to one developer's machine."
+  type        = map(list(string))
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.passkey_cert_fingerprints) : contains(["debug", "release"], k)])
+    error_message = "Keys must be \"debug\" or \"release\"."
+  }
+}

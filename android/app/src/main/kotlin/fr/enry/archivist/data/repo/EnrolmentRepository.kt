@@ -84,6 +84,7 @@ class EnrolmentRepository
         private val enrolmentStore: EnrolmentStore,
         private val deviceKeystore: DeviceKeyProvider,
         private val masterKeyHolder: MasterKeyHolder,
+        private val hashSecretHolder: HashSecretHolder,
     ) {
         private var pendingFirstEnrolment: KeyCustody.FirstEnrolment? = null
         private var pendingRecoveryWrapId: String? = null
@@ -258,6 +259,9 @@ class EnrolmentRepository
 
                 enrolmentStore.saveDeviceWrapId(instance.host, deviceWrapId)
                 masterKeyHolder.set(pending.masterKey)
+                // This device generated the hash secret itself — no need to round-trip
+                // through GET /keys/hash-secret just to get back what it already has.
+                hashSecretHolder.set(pending.hashSecret)
                 pendingFirstEnrolment = null
                 Result.success(Unit)
             } catch (e: IOException) {
@@ -358,6 +362,42 @@ class EnrolmentRepository
                 RecoveryAttemptResult.NetworkError
             } catch (e: HttpException) {
                 RecoveryAttemptResult.Failed(e.message() ?: "request failed")
+            }
+        }
+
+        /** Lazy, cached fetch of the owner's hash secret — needed for `contentHash`
+         * (plan step 2.7's scanner, eventually 2.10's upload worker), not for
+         * unlocking itself, which is why this isn't called from [trySilentUnlock] or
+         * [attemptRecovery] directly: no point coupling the unlock path to a second
+         * network round trip for something that's only needed later, and maybe not
+         * every session (the app might never scan before it's backgrounded).
+         * Requires [masterKeyHolder] to already be set — call after [determineStep]
+         * (or [finishFirstEnrolment]/[attemptRecovery]) reaches [EnrolmentStep.Unlocked]. */
+        suspend fun ensureHashSecret(): Result<ByteArray> {
+            hashSecretHolder.current.value?.let { return Result.success(it) }
+            val masterKey =
+                masterKeyHolder.current.value
+                    ?: return Result.failure(IllegalStateException("no master key — device must be unlocked first"))
+
+            val instance = currentInstanceOrThrow()
+            val api = apiFor(instance)
+            return try {
+                val response = api.getHashSecret(hashSecretUrl(instance.document.apiBase))
+                if (!response.isSuccessful) {
+                    return Result.failure(HttpException(response))
+                }
+                val body =
+                    response.body() ?: return Result.failure(IllegalStateException("empty hash-secret response body"))
+                // Plain AES-KW against an in-memory master key — unlike the Keystore/
+                // ECDH operations elsewhere in this file, nothing here touches hardware
+                // or blocks, so no Dispatchers.Default hop is needed.
+                val hashSecret = masterKey.unwrapHashSecret(decode(body.encHashSecret))
+                hashSecretHolder.set(hashSecret)
+                Result.success(hashSecret)
+            } catch (e: IOException) {
+                Result.failure(e)
+            } catch (e: HttpException) {
+                Result.failure(e)
             }
         }
 
