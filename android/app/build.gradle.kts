@@ -119,10 +119,21 @@ dependencies {
     testImplementation(libs.androidx.sqlite.bundled)
     testImplementation(libs.mockito.kotlin)
 
-    // 2.4a's KeystoreSpike only — a real-device measurement, not app functionality.
+    // Real-device instrumented tests — 2.4a's since-deleted KeystoreSpike started this,
+    // plan step 2.10 made it permanent (Scanner/Thumbnailer/UploadWorker against a real
+    // MediaStore, ImageDecoder and WorkManager). See androidTest/.../TestEntryPoint.kt
+    // for how these reach the real app's Hilt-provided singletons without a full
+    // hilt-android-testing setup (HiltTestApplication, @UninstallModules) — nothing
+    // here needs to *replace* a production binding, only read/seed a few of them, so
+    // the lighter EntryPointAccessors pattern ArchivistApplication.kt already uses for
+    // its own onTrimMemory is enough.
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.hilt.android)
+    kspAndroidTest(libs.hilt.compiler)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.okhttp.mockwebserver)
 }
 
 tasks.withType<Test> {

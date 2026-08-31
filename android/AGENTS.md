@@ -162,6 +162,105 @@ EXIF tag supplies them, so `getAttributeInt(TAG_IMAGE_WIDTH, 0)` alone is a reas
 fallback even before trying the more commonly-populated `TAG_PIXEL_X_DIMENSION`/
 `TAG_PIXEL_Y_DIMENSION` (Exif SubIFD tags most real cameras actually write).
 
+## Instrumented tests (real device/emulator)
+
+Plan step 2.10 added the first ones (`app/src/androidTest/`) — `ScannerInstrumentedTest`,
+`ThumbnailerInstrumentedTest`, `UploadWorkerInstrumentedTest` — run via
+`./gradlew :app:connectedDebugAndroidTest` against a booted emulator or device (`adb
+devices` must show one; `~/Library/Android/sdk/{platform-tools/adb,emulator/emulator}`
+exist in this environment even though neither is on `PATH` by default — `export
+ANDROID_HOME=~/Library/Android/sdk; export PATH="$ANDROID_HOME/platform-tools:$PATH"`).
+Filter to one class with `-Pandroid.testInstrumentationRunnerArguments.class=<FQCN>`.
+
+**`connectedDebugAndroidTest` uninstalls the app-under-test when it finishes — including
+its data.** Confirmed the hard way: ran the full suite against an emulator that had a
+real, previously-enrolled session on it (from earlier manual 2.4/2.5/2.9 live-testing,
+per `STATUS.md`), and the run silently wiped it — `pm list packages` showed
+`fr.enry.archivist.debug` gone entirely afterward, taking its `DataStore`/
+`SharedPreferences` and (since Keystore keys are tied to the app's UID) its device-wrap
+Keystore key with it. This is AGP's own default task behavior, not a bug in any test's
+own code — it happens regardless of what the tests themselves do, and no amount of
+save-and-restore *inside* a test (see `UploadWorkerInstrumentedTest`'s "Safety" doc, which
+protects against a *different* risk — clobbering live in-app state *while a test runs*,
+not the package being removed *after*) prevents it. **Before running
+`connectedDebugAndroidTest` (or `connectedCheck`) against any device/emulator that isn't
+known-disposable, check `adb shell pm list packages | grep archivist` for a real
+install and ask first** — same bar as any other destructive action. `am instrument`
+invoked directly (bypassing the Gradle task) does not have this behavior; that's the
+fallback if a session's app state needs to survive the test run.
+
+**`Configuration.Provider` alone does not make WorkManager use a custom
+`WorkerFactory`.** `androidx.startup`'s default `WorkManagerInitializer` runs during
+`Application.attachBaseContext()` — before `onCreate()`, and therefore before Hilt's
+field injection into the `Application` instance (`@Inject lateinit var workerFactory:
+HiltWorkerFactory`) has happened — and calls `WorkManager.initialize(context,
+Configuration.Builder().build())` unconditionally, locking in the reflective default
+`WorkerFactory` before the on-demand `Configuration.Provider` path ever gets consulted.
+Symptom, confirmed live: `WM-WorkerFactory: Could not instantiate
+fr.enry.archivist.sync.UploadWorker` / `NoSuchMethodException:
+UploadWorker.<init>[Context, WorkerParameters]` (a `@HiltWorker`'s real constructor is
+`@AssistedInject`, not that reflective shape). The fix — also from WorkManager's own
+"On-demand initialization" docs, not just this project — is to remove the default
+initializer's manifest entry so the *first* `WorkManager.getInstance()` call is the one
+that actually reads `workManagerConfiguration`:
+```xml
+<provider
+    android:name="androidx.startup.InitializationProvider"
+    android:authorities="${applicationId}.androidx-startup"
+    android:exported="false"
+    tools:node="merge">
+    <meta-data
+        android:name="androidx.work.WorkManagerInitializer"
+        android:value="androidx.startup"
+        tools:node="remove" />
+</provider>
+```
+See `AndroidManifest.xml`. No JVM test can catch this — `UploadRepositoryTest` calls
+`UploadRepository.uploadOne()` directly, bypassing `UploadWorker`/WorkManager entirely.
+
+**WorkManager's own manifest doesn't declare a `foregroundServiceType` for
+`SystemForegroundService` — a `ForegroundInfo(..., FOREGROUND_SERVICE_TYPE_DATA_SYNC)`
+call crashes on API 34+ without an explicit override.** `IllegalArgumentException:
+foregroundServiceType 0x1 is not a subset of foregroundServiceType attribute 0x0 in
+service element of manifest file` — confirmed live, not assumed from the docs (an
+earlier STATUS.md note guessed this was already declared; it wasn't). Fix, in the same
+manifest:
+```xml
+<service
+    android:name="androidx.work.impl.foreground.SystemForegroundService"
+    android:foregroundServiceType="dataSync"
+    tools:node="merge" />
+```
+
+**A new `@EntryPoint` interface must live in `app/src/main`, not `app/src/androidTest`,
+even if only instrumented tests ever call it.** Hilt aggregates every
+`@InstallIn(SingletonComponent::class)` declaration at the compilation that generates
+the *real* `SingletonComponent` implementation — `:app`'s main variant — not the
+separate `androidTest` APK's own (different) Hilt component. Declaring it in
+`androidTest` compiles fine and throws `ClassCastException: Cannot cast
+DaggerArchivistApplication_HiltComponents_SingletonC$SingletonCImpl to
+TestEntryPoint` at runtime; confirmed by trying it first. See `TestEntryPoint.kt`'s own
+doc for the full reasoning — it's real production-tree code (an interface with getters,
+no behavior) specifically because of this constraint, not by choice.
+
+**`AndroidMediaStoreSource` builds URIs off `MediaStore.Files` (the collection every
+media type shares), not a type-specific collection like `MediaStore.Images.Media`.**
+Both name the same underlying row as different URI strings
+(`content://media/external/file/<id>` vs. `content://media/external/images/media/<id>`),
+and `UploadQueueDao`/`Scanner` match rows by the exact string. A test fixture that
+inserts via `MediaStore.Images.Media.EXTERNAL_CONTENT_URI` but hands back that same
+images-collection URI as the "content URI" will silently never match what `Scanner`
+itself records — recompute the `MediaStore.Files` form (`ContentUris.withAppendedId
+(MediaStore.Files.getContentUri("external"), id)`) instead; see
+`testutil/MediaStoreFixtures.kt`.
+
+**A JUnit4 `@Before`/`@After` method's inferred return type must be exactly `Unit`, not
+`Unit?`.** `fun tearDown() = runBlocking { ... }` where the block's last expression is a
+nullable `?.let { ... }` infers `Unit?` and fails to load with `InvalidTestClassError:
+Method tearDown() should be void` — not a compile error, only visible at test-collection
+time. Use a block body (`fun tearDown() { runBlocking { ... } }`) instead of an
+expression body whenever the last line inside could be nullable.
+
 **Robolectric has no native JUnit5 support**, as of this writing (checked directly,
 not from memory) — only a third-party bridge (`tech.apter.junit5.jupiter:
 robolectric-extension`, still pre-1.0 at last check). If a future step (Compose UI

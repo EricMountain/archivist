@@ -50,6 +50,12 @@ same questions in different formats and must not drift apart.
 * `terraform/` — infrastructure. Flat root module + `bootstrap/` for the state bucket.
 * `docs/design/thoughts.md` — symlink into `private/`. The user's running brainstorm:
   context, not decisions. Don't edit it, and don't quote it in committed files.
+* `tools/local-infra.sh` — the reusable DynamoDB Local + MinIO fixture the
+  `test/lambda/*`/`test/repo/*` suites need (each skips itself via its own `RUN` check
+  when the env vars aren't set). `make test-infra-up` / `-down` / `-status`, or
+  `make test-integration` for the up-then-run-everything shortcut. Idempotent and left
+  running across calls on purpose — `make test-infra-down` to reclaim it. Don't spin up
+  ad hoc `docker run` DynamoDB-Local/MinIO containers by hand instead; use this.
 
 ## Nothing personal in the committed tree
 

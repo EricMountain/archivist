@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -37,6 +38,43 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ArchivistApplication implements Configuration.Provider so WorkManager
+             uses HiltWorkerFactory (UploadWorker is @HiltWorker, no plain
+             (Context, WorkerParameters) constructor for reflection to find) — but
+             implementing the interface alone does nothing on its own. WorkManager's
+             default androidx.startup-based auto-init runs during attachBaseContext,
+             before Application.onCreate() (and Hilt's field injection into it) ever
+             runs, and it calls WorkManager.initialize() with a plain default
+             Configuration unconditionally — silently locking in the reflective
+             WorkerFactory before the on-demand path ever gets a chance. This removes
+             that eager entry so the first real WorkManager.getInstance() call (lazy,
+             on-demand) is the one that actually reads workManagerConfiguration.
+             Confirmed this was the actual failure, not a hypothetical: without this,
+             a live instrumented test run failed with `WM-WorkerFactory: Could not
+             instantiate ... NoSuchMethodException: UploadWorker.<init>
+             [Context, WorkerParameters]` — see STATUS.md's note on plan step 2.10. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+        <!-- WorkManager's own manifest declares this service with no
+             foregroundServiceType at all — confirmed live, not assumed: without this
+             override, UploadWorker.setForeground()'s FOREGROUND_SERVICE_TYPE_DATA_SYNC
+             request crashed on API 34+ with "foregroundServiceType 0x1 is not a subset
+             of foregroundServiceType attribute 0x0 in service element of manifest
+             file", since the runtime-requested type must be declared here first. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
     </application>
 
 </manifest>
