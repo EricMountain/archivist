@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +25,7 @@ import fr.enry.archivist.ui.onboarding.ConnectViewModel
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.SignInScreen
 import fr.enry.archivist.ui.theme.ArchivistTheme
+import fr.enry.archivist.ui.timeline.TimelineScreen
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -54,8 +54,11 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
             is ConnectUiState.Connected ->
                 when {
                     unlocked ->
-                        // Placeholder until 2.6+ adds a real screen to land on.
-                        Centered(Modifier.padding(innerPadding)) { Text("Unlocked on ${s.instanceName}") }
+                        // TimelineViewModel re-checks MasterKeyHolder continuously (see
+                        // its own doc), so this stale local `unlocked` boolean staying
+                        // true after a later onTrimMemory lock no longer matters -- the
+                        // screen itself falls back to the locked state.
+                        TimelineScreen(modifier = Modifier.padding(innerPadding))
 
                     signedIn ->
                         EnrolmentScreen(onUnlocked = { unlocked = true }, modifier = Modifier.padding(innerPadding))

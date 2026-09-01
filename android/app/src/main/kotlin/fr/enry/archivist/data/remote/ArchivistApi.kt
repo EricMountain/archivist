@@ -88,6 +88,16 @@ interface ArchivistApi {
         @Url url: String,
         @Body body: PostUploadRequest,
     ): Response<PostUploadResponse>
+
+    /** Plan step 2.11's `RemoteMediator` calls this once per page — see
+     * [fr.enry.archivist.data.repo.TimelineRemoteMediator]. [cursor] is the opaque
+     * string `dto.ts`'s `GET /photos` returns, never constructed client-side. */
+    @GET
+    suspend fun getPhotos(
+        @Url url: String,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): PhotosPageResponse
 }
 
 @Serializable
@@ -201,6 +211,31 @@ data class PostUploadRequest(
     val noGroup: Boolean? = null,
     val photoId: String? = null,
 )
+
+/** One `timelineEntryDto` entry (`dto.ts`), for `GET /photos`. Reuses
+ * [fr.enry.archivist.data.local.db.ThumbEntry] directly rather than a parallel DTO
+ * class — it's already `@Serializable` and its fields (`bucket`/`key`/`iv`/`bytes`)
+ * are exactly the wire shape. `thumbs`' keys are the size ("256"/"1024"/"2048") as a
+ * JSON object key, i.e. a string even though the server's own `ThumbMap` is keyed by
+ * number — `TimelineRemoteMediator.kt`'s `toEntity()` parses it back to `Int`.
+ * `status` is the lowercase wire value (`"processing"`/`"ready"`/`"failed"`), not
+ * [fr.enry.archivist.data.local.db.AssetStatus]'s own uppercase enum names. */
+@Serializable
+data class TimelineEntryDto(
+    val photoId: String,
+    val takenAt: String,
+    val thumbs: Map<String, fr.enry.archivist.data.local.db.ThumbEntry>,
+    val encDek: String,
+    val encKeyId: String,
+    val width: Int,
+    val height: Int,
+    val mime: String,
+    val tzOffsetMin: Int,
+    val status: String,
+)
+
+@Serializable
+data class PhotosPageResponse(val items: List<TimelineEntryDto>, val cursor: String? = null)
 
 @Serializable
 data class OriginalUploadDto(val url: String)

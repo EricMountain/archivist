@@ -6,10 +6,14 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
+import fr.enry.archivist.data.local.db.FolderSelectionDao
 import fr.enry.archivist.data.local.db.LocalTombstoneDao
+import fr.enry.archivist.data.local.db.PhotoDao
 import fr.enry.archivist.data.local.db.UploadQueueDao
+import fr.enry.archivist.data.repo.EnrolmentRepository
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
+import fr.enry.archivist.sync.Scanner
 
 /**
  * Reaches the real app's Hilt-provided singletons from instrumented test code, without
@@ -43,6 +47,18 @@ interface TestEntryPoint {
     fun uploadQueueDao(): UploadQueueDao
 
     fun localTombstoneDao(): LocalTombstoneDao
+
+    /** Added for the ad hoc load-test harness (`LoadTestInstrumentedTest`) that
+     * populates a real `dev` account with many photos to exercise plan step 2.11's
+     * "1,000 photos scroll smoothly" — reads real app state, same as everything else
+     * here, nothing replaced. */
+    fun folderSelectionDao(): FolderSelectionDao
+
+    fun photoDao(): PhotoDao
+
+    fun scanner(): Scanner
+
+    fun enrolmentRepository(): EnrolmentRepository
 
     companion object {
         fun from(context: android.content.Context): TestEntryPoint =

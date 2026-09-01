@@ -111,6 +111,39 @@ Method getMainLooper in android.os.Looper not mocked`, wrapped in
 `ArchTaskExecutor.getInstance().setDelegate(...)` before building the database — every
 test using that helper is covered, whether or not it happens to need it.
 
+**`androidx.room.withTransaction` doesn't work at all against a `buildTestDatabase()`
+database — use `RoomDatabase.useWriterConnection { it.withTransaction(...) { ... } }`
+instead, everywhere, not just in tests.** Found via `TimelineRemoteMediatorTest` (plan
+step 2.11), the first code in this codebase needing an atomic transaction spanning more
+than one DAO call (`@Transaction` only covers a single DAO's own methods). Two separate
+failures stacked, in this order:
+1. `RoomDatabase.beginTransaction()` calls `assertNotMainThread()`, which — since
+   there's no real main thread in this process — calls `Looper.getMainLooper()`; with
+   `isReturnDefaultValues = true` (needed anyway, see the `ExifInterface` entries below)
+   that returns `null` rather than throwing "not mocked", so the very next call,
+   `.getThread()`, NPEs.
+2. Fixing *that* (e.g. via `.allowMainThreadQueries()` on the test builder) uncovers the
+   real, unfixable-that-way problem underneath: `androidx.room.withTransaction` still
+   routes through the legacy `SupportSQLiteOpenHelper`-based transaction API
+   (`RoomDatabase.beginTransaction()`/`getOpenHelper()`), which throws
+   `IllegalStateException: Cannot return a SupportSQLiteOpenHelper since no
+   SupportSQLiteOpenHelper.Factory was configured with Room` — because
+   `buildTestDatabase()` uses `.setDriver(BundledSQLiteDriver())` (there's no
+   Android-framework SQLite on a bare JVM to build a `SupportSQLiteOpenHelper` from in
+   the first place) and never configures a compat open-helper alongside it.
+
+The actual fix has nothing to do with the test environment: `androidx.room.
+useWriterConnection { transactor -> transactor.withTransaction(Transactor.
+SQLiteTransactionType.IMMEDIATE) { ... } }` is the modern, driver-based transaction API
+(already in `room-runtime`, no separate `room-ktx` dependency needed) that both this
+test database *and* the app's real, framework-backed production database understand —
+ordinary suspend DAO calls made from inside the block reuse the already-acquired
+connection via coroutine-context confinement, same as `@Transaction` would. Switching
+`TimelineRemoteMediator.kt` to this made `.allowMainThreadQueries()` unnecessary too
+(confirmed by removing it and re-running the suite) — this transaction API never calls
+`assertNotMainThread()` at all, so problem 1 above was really just a symptom of using
+the wrong API for problem 2, not two independent bugs.
+
 **A Room suspend DAO call can resume on a real thread, not the caller's test
 dispatcher — `advanceUntilIdle()` alone doesn't wait for it.** Same failure shape as
 the `DataStore`/OkHttp entry above (one more instance of "test passes alone, flakes

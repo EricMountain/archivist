@@ -1,5 +1,6 @@
 package fr.enry.archivist.data.local.db
 
+import androidx.paging.PagingSource
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -117,6 +118,13 @@ interface PhotoDao {
      * splits a same-instant pair differently than the server would. */
     @Query("SELECT * FROM photos ORDER BY takenAt DESC, photoId DESC")
     fun observeTimeline(): Flow<List<PhotoEntity>>
+
+    /** Room-generated `PagingSource` (via `androidx.room:room-paging`) — the local half
+     * of plan step 2.11's `Pager`. Same ordering/tiebreak as [observeTimeline]; the
+     * `Int` paging key is a plain row offset, unrelated to the server's own opaque
+     * cursor string, which [TimelineCursorDao] tracks separately — see its own doc. */
+    @Query("SELECT * FROM photos ORDER BY takenAt DESC, photoId DESC")
+    fun pagingSource(): PagingSource<Int, PhotoEntity>
 
     @Query("SELECT * FROM photos WHERE photoId = :photoId")
     suspend fun getByPhotoId(photoId: String): PhotoEntity?

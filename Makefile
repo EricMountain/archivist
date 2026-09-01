@@ -1,5 +1,6 @@
 .PHONY: install build test typecheck deploy deploy-dev plan-dev clean \
-	test-infra-up test-infra-down test-infra-status test-integration
+	test-infra-up test-infra-down test-infra-status test-integration \
+	teardown-dev-load-test
 
 install:
 	npm install
@@ -52,3 +53,18 @@ deploy-dev: build
 
 clean:
 	rm -rf dist coverage
+
+# Hard-deletes exactly the synthetic photos tools/teardown-load-test.mjs's own doc
+# describes (default stem prefix "load_test_") from the dev instance's real S3 +
+# DynamoDB -- no soft delete, no HASH# tombstone, just gone. Defaults to a dry run;
+# pass EXECUTE=1 to actually delete. OWNER_ID is required and deliberately not
+# defaulted -- this is real-account data, not something to guess at.
+PREFIX ?= load_test_
+
+teardown-dev-load-test:
+	@test -n "$(OWNER_ID)" || (echo "usage: make teardown-dev-load-test OWNER_ID=<ownerId> [PREFIX=load_test_] [EXECUTE=1]"; exit 1)
+	cd terraform && terraform workspace select dev >/dev/null && \
+	MEDIA_TABLE=$$(terraform output -raw media_table_name) \
+	ORIGINALS_BUCKET=$$(terraform output -raw originals_bucket) \
+	DERIVED_BUCKET=$$(terraform output -raw derived_bucket) \
+	node ../tools/teardown-load-test.mjs --owner-id "$(OWNER_ID)" --prefix "$(PREFIX)" $(if $(EXECUTE),--yes)

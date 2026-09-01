@@ -98,7 +98,16 @@ dependencies {
     implementation(libs.androidx.credentials.play.services.auth)
 
     implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.paging)
     ksp(libs.androidx.room.compiler)
+
+    implementation(libs.androidx.paging.runtime)
+    implementation(libs.androidx.paging.compose)
+
+    // AsyncImage + a Coil3 Fetcher hook for decrypting thumbnails on the fly — see
+    // crypto/EncryptedImageFetcher.kt. Transitively pulls in coil-android, which is
+    // where SingletonImageLoader.Factory (ArchivistApplication's hook) lives.
+    implementation(libs.coil.compose)
 
     implementation(libs.androidx.exifinterface)
 
@@ -118,6 +127,7 @@ dependencies {
     // Context (mockito-kotlin) is enough to satisfy Room's builder here.
     testImplementation(libs.androidx.sqlite.bundled)
     testImplementation(libs.mockito.kotlin)
+    testImplementation(libs.androidx.paging.testing)
 
     // Real-device instrumented tests — 2.4a's since-deleted KeystoreSpike started this,
     // plan step 2.10 made it permanent (Scanner/Thumbnailer/UploadWorker against a real
