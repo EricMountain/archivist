@@ -8,6 +8,7 @@ import fr.enry.archivist.crypto.DeviceKeystoreUnsupportedException
 import fr.enry.archivist.crypto.KeyCustody
 import fr.enry.archivist.crypto.NoSecureLockScreenException
 import fr.enry.archivist.crypto.RecoveryCode
+import fr.enry.archivist.data.local.CachedDeviceWrap
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.StoredInstance
@@ -112,17 +113,29 @@ class EnrolmentRepository
             wrapId: String,
         ): EnrolmentStep {
             val api = apiFor(instance)
-            val wrap =
+            val material =
                 try {
-                    api.getKeys(keysUrl(instance.document.apiBase), wrapId = wrapId).wraps.find { it.wrapId == wrapId }
+                    val wrap = api.getKeys(keysUrl(instance.document.apiBase), wrapId = wrapId).wraps.find { it.wrapId == wrapId }
+                    val epk = wrap?.epk
+                    val wrappedKey = wrap?.wrappedKey
+                    if (epk == null || wrappedKey == null) {
+                        return EnrolmentStep.Failed("this device's key wrapping is missing on the server")
+                    }
+                    // Cache it (not secret — see EnrolmentStore's own doc) so the next
+                    // launch can still unlock if this one can't reach the network.
+                    enrolmentStore.saveCachedDeviceWrap(instance.host, CachedDeviceWrap(epk, wrappedKey))
+                    CachedDeviceWrap(epk, wrappedKey)
                 } catch (e: IOException) {
-                    return EnrolmentStep.NetworkError
+                    // Offline: fall back to whatever this device cached from its last
+                    // successful fetch, rather than failing outright — "the app opens
+                    // offline showing cached thumbnails" (plan step 2.11) needs this
+                    // silent-unlock step to survive being offline too, or nothing past
+                    // it (the timeline itself, which *is* fully offline-capable) is
+                    // ever reachable. No cache yet (never unlocked before on this
+                    // device) still reports NetworkError, same as before this existed.
+                    enrolmentStore.cachedDeviceWrap(instance.host) ?: return EnrolmentStep.NetworkError
                 }
-            val epk = wrap?.epk
-            val wrappedKey = wrap?.wrappedKey
-            if (epk == null || wrappedKey == null) {
-                return EnrolmentStep.Failed("this device's key wrapping is missing on the server")
-            }
+            val (epk, wrappedKey) = material
 
             return try {
                 // Keystore IPC + an ECDH agreement -- real, blocking work; never on
@@ -144,6 +157,7 @@ class EnrolmentRepository
                 // The lock screen changed. This wrapping can never decrypt again.
                 deviceKeystore.delete()
                 enrolmentStore.clearDeviceWrapId(instance.host)
+                enrolmentStore.clearCachedDeviceWrap(instance.host)
                 staleWrapIdToRetire = wrapId
                 determineFromServer(instance, reenrolling = true)
             } catch (e: UserNotAuthenticatedException) {

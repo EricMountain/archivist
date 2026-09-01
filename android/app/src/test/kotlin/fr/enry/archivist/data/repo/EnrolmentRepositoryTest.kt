@@ -8,6 +8,7 @@ import fr.enry.archivist.crypto.KeyCustody
 import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.crypto.NoSecureLockScreenException
 import fr.enry.archivist.crypto.RecoveryCode
+import fr.enry.archivist.data.local.CachedDeviceWrap
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
@@ -95,6 +96,22 @@ class EnrolmentRepositoryTest {
             host,
             DiscoveryDocument(
                 apiBase = server.url("/api").toString().trimEnd('/'),
+                region = "eu-west-1",
+                cognito = DiscoveryDocument.CognitoConfig(userPoolId = "eu-west-1_XXXXXXXXX", clientId = "client-id"),
+                cryptoVersion = 1,
+                instanceName = "Home photos",
+            ),
+        )
+    }
+
+    /** Repoints the already-connected [host] at an address nothing is listening on —
+     * a real (if instant, since it's localhost) connection failure, simulating
+     * "offline" without touching the shared [server] instance other tests still use. */
+    private suspend fun disconnectInstance() {
+        instanceStore.save(
+            host,
+            DiscoveryDocument(
+                apiBase = "http://127.0.0.1:1/api",
                 region = "eu-west-1",
                 cognito = DiscoveryDocument.CognitoConfig(userPoolId = "eu-west-1_XXXXXXXXX", clientId = "client-id"),
                 cryptoVersion = 1,
@@ -381,6 +398,59 @@ class EnrolmentRepositoryTest {
         }
 
     @Test
+    fun `a successful silent unlock caches the wrap material for offline use`() =
+        runTest {
+            connectInstance()
+            val devicePublicKey = deviceKeyProvider.ensureKeyPair()
+            val enrolment = KeyCustody.enrolFirstDevice(devicePublicKey)
+            enrolmentStore.saveDeviceWrapId(host, "w1")
+
+            server.enqueue(
+                MockResponse().setBody(
+                    json.encodeToString(KeysResponse.serializer(), KeysResponse(listOf(deviceWrapDto("w1", enrolment.deviceWrap)))),
+                ),
+            )
+
+            repository.determineStep()
+
+            assertEquals(
+                CachedDeviceWrap(encode(enrolment.deviceWrap.epk), encode(enrolment.deviceWrap.wrappedKey)),
+                enrolmentStore.cachedDeviceWrap(host),
+            )
+        }
+
+    @Test
+    fun `offline, silent unlock falls back to the cached wrap material instead of failing`() =
+        runTest {
+            connectInstance()
+            val devicePublicKey = deviceKeyProvider.ensureKeyPair()
+            val enrolment = KeyCustody.enrolFirstDevice(devicePublicKey)
+            enrolmentStore.saveDeviceWrapId(host, "w1")
+            enrolmentStore.saveCachedDeviceWrap(
+                host,
+                CachedDeviceWrap(encode(enrolment.deviceWrap.epk), encode(enrolment.deviceWrap.wrappedKey)),
+            )
+            disconnectInstance()
+
+            val step = repository.determineStep()
+
+            assertEquals(EnrolmentStep.Unlocked, step)
+            assertNotNull(masterKeyHolder.current.value)
+        }
+
+    @Test
+    fun `offline with no cached wrap yet still reports NetworkError, not a crash`() =
+        runTest {
+            connectInstance()
+            enrolmentStore.saveDeviceWrapId(host, "w1")
+            disconnectInstance()
+
+            val step = repository.determineStep()
+
+            assertEquals(EnrolmentStep.NetworkError, step)
+        }
+
+    @Test
     fun `an unsatisfied time-based auth window asks to unlock, not crash`() =
         runTest {
             connectInstance()
@@ -439,6 +509,7 @@ class EnrolmentRepositoryTest {
             assertEquals(EnrolmentStep.NeedsRecoveryCode(reenrolling = true), step)
             assertEquals(false, deviceKeyProvider.exists()) // deleted on invalidation
             assertNull(enrolmentStore.deviceWrapId(host)) // cleared on invalidation
+            assertNull(enrolmentStore.cachedDeviceWrap(host)) // the offline-fallback cache too
 
             server.enqueue(
                 MockResponse().setBody(
