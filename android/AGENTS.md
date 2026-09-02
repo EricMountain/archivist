@@ -195,6 +195,29 @@ EXIF tag supplies them, so `getAttributeInt(TAG_IMAGE_WIDTH, 0)` alone is a reas
 fallback even before trying the more commonly-populated `TAG_PIXEL_X_DIMENSION`/
 `TAG_PIXEL_Y_DIMENSION` (Exif SubIFD tags most real cameras actually write).
 
+**A literal `/*` inside a KDoc `/** ... */` block comment corrupts KSP's cross-file type
+resolution — even though the ordinary Kotlin compiler tolerates it.** Kotlin block
+comments nest (unlike C/Java), so writing a CloudFront path like `` `/media/*` `` inside
+a KDoc comment opens what the lexer treats as a *second*, inner block comment. Found via
+plan step 2.12: `PhotoDetailRepository`'s class-level KDoc mentioned `` `/media/*` `` and
+`` `/thumbs/*` ``, and `:app:kspDebugKotlin` failed with `InjectProcessingStep was unable
+to process 'DetailViewModel(...)' because 'PhotoDetailRepository' could not be
+resolved` / `ERROR parameter type` — a message that looks like a missing import or a
+Dagger graph problem, not a comment issue. `:app:compileDebugKotlin` alone (no KSP)
+compiled the same file with zero complaints, which is what made this confusing: the
+class was perfectly usable from *within its own file*, and even Kotlin type-resolution
+elsewhere seemed fine — only Hilt's KSP-based `InjectProcessingStep` resolving that type
+*from a different file* hit the corruption. Confirmed by bisection, not guesswork:
+stripped the file down to a bare constructor (compiled), added pieces back one at a
+time until the KDoc paragraph containing `` `/media/*` `` was restored, which broke it
+again immediately. Fix: never write a literal `/*` substring (path wildcards especially:
+`/media/*`, `/thumbs/*`, `path/*`, etc.) inside a `/** */` doc comment — rephrase around
+it (e.g. "the `media` CloudFront behavior" instead of `` `/media/*` ``), or reference the
+docs that already spell it out (`api.md`) instead of repeating the literal path. This is
+worth grepping for (`grep -rn '/\*' --include=*.kt | grep -v '/\*\*'`, restricted to
+lines already inside a comment) if a future KSP failure names a real, correctly-imported
+class as unresolved.
+
 ## Instrumented tests (real device/emulator)
 
 Plan step 2.10 added the first ones (`app/src/androidTest/`) — `ScannerInstrumentedTest`,

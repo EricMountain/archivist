@@ -98,6 +98,17 @@ interface ArchivistApi {
         @Query("cursor") cursor: String? = null,
         @Query("limit") limit: Int? = null,
     ): PhotosPageResponse
+
+    /** Plan step 2.12: single-asset detail — `GET /photos/{photoId}` in `api.md`. Unlike
+     * [getPhotos], `routes/photos.ts`'s `getPhoto` returns the raw `#META`/`R#` items
+     * (not `dto.ts`'s DTOs), so [PhotoDetailResponse]/[PhotoMetaDto]/[RenditionDto] only
+     * declare the subset of those items' fields this screen needs — the converter's
+     * `ignoreUnknownKeys` (see `NetworkModule`) drops the rest (`pk`/`sk`/`ownerId`/
+     * `s3Bucket`/etc.) rather than requiring them. */
+    @GET
+    suspend fun getPhoto(
+        @Url url: String,
+    ): PhotoDetailResponse
 }
 
 @Serializable
@@ -236,6 +247,50 @@ data class TimelineEntryDto(
 
 @Serializable
 data class PhotosPageResponse(val items: List<TimelineEntryDto>, val cursor: String? = null)
+
+/** The subset of `MetaItem` (`src/core/items.ts`) plan step 2.12 needs — see
+ * [ArchivistApi.getPhoto]'s doc for why this doesn't declare the item's full field set.
+ * [exifEnc]/[exifIv] are absent for an asset that had no EXIF worth encrypting
+ * ([fr.enry.archivist.domain.ExifBlob.from] returns null in that case), which is
+ * exactly the "photo lacking EXIF" case plan step 2.12's "Done when" names. */
+@Serializable
+data class PhotoMetaDto(
+    val photoId: String,
+    val primaryRend: String? = null,
+    val mime: String,
+    val width: Int,
+    val height: Int,
+    val encDek: String,
+    val encKeyId: String,
+    val takenAt: String,
+    val tzOffsetMin: Int,
+    val takenAtSrc: String,
+    val exifEnc: String? = null,
+    val exifIv: String? = null,
+)
+
+/** The subset of `RenditionItem` (`src/core/items.ts`) plan step 2.12 needs. [s3Key]
+ * already carries the `raw/` prefix `strip_media_prefix` (terraform/cloudfront.tf)
+ * strips at the edge, so `"$apiBase-less-host/media/$s3Key"` (see
+ * [fr.enry.archivist.data.repo.PhotoDetailRepository]) is the exact CloudFront URL —
+ * same relationship [fr.enry.archivist.crypto.EncryptedThumbRef.url] has to `th/` keys. */
+@Serializable
+data class RenditionDto(
+    val renditionId: String,
+    val role: String,
+    val ext: String,
+    val mime: String,
+    val s3Key: String,
+    val bytes: Long,
+    val plainBytes: Long,
+    val width: Int,
+    val height: Int,
+    val encIv: String? = null,
+    val encChunkSize: Long,
+)
+
+@Serializable
+data class PhotoDetailResponse(val meta: PhotoMetaDto, val renditions: List<RenditionDto>)
 
 @Serializable
 data class OriginalUploadDto(val url: String)

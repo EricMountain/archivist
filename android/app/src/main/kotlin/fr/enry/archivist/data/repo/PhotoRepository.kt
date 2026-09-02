@@ -37,4 +37,11 @@ class PhotoRepository
                 remoteMediator = TimelineRemoteMediator(instanceStore, archivistApiFactory, db),
                 pagingSourceFactory = { db.photoDao().pagingSource() },
             ).flow
+
+        /** Plan step 2.12: the plain (non-`Paging`) mirror of [timeline]'s own ordering,
+         * for the detail screen's swipe-between-photos — index navigation over
+         * `LazyPagingItems` doesn't compose cleanly with `HorizontalPager` once headers
+         * are mixed in (see `TimelineScreen`'s grid), so the detail screen paginates
+         * over this list directly instead. Same source, same order, just not chunked. */
+        fun observeTimeline(): Flow<List<PhotoEntity>> = db.photoDao().observeTimeline()
     }

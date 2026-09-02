@@ -1,6 +1,7 @@
 package fr.enry.archivist.ui.timeline
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -33,6 +37,7 @@ import androidx.paging.compose.itemKey
 import coil3.compose.AsyncImage
 import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.ui.detail.DetailScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -61,7 +66,18 @@ fun TimelineScreen(
 
     val items = viewModel.timeline.collectAsLazyPagingItems()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
-    TimelineGrid(items = items, host = host, modifier = modifier)
+
+    // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
+    // state, not a nav-library back stack -- this app has none yet (see MainActivity's
+    // own note), same pattern every other screen transition here already uses.
+    var selectedPhotoId by remember { mutableStateOf<String?>(null) }
+    val openPhotoId = selectedPhotoId
+    if (openPhotoId != null) {
+        DetailScreen(initialPhotoId = openPhotoId, onBack = { selectedPhotoId = null }, modifier = modifier)
+        return
+    }
+
+    TimelineGrid(items = items, host = host, onPhotoClick = { selectedPhotoId = it }, modifier = modifier)
 }
 
 /**
@@ -76,6 +92,7 @@ fun TimelineScreen(
 private fun TimelineGrid(
     items: LazyPagingItems<TimelineItem>,
     host: String?,
+    onPhotoClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val refreshState = items.loadState.refresh
@@ -105,7 +122,7 @@ private fun TimelineGrid(
                 )
             }
 
-        else -> TimelineItemGrid(items, host, modifier)
+        else -> TimelineItemGrid(items, host, onPhotoClick, modifier)
     }
 }
 
@@ -113,6 +130,7 @@ private fun TimelineGrid(
 private fun TimelineItemGrid(
     items: LazyPagingItems<TimelineItem>,
     host: String?,
+    onPhotoClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyVerticalGrid(
@@ -131,7 +149,7 @@ private fun TimelineItemGrid(
         ) { index ->
             when (val item = items[index]) {
                 is TimelineItem.Header -> DateHeader(item)
-                is TimelineItem.Photo -> PhotoCell(item.photo, host)
+                is TimelineItem.Photo -> PhotoCell(item.photo, host, onClick = { onPhotoClick(item.photo.photoId) })
                 null -> PlaceholderCell()
             }
         }
@@ -154,6 +172,7 @@ private fun DateHeader(header: TimelineItem.Header) {
 private fun PhotoCell(
     photo: PhotoEntity,
     host: String?,
+    onClick: () -> Unit,
 ) {
     val chosen =
         photo.thumbs[GRID_THUMB_SIZE]?.let { GRID_THUMB_SIZE to it }
@@ -174,7 +193,7 @@ private fun PhotoCell(
             ),
         contentDescription = null,
         contentScale = ContentScale.Crop,
-        modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+        modifier = Modifier.fillMaxWidth().aspectRatio(1f).clickable(onClick = onClick),
     )
 }
 
