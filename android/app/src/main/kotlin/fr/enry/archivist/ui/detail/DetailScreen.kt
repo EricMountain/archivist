@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,9 +30,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -115,17 +117,9 @@ fun DetailScreen(
 /** Pinch-zoom over the 2048 rung — the "2048 thumbnail, pinch-zoom" of plan step 2.12's
  * own "Details". Zoom/pan state is local to this composable and resets whenever
  * [HorizontalPager] recomposes it for a different page (each page gets its own
- * composition slot, so there's nothing to reset explicitly).
- *
- * **Deliberately not `detectTransformGestures`** — that function starts consuming pan
- * deltas from a *single* pointer (it treats a one-finger drag as pan, not just
- * two-finger pinch), which swallows the exact single-finger drag [HorizontalPager]
- * needs to swipe between photos. Confirmed live, not from documentation: with
- * `detectTransformGestures`, a real one-finger swipe across the image did nothing —
- * the pager below it never saw the gesture. The loop here only claims events (and only
- * then calls `consume()`, which is what actually blocks the pager from also seeing
- * them) once a *second* pointer joins, so an ordinary one-finger swipe reaches the
- * pager exactly as if this modifier weren't here at all. */
+ * composition slot, so there's nothing to reset explicitly). Gesture handling itself is
+ * [detectPinchZoom] — see its own doc for why not `detectTransformGestures`, and
+ * [OriginalOverlay]'s `Image` for the other place this same helper is used. */
 @Composable
 private fun ZoomableThumb(
     photo: PhotoEntity,
@@ -156,19 +150,10 @@ private fun ZoomableThumb(
             Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    awaitEachGesture {
-                        var event = awaitPointerEvent()
-                        while (event.changes.any { it.pressed }) {
-                            if (event.changes.size >= 2) {
-                                val zoomChange = event.calculateZoom()
-                                val panChange = event.calculatePan()
-                                val newScale = (scale * zoomChange).coerceIn(1f, 6f)
-                                scale = newScale
-                                offset = if (newScale <= 1f) Offset.Zero else offset + panChange
-                                event.changes.forEach { it.consume() }
-                            }
-                            event = awaitPointerEvent()
-                        }
+                    detectPinchZoom { zoomChange, panChange ->
+                        val newScale = (scale * zoomChange).coerceIn(1f, 6f)
+                        scale = newScale
+                        offset = if (newScale <= 1f) Offset.Zero else offset + panChange
                     }
                 }
                 .graphicsLayer(
@@ -178,6 +163,36 @@ private fun ZoomableThumb(
                     translationY = offset.y,
                 ),
     )
+}
+
+/**
+ * Two-pointer-only pinch-zoom gesture, shared by [ZoomableThumb] and the zoomed original
+ * in [OriginalOverlay]. [onTransform] gets the raw per-frame zoom/pan deltas; each caller
+ * owns its own scale/offset state and clamping, since the two callers clamp/reset
+ * differently (or might, in the future) even though the detection logic itself doesn't.
+ *
+ * **Deliberately not `detectTransformGestures`** — that function starts consuming pan
+ * deltas from a *single* pointer (it treats a one-finger drag as pan, not just
+ * two-finger pinch), which would swallow whatever a single-finger drag over the same
+ * area is supposed to do instead (swipe [HorizontalPager] to the next photo, for
+ * [ZoomableThumb]). Confirmed live, not from documentation: with
+ * `detectTransformGestures`, a real one-finger swipe across the image did nothing at
+ * all — the pager below it never saw the gesture. This loop only claims events (and
+ * only then calls `consume()`, which is what actually blocks anything else from also
+ * seeing them) once a *second* pointer joins, so an ordinary one-finger swipe passes
+ * through exactly as if this modifier weren't here at all.
+ */
+private suspend fun PointerInputScope.detectPinchZoom(onTransform: (zoomChange: Float, panChange: Offset) -> Unit) {
+    awaitEachGesture {
+        var event = awaitPointerEvent()
+        while (event.changes.any { it.pressed }) {
+            if (event.changes.size >= 2) {
+                onTransform(event.calculateZoom(), event.calculatePan())
+                event.changes.forEach { it.consume() }
+            }
+            event = awaitPointerEvent()
+        }
+    }
 }
 
 @Composable
@@ -227,54 +242,89 @@ private fun MetadataPanel(
     }
 }
 
+/**
+ * **A real Android [Dialog], not a same-tree `Box` overlay** — deliberately, after a
+ * plain full-screen `Box` drawn as a sibling of [DetailScreen]'s own `Column` was found
+ * live to *look* like a modal (the scrim visibly darkens everything behind it — Compose
+ * still draws it on top) but not *behave* like one: with no `pointerInput` of its own
+ * covering the whole area, Compose's hit-testing found nothing to claim a tap or drag
+ * there and kept walking down to whatever else occupied that same screen position —
+ * [ZoomableThumb]'s own pinch/pan gesture underneath, and even the "← Back" button one
+ * level up. Confirmed live: pinching over the (visibly frontmost) original image zoomed
+ * the *thumbnail page behind it* instead, and tapping where "← Back" sits navigated all
+ * the way out of the screen even though the original was still showing on top of it. A
+ * `Dialog` opens its own separate Android window, which the platform itself guarantees
+ * captures all touch input for as long as it's showing — no amount of Compose-level
+ * gesture bookkeeping in the Box underneath can reach through it, which is the actual
+ * property a modal viewer needs, not just looking like one. `usePlatformDefaultWidth =
+ * false` is what lets the dialog's content fill the screen rather than the platform's
+ * default "shrink to content, centered" dialog sizing.
+ */
 @Composable
 private fun OriginalOverlay(
     state: OriginalUiState,
     onDismiss: () -> Unit,
 ) {
-    Box(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.9f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        when (state) {
-            is OriginalUiState.Loading -> CircularProgressIndicator()
-            is OriginalUiState.Error ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Couldn't load the original: ${state.message}")
-                    TextButton(onClick = onDismiss) { Text("Close") }
-                }
-            is OriginalUiState.Ready -> {
-                val bitmap = remember(state.bytes) { BitmapFactory.decodeByteArray(state.bytes, 0, state.bytes.size) }
-                Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    // statusBarsPadding() only on the button, not the whole Column --
-                    // the image itself stays full-bleed under the status bar (ordinary
-                    // photo-viewer UX), but the tap target needs to clear it. Without
-                    // this the button rendered directly under the clock/battery icons
-                    // at the very top edge -- confirmed live (Pixel 8a emulator): taps
-                    // there landed inconsistently even though the button was visibly
-                    // (if partially) on screen, unlike this screen's own "Back" button
-                    // one level up, which sits below the status bar for free via
-                    // MainActivity's Scaffold `innerPadding` -- OriginalOverlay draws
-                    // outside that padded modifier chain on purpose (a full-bleed
-                    // Box(Modifier.fillMaxSize())), so it doesn't inherit that safety.
-                    TextButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.align(Alignment.End).statusBarsPadding(),
-                    ) { Text("Close") }
-                    if (bitmap != null) {
-                        Image(
-                            bitmap = bitmap.asImageBitmap(),
-                            contentDescription = null,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else {
-                        // A RAW/sidecar rendition (CR3, DNG, XMP...) has no format
-                        // Android's own Bitmap decoder understands -- this is a real,
-                        // expected outcome for those, not a bug. design.md doesn't
-                        // specify an in-app RAW viewer, so this is as far as this step
-                        // goes for that case.
-                        Text("This file's format can't be previewed in-app.")
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.9f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            when (state) {
+                is OriginalUiState.Loading -> CircularProgressIndicator()
+                is OriginalUiState.Error ->
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Couldn't load the original: ${state.message}")
+                        TextButton(onClick = onDismiss) { Text("Close") }
+                    }
+                is OriginalUiState.Ready -> {
+                    val bitmap =
+                        remember(state.bytes) { BitmapFactory.decodeByteArray(state.bytes, 0, state.bytes.size) }
+                    var scale by remember { mutableFloatStateOf(1f) }
+                    var offset by remember { mutableStateOf(Offset.Zero) }
+                    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                        // A Dialog's own window already excludes the status bar by
+                        // default (unlike the plain-Box overlay this replaced, which
+                        // needed its own statusBarsPadding() to keep Close from
+                        // rendering under the clock/battery icons -- confirmed live
+                        // that this is no longer needed here: the button already
+                        // clears the status bar with no extra modifier).
+                        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Close") }
+                        if (bitmap != null) {
+                            // Same pinch-zoom as ZoomableThumb (see detectPinchZoom's
+                            // doc) -- this is the actual "zoom the original" behavior
+                            // the previous, pass-through-broken overlay never really
+                            // offered: what looked like zooming the original was
+                            // always zooming the thumbnail page behind it.
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale = ContentScale.Fit,
+                                modifier =
+                                    Modifier
+                                        .fillMaxSize()
+                                        .pointerInput(Unit) {
+                                            detectPinchZoom { zoomChange, panChange ->
+                                                val newScale = (scale * zoomChange).coerceIn(1f, 6f)
+                                                scale = newScale
+                                                offset = if (newScale <= 1f) Offset.Zero else offset + panChange
+                                            }
+                                        }
+                                        .graphicsLayer(
+                                            scaleX = scale,
+                                            scaleY = scale,
+                                            translationX = offset.x,
+                                            translationY = offset.y,
+                                        ),
+                            )
+                        } else {
+                            // A RAW/sidecar rendition (CR3, DNG, XMP...) has no format
+                            // Android's own Bitmap decoder understands -- this is a
+                            // real, expected outcome for those, not a bug. design.md
+                            // doesn't specify an in-app RAW viewer, so this is as far
+                            // as this step goes for that case.
+                            Text("This file's format can't be previewed in-app.")
+                        }
                     }
                 }
             }
