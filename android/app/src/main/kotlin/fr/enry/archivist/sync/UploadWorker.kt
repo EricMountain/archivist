@@ -46,6 +46,12 @@ private const val NOTIFICATION_ID = 4201
  * [androidx.work.Constraints] now reads [SyncSettingsStore]. */
 interface UploadScheduler {
     suspend fun enqueueAll(queueIds: List<Long>)
+
+    /** Plan step 2.15: "cancellable" (`android.md`'s Screens section). Cancelling the
+     * WorkManager job alone would leave the row sitting in the queue forever (nothing
+     * else ever removes it) -- [fr.enry.archivist.ui.queue.QueueViewModel] deletes the
+     * row itself right after calling this. */
+    fun cancel(queueId: Long)
 }
 
 class WorkManagerUploadScheduler
@@ -56,6 +62,8 @@ class WorkManagerUploadScheduler
     ) : UploadScheduler {
         override suspend fun enqueueAll(queueIds: List<Long>) =
             UploadWorker.enqueueAll(context, queueIds, syncSettingsStore.settings.first())
+
+        override fun cancel(queueId: Long) = UploadWorker.cancel(context, queueId)
     }
 
 /**
@@ -174,6 +182,13 @@ class UploadWorker
                 settings: SyncSettings,
             ) {
                 queueIds.forEach { enqueue(context, it, settings) }
+            }
+
+            fun cancel(
+                context: Context,
+                queueId: Long,
+            ) {
+                WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName(queueId))
             }
         }
     }

@@ -108,6 +108,20 @@ class UploadQueueDaoTest {
         }
 
     @Test
+    fun `resetForRetry clears a failed row back to PENDING with no lingering error`() =
+        runTest {
+            val id =
+                dao.insert(entry("content://media/1", state = UploadState.FAILED).copy(attempts = 2, lastError = "server rejected upload"))
+
+            dao.resetForRetry(id, "2026-09-05T00:00:00.000Z")
+
+            val row = dao.getById(id)
+            assertEquals(UploadState.PENDING, row?.state)
+            assertNull(row?.lastError)
+            assertEquals(2, row?.attempts)
+        }
+
+    @Test
     fun `deleteByState clears finished rows without touching the rest`() =
         runTest {
             dao.insert(entry("content://media/1", state = UploadState.DONE))

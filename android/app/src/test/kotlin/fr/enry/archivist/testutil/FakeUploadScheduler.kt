@@ -6,8 +6,13 @@ import fr.enry.archivist.sync.UploadScheduler
  * test environment has a real WorkManager to enqueue against. */
 class FakeUploadScheduler : UploadScheduler {
     val enqueuedCalls = mutableListOf<List<Long>>()
+    val cancelledIds = mutableListOf<Long>()
 
     override suspend fun enqueueAll(queueIds: List<Long>) {
         enqueuedCalls.add(queueIds)
+    }
+
+    override fun cancel(queueId: Long) {
+        cancelledIds.add(queueId)
     }
 }

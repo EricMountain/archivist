@@ -3,6 +3,13 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Plan step 2.15: the upload queue screen shows why it's idle ("waiting for
+         Wi-Fi", "waiting to charge"). DeviceStateMonitor reads live network
+         capabilities via ConnectivityManager to tell a metered connection apart from
+         none at all, which needs this declared even though it's a normal permission
+         granted automatically. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Plan step 2.7: unattended folder backup, not a one-off picker — see the
          Photos and Videos Permissions "backup and sync" justification in android.md.
          READ_MEDIA_IMAGES/VIDEO (API 33+) is what's actually requested at runtime;

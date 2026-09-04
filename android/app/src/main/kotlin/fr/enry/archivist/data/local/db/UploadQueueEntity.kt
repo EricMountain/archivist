@@ -193,6 +193,18 @@ interface UploadQueueDao {
     @Query("SELECT * FROM upload_queue WHERE photoId = :photoId")
     suspend fun getByPhotoId(photoId: String): List<UploadQueueEntity>
 
+    /** Plan step 2.15's retry action on a [UploadState.FAILED] row. Clears
+     * [UploadQueueEntity.lastError] so a stale message doesn't linger while the retry is
+     * pending, but keeps [UploadQueueEntity.attempts] as a running count rather than
+     * resetting it. Re-enqueuing under [fr.enry.archivist.sync.UploadWorker]'s unique
+     * work name works after this: `ExistingWorkPolicy.KEEP` only skips *uncompleted*
+     * work, and the failed job it's replacing already finished. */
+    @Query("UPDATE upload_queue SET state = 'PENDING', lastError = NULL, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun resetForRetry(
+        id: Long,
+        updatedAt: String,
+    )
+
     @Query("DELETE FROM upload_queue WHERE id = :id")
     suspend fun deleteById(id: Long)
 

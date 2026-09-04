@@ -15,9 +15,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import fr.enry.archivist.ui.queue.QueueScreen
 import fr.enry.archivist.ui.trash.TrashScreen
 
-private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, ACCOUNT, TRASH }
+private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, ACCOUNT, TRASH, QUEUE }
 
 /**
  * Plan step 2.14: "the minimum that isn't hostile" — a plain menu over the five
@@ -44,6 +45,7 @@ fun SettingsScreen(
         SettingsDestination.ACCOUNT ->
             AccountScreen(onBack = { destination = null }, onSessionEnded = onSessionEnded, modifier = modifier)
         SettingsDestination.TRASH -> TrashScreen(onBack = { destination = null }, modifier = modifier)
+        SettingsDestination.QUEUE -> QueueScreen(onBack = { destination = null }, modifier = modifier)
         null -> SettingsMenu(onBack = onBack, onSelect = { destination = it }, modifier = modifier)
     }
 }
@@ -58,6 +60,8 @@ private fun SettingsMenu(
         TextButton(onClick = onBack) { Text("← Back") }
         Text("Settings", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         MenuRow("Sync", "Folders, network policy, charging") { onSelect(SettingsDestination.SYNC) }
+        HorizontalDivider()
+        MenuRow("Upload queue", "Progress, errors and retry") { onSelect(SettingsDestination.QUEUE) }
         HorizontalDivider()
         MenuRow("Devices", "Timezone defaults for your cameras") { onSelect(SettingsDestination.DEVICES) }
         HorizontalDivider()

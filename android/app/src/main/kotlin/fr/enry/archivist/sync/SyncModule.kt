@@ -20,4 +20,8 @@ abstract class SyncModule {
     @Binds
     @Singleton
     abstract fun bindUploadScheduler(impl: WorkManagerUploadScheduler): UploadScheduler
+
+    @Binds
+    @Singleton
+    abstract fun bindDeviceStateMonitor(impl: AndroidDeviceStateMonitor): DeviceStateMonitor
 }
