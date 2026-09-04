@@ -1,6 +1,10 @@
 package fr.enry.archivist.ui.detail
 
+import android.app.Activity
 import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -9,6 +13,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -65,6 +70,7 @@ fun DetailScreen(
     val details by viewModel.details.collectAsStateWithLifecycle()
     val originals by viewModel.originals.collectAsStateWithLifecycle()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
+    val deleteState by viewModel.deleteState.collectAsStateWithLifecycle()
 
     if (photos.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -83,8 +89,56 @@ fun DetailScreen(
         photos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
     }
 
+    // Plan step 2.13: once DeleteRepository.delete succeeds, the photo's Room row is
+    // already gone -- staying on this screen would show a stale pager over a photo that
+    // no longer exists in [photos], so leaving is the correct response to Done, not
+    // something the user has to dismiss first. Resetting to Idle here (not just on the
+    // next delete's InProgress) matters because DetailViewModel is retained across
+    // opens: this app has no navigation library, so hiltViewModel() here resolves to the
+    // Activity's own ViewModelStore, not a fresh instance per visit. Found live: without
+    // this reset, deleteState stayed Done after the first delete, and the next time
+    // *any* photo's DetailScreen opened, this same LaunchedEffect fired immediately on
+    // the stale Done value and bounced straight back to the grid -- invisible in a
+    // screenshot since it happened within the same recomposition, indistinguishable
+    // from the tap doing nothing at all.
+    LaunchedEffect(deleteState) {
+        if (deleteState is DeleteUiState.Done) {
+            viewModel.dismissDelete()
+            onBack()
+        }
+    }
+
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    val mediaDeleteLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            val confirming = deleteState
+            if (confirming is DeleteUiState.NeedsMediaConfirmation) {
+                viewModel.finishMediaDelete(confirming.photoId, approved = result.resultCode == Activity.RESULT_OK)
+            }
+        }
+    LaunchedEffect(deleteState) {
+        val state = deleteState
+        if (state is DeleteUiState.NeedsMediaConfirmation) {
+            mediaDeleteLauncher.launch(IntentSenderRequest.Builder(state.intentSender).build())
+        }
+    }
+
     Column(modifier.fillMaxSize()) {
-        TextButton(onClick = onBack) { Text("← Back") }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = onBack) { Text("← Back") }
+            TextButton(onClick = { showDeleteDialog = true }, enabled = deleteState !is DeleteUiState.InProgress) {
+                Text("Delete")
+            }
+        }
+
+        if (deleteState is DeleteUiState.Error) {
+            Text(
+                "Couldn't delete: ${(deleteState as DeleteUiState.Error).message}",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
 
         HorizontalPager(
             state = pagerState,
@@ -110,6 +164,16 @@ fun DetailScreen(
         OriginalOverlay(
             state = activeOriginal,
             onDismiss = { currentDetail.renditions.forEach { viewModel.dismissOriginal(it.renditionId) } },
+        )
+    }
+
+    if (showDeleteDialog && currentPhoto != null) {
+        DeleteDialog(
+            onDismiss = { showDeleteDialog = false },
+            onConfirm = { mode ->
+                showDeleteDialog = false
+                viewModel.deletePhoto(currentPhoto.photoId, mode)
+            },
         )
     }
 }

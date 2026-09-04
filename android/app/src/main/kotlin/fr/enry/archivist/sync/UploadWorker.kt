@@ -25,11 +25,14 @@ import dagger.assisted.AssistedInject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fr.enry.archivist.MainActivity
 import fr.enry.archivist.R
+import fr.enry.archivist.data.local.SyncSettings
+import fr.enry.archivist.data.local.SyncSettingsStore
 import fr.enry.archivist.data.local.db.UploadQueueDao
 import fr.enry.archivist.data.repo.UploadOutcome
 import fr.enry.archivist.data.repo.UploadRepository
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlinx.coroutines.flow.first
 
 private const val KEY_QUEUE_ID = "queueId"
 private const val NOTIFICATION_CHANNEL_ID = "uploads"
@@ -39,17 +42,20 @@ private const val NOTIFICATION_ID = 4201
  * else that queues uploads) and WorkManager itself — same role
  * [fr.enry.archivist.sync.MediaStoreSource]/[Thumbnailer] play for their own platform
  * APIs: a fake stands in for tests, since a bare JVM test has no real WorkManager to
- * enqueue against. */
+ * enqueue against. `suspend` since plan step 2.14: building each request's
+ * [androidx.work.Constraints] now reads [SyncSettingsStore]. */
 interface UploadScheduler {
-    fun enqueueAll(queueIds: List<Long>)
+    suspend fun enqueueAll(queueIds: List<Long>)
 }
 
 class WorkManagerUploadScheduler
     @Inject
     constructor(
         @ApplicationContext private val context: Context,
+        private val syncSettingsStore: SyncSettingsStore,
     ) : UploadScheduler {
-        override fun enqueueAll(queueIds: List<Long>) = UploadWorker.enqueueAll(context, queueIds)
+        override suspend fun enqueueAll(queueIds: List<Long>) =
+            UploadWorker.enqueueAll(context, queueIds, syncSettingsStore.settings.first())
     }
 
 /**
@@ -131,37 +137,43 @@ class UploadWorker
         companion object {
             private fun uniqueWorkName(queueId: Long) = "upload-$queueId"
 
-            /** Constraints from settings, per the plan — except there's no settings
-             * screen yet (plan step 2.14) to read them from, so these are the
-             * documented defaults (`NetworkType.UNMETERED`, `setRequiresBatteryNotLow`)
-             * hardcoded rather than wired to a preference that doesn't exist yet.
-             * `setRequiresCharging` is left off entirely — the plan calls it optional,
-             * and there's nowhere for a user to opt into it either. */
-            private fun buildRequest(queueId: Long) =
-                OneTimeWorkRequestBuilder<UploadWorker>()
-                    .setInputData(workDataOf(KEY_QUEUE_ID to queueId))
-                    .setConstraints(
-                        Constraints.Builder()
-                            .setRequiredNetworkType(NetworkType.UNMETERED)
-                            .setRequiresBatteryNotLow(true)
-                            .build(),
-                    )
-                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, WorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
-                    .build()
+            /** Constraints from settings (plan step 2.14's Sync section) —
+             * `setRequiresBatteryNotLow` stays hardcoded `true` regardless: the plan
+             * text only calls out network policy and charging as settings, not this
+             * one. `NetworkType.CONNECTED` (any network) rather than `NetworkType.METERED`
+             * when metered is allowed — WorkManager has no "unmetered-or-metered but
+             * not none" constraint, and "allow metered" is meant to mean "don't
+             * require Wi-Fi", not "require a metered connection specifically". */
+            private fun buildRequest(
+                queueId: Long,
+                settings: SyncSettings,
+            ) = OneTimeWorkRequestBuilder<UploadWorker>()
+                .setInputData(workDataOf(KEY_QUEUE_ID to queueId))
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(if (settings.allowMeteredNetwork) NetworkType.CONNECTED else NetworkType.UNMETERED)
+                        .setRequiresBatteryNotLow(true)
+                        .setRequiresCharging(settings.requiresCharging)
+                        .build(),
+                )
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, WorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
+                .build()
 
             fun enqueue(
                 context: Context,
                 queueId: Long,
+                settings: SyncSettings,
             ) {
                 WorkManager.getInstance(context)
-                    .enqueueUniqueWork(uniqueWorkName(queueId), ExistingWorkPolicy.KEEP, buildRequest(queueId))
+                    .enqueueUniqueWork(uniqueWorkName(queueId), ExistingWorkPolicy.KEEP, buildRequest(queueId, settings))
             }
 
             fun enqueueAll(
                 context: Context,
                 queueIds: List<Long>,
+                settings: SyncSettings,
             ) {
-                queueIds.forEach { enqueue(context, it) }
+                queueIds.forEach { enqueue(context, it, settings) }
             }
         }
     }

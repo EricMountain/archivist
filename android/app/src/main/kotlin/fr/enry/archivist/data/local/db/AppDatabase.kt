@@ -13,8 +13,10 @@ import androidx.room.TypeConverters
  * against.
  *
  * Version 2 (plan step 2.10) added four `upload_queue` columns (`plainBytes`,
- * `fileMtimeEpochSec`, `takenAtSrc`, `tzSrc`) the upload worker needs. No real migration
- * — [fr.enry.archivist.data.local.LocalStorageModule] falls back to a destructive one,
+ * `fileMtimeEpochSec`, `takenAtSrc`, `tzSrc`) the upload worker needs. Version 3 (plan
+ * step 2.14) added the `devices` table — a local cache of `GET /devices`, see
+ * [DeviceEntity]'s own doc. No real migration for either bump —
+ * [fr.enry.archivist.data.local.LocalStorageModule] falls back to a destructive one,
  * which only ever drops a local cache/queue (nothing server-side), and nothing has
  * shipped this schema to a real install yet.
  */
@@ -26,8 +28,9 @@ import androidx.room.TypeConverters
         LocalTombstoneEntity::class,
         FolderSelectionEntity::class,
         TimelineCursorEntity::class,
+        DeviceEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -43,4 +46,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun folderSelectionDao(): FolderSelectionDao
 
     abstract fun timelineCursorDao(): TimelineCursorDao
+
+    abstract fun deviceDao(): DeviceDao
 }

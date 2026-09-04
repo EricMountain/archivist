@@ -57,8 +57,17 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                         // TimelineViewModel re-checks MasterKeyHolder continuously (see
                         // its own doc), so this stale local `unlocked` boolean staying
                         // true after a later onTrimMemory lock no longer matters -- the
-                        // screen itself falls back to the locked state.
-                        TimelineScreen(modifier = Modifier.padding(innerPadding))
+                        // screen itself falls back to the locked state. onSessionEnded
+                        // (plan step 2.14's Account > sign out / delete account) resets
+                        // both local flags so the next recomposition falls through to
+                        // SignInScreen, same as a fresh launch.
+                        TimelineScreen(
+                            onSessionEnded = {
+                                unlocked = false
+                                signedIn = false
+                            },
+                            modifier = Modifier.padding(innerPadding),
+                        )
 
                     signedIn ->
                         EnrolmentScreen(onUnlocked = { unlocked = true }, modifier = Modifier.padding(innerPadding))

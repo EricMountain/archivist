@@ -29,7 +29,6 @@ import java.io.IOException
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Base64
-import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -110,6 +109,7 @@ class UploadRepository
         private val archivistApiFactory: ArchivistApiFactory,
         private val enrolmentStore: EnrolmentStore,
         private val masterKeyHolder: MasterKeyHolder,
+        private val deviceRepository: DeviceRepository,
         private val baseOkHttpClient: OkHttpClient,
     ) {
         /** The current master key version (`mk-<n>`) rarely changes (only on
@@ -151,7 +151,15 @@ class UploadRepository
                         mediaStoreSource.openInputStream(row.localUri).use { ExifExtractor.extract(it) }
                     }
                 val fileMtime = row.fileMtimeEpochSec?.let(Instant::ofEpochSecond) ?: Instant.now()
-                val deviceOffsetMin = TimeZone.getDefault().getOffset(fileMtime.toEpochMilli()) / 60_000
+                val deviceKey =
+                    ExifExtractor.deviceKey(exif.cameraMake, exif.cameraModel, exif.cameraSerial).takeUnless { it == "-|-|-" }
+                // Plan step 2.14: the real per-camera default from Settings > Devices
+                // (local cache, no network round trip here) — see DeviceRepository's
+                // own doc for what this used before that setting existed (this
+                // device's own current system timezone, which design.md's ladder
+                // never actually specifies as a rung and which isn't "the device" the
+                // ladder means at all).
+                val deviceOffsetMin = deviceKey?.let { deviceRepository.tzOffsetMinFor(it) }
                 val resolved =
                     Timestamps.resolve(exif = exif, fileMtime = fileMtime, deviceDefaultOffsetMin = deviceOffsetMin)
                 val (takenAt, takenAtSrc, tzOffsetMin, tzSrc) =
@@ -167,8 +175,6 @@ class UploadRepository
                         TimestampFields(nowIso(), "upload", 0, "assumed-utc")
                     }
                 val mime = ExifExtractor.mimeFromDisplayName(row.displayName) ?: "application/octet-stream"
-                val deviceKey =
-                    ExifExtractor.deviceKey(exif.cameraMake, exif.cameraModel, exif.cameraSerial).takeUnless { it == "-|-|-" }
 
                 row =
                     persist(

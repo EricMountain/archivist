@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +18,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +41,7 @@ import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.ui.detail.DetailScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
+import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -55,6 +58,7 @@ private const val GRID_THUMB_SIZE = 256
  */
 @Composable
 fun TimelineScreen(
+    onSessionEnded: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: TimelineViewModel = hiltViewModel(),
 ) {
@@ -77,7 +81,21 @@ fun TimelineScreen(
         return
     }
 
-    TimelineGrid(items = items, host = host, onPhotoClick = { selectedPhotoId = it }, modifier = modifier)
+    // Plan step 2.14: Settings (which now also hosts Trash — see its own doc) is the
+    // permanent entry point 2.13 deferred. Same "standalone screen, plain local
+    // toggle" pattern as selectedPhotoId above.
+    var showSettings by remember { mutableStateOf(false) }
+    if (showSettings) {
+        SettingsScreen(onBack = { showSettings = false }, onSessionEnded = onSessionEnded, modifier = modifier)
+        return
+    }
+
+    Column(modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { showSettings = true }) { Text("Settings") }
+        }
+        TimelineGrid(items = items, host = host, onPhotoClick = { selectedPhotoId = it }, modifier = Modifier.weight(1f))
+    }
 }
 
 /**

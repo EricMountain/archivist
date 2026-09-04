@@ -1,8 +1,12 @@
 package fr.enry.archivist.ui.detail
 
+import android.content.IntentSender
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.data.repo.DeleteMode
+import fr.enry.archivist.data.repo.DeleteOutcome
+import fr.enry.archivist.data.repo.DeleteRepository
 import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.PhotoDetailRepository
 import fr.enry.archivist.data.repo.PhotoRepository
@@ -20,6 +24,25 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import retrofit2.HttpException
+
+/** Plan step 2.13's delete flow, keyed by nothing — only one delete is ever in flight
+ * at a time (the dialog is modal), unlike [PhotoDetailUiState]/[OriginalUiState] which
+ * are per-photo/per-rendition. */
+sealed interface DeleteUiState {
+    data object Idle : DeleteUiState
+
+    data object InProgress : DeleteUiState
+
+    /** The caller must launch [intentSender] via
+     * `ActivityResultContracts.StartIntentSenderForResult` and report the result back
+     * via [DetailViewModel.finishMediaDelete] — see [DeleteOutcome.NeedsMediaConfirmation]'s
+     * own doc for why approving it is itself the deletion. */
+    data class NeedsMediaConfirmation(val intentSender: IntentSender, val photoId: String) : DeleteUiState
+
+    data object Done : DeleteUiState
+
+    data class Error(val message: String) : DeleteUiState
+}
 
 /** One photo's detail fetch/decrypt, keyed by photoId in [DetailViewModel.details] —
  * a page the pager has already scrolled past keeps whatever it last had rather than
@@ -57,6 +80,7 @@ class DetailViewModel
     constructor(
         photoRepository: PhotoRepository,
         private val photoDetailRepository: PhotoDetailRepository,
+        private val deleteRepository: DeleteRepository,
         instanceStore: InstanceStore,
     ) : ViewModel() {
         val photos: StateFlow<List<PhotoEntity>> =
@@ -118,5 +142,46 @@ class DetailViewModel
 
         fun dismissOriginal(renditionId: String) {
             _originals.update { it - renditionId }
+        }
+
+        private val _deleteState = MutableStateFlow<DeleteUiState>(DeleteUiState.Idle)
+        val deleteState: StateFlow<DeleteUiState> = _deleteState.asStateFlow()
+
+        fun deletePhoto(
+            photoId: String,
+            mode: DeleteMode,
+        ) {
+            _deleteState.value = DeleteUiState.InProgress
+            viewModelScope.launch {
+                _deleteState.value =
+                    when (val outcome = deleteRepository.delete(photoId, mode)) {
+                        DeleteOutcome.Done -> DeleteUiState.Done
+                        is DeleteOutcome.NeedsMediaConfirmation ->
+                            DeleteUiState.NeedsMediaConfirmation(outcome.intentSender, outcome.photoId)
+                        is DeleteOutcome.Error -> DeleteUiState.Error(outcome.message)
+                    }
+            }
+        }
+
+        /** Called once the caller's `StartIntentSenderForResult` launch for a
+         * [DeleteUiState.NeedsMediaConfirmation] returns. Both outcomes land on
+         * [DeleteUiState.Done]: [approved] performs the `upload_queue` cleanup (the file
+         * is genuinely gone — approving the system dialog is itself the deletion, see
+         * [DeleteRepository]'s own doc); a cancel leaves that row alone, since the local
+         * file still exists and the row is still an accurate record of it — the already-
+         * written tombstone is what prevents a re-upload either way, this is just about
+         * not discarding a still-accurate `upload_queue` row for nothing. */
+        fun finishMediaDelete(
+            photoId: String,
+            approved: Boolean,
+        ) {
+            viewModelScope.launch {
+                if (approved) deleteRepository.finishMediaDelete(photoId)
+                _deleteState.value = DeleteUiState.Done
+            }
+        }
+
+        fun dismissDelete() {
+            _deleteState.value = DeleteUiState.Idle
         }
     }

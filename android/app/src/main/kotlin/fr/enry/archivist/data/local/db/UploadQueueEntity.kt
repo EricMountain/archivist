@@ -181,6 +181,18 @@ interface UploadQueueDao {
     @Query("SELECT * FROM upload_queue WHERE localUri = :localUri LIMIT 1")
     suspend fun getByLocalUri(localUri: String): UploadQueueEntity?
 
+    /** Plan step 2.13: every local file this device has uploaded as part of one
+     * server-side asset — normally one row (a single JPEG), but a grouped multi-
+     * rendition asset (`IMG_1.CR3` + `IMG_1.JPG`) has one row per rendition, each
+     * scanned and uploaded as its own local file. [fr.enry.archivist.data.repo.DeleteRepository]
+     * uses this both to find what to tombstone (by [UploadQueueEntity.contentHash]) and,
+     * for "remove from both", what to delete via `MediaStore` (by
+     * [UploadQueueEntity.localUri]) — this table, not the still-unpopulated `renditions`
+     * table (see 2.6/2.10's STATUS.md notes), is the only place a photoId maps back to
+     * a local file on this device. */
+    @Query("SELECT * FROM upload_queue WHERE photoId = :photoId")
+    suspend fun getByPhotoId(photoId: String): List<UploadQueueEntity>
+
     @Query("DELETE FROM upload_queue WHERE id = :id")
     suspend fun deleteById(id: Long)
 

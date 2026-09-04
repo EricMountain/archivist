@@ -83,6 +83,9 @@ authorization model in one sentence.
 | `GET /trash` | Lists trashed assets pending purge, including any blocked-re-upload-attempt counters. | Owner |
 | `GET /facets` | Facet vocabulary (labels, cameras, devices, years). | Owner |
 | `GET /facets/{type}/{value}` | Assets matching one facet value, paginated. | Owner |
+| `GET /devices` | Lists the owner's device config items (one per camera `deviceKey` — label, timezone default if set, photo count). | Owner |
+| `PATCH /devices/{deviceKey}` | Edits a device's `label` and/or `tzOffsetMin` (an explicit `null` clears the default). 404s on a `deviceKey` ingest has never seen. | Owner |
+| `DELETE /devices/{deviceKey}` | Removes a device config item — cosmetic only, since no photo references it back; ingest re-registers the device (with no offset) the next time it sees that `deviceKey`. Idempotent. | Owner |
 | `DELETE /account` | Deletes the caller's entire library — media rows, S3 objects, the owner-registry entry. Requires the caller to echo back their own ownerId as an explicit confirmation, not just a bare call. | Owner |
 
 ## What isn't behind the API Gateway JWT authorizer at all

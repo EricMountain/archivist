@@ -43,5 +43,14 @@ fun buildTestDatabase(): AppDatabase {
     ArchTaskExecutor.getInstance().setDelegate(jvmSafeTaskExecutor)
     return Room.inMemoryDatabaseBuilder(mock<Context>(), AppDatabase::class.java)
         .setDriver(BundledSQLiteDriver())
+        // RoomDatabase.assertNotMainThread() (called by e.g. clearAllTables()) reads
+        // Looper.getMainLooper().thread -- with the bare android.jar stub's
+        // isReturnDefaultValues=true, getMainLooper() returns null and the very next
+        // call NPEs, regardless of which real JVM thread is actually executing (see
+        // android/AGENTS.md). There's no real main thread to protect in a headless
+        // JVM test either way, so this is a test-only bypass -- production's own
+        // database (LocalStorageModule) doesn't set it, and still needs a real
+        // background dispatcher wherever it calls a Room method that asserts this.
+        .allowMainThreadQueries()
         .build()
 }

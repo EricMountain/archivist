@@ -7,7 +7,7 @@ import fr.enry.archivist.sync.UploadScheduler
 class FakeUploadScheduler : UploadScheduler {
     val enqueuedCalls = mutableListOf<List<Long>>()
 
-    override fun enqueueAll(queueIds: List<Long>) {
+    override suspend fun enqueueAll(queueIds: List<Long>) {
         enqueuedCalls.add(queueIds)
     }
 }

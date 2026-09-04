@@ -5,6 +5,8 @@ import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.HTTP
+import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.Response
 import retrofit2.http.PUT
@@ -109,6 +111,67 @@ interface ArchivistApi {
     suspend fun getPhoto(
         @Url url: String,
     ): PhotoDetailResponse
+
+    /** Plan step 2.13: `DELETE /photos/{photoId}` in `api.md` — trashes the whole asset.
+     * `routes/photos.ts`'s `deletePhoto` accepts an optional `{deletedBy}` body and
+     * defaults it server-side when absent, so this never sends one. `Response<T>` for
+     * the same reason as [deleteKey]: a 204 with no body shouldn't go through Retrofit's
+     * automatic-`HttpException`-on-non-2xx path, since the caller (`DeleteRepository`)
+     * needs to distinguish a 404 (already trashed/deleted elsewhere) from other
+     * failures. */
+    @DELETE
+    suspend fun deletePhoto(
+        @Url url: String,
+    ): Response<ResponseBody>
+
+    /** Plan step 2.13: `GET /trash` in `api.md` — trashed assets pending purge, each
+     * optionally carrying its primary rendition's blocked-re-upload counters (see
+     * [TrashEntryDto]). */
+    @GET
+    suspend fun getTrash(
+        @Url url: String,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): TrashPageResponse
+
+    /** Plan step 2.14: `GET /devices` in `api.md` — every camera `deviceKey` this
+     * owner's library has ever seen, for the Devices settings section. */
+    @GET
+    suspend fun getDevices(
+        @Url url: String,
+    ): DevicesResponse
+
+    /** [PatchDeviceRequest] has no optional/defaulted fields on purpose — see its own
+     * doc for why this always sends both, rather than relying on kotlinx.serialization
+     * to distinguish "omitted" from "explicitly null" the way [PostUploadRequest]'s
+     * comment already flags as unreliable with `encodeDefaults = false`. `Response<T>`
+     * for the same reason as [deleteKey]: a 404 (this device was never seen by ingest)
+     * is an ordinary outcome the caller checks for, not one that should throw. */
+    @PATCH
+    suspend fun patchDevice(
+        @Url url: String,
+        @Body body: PatchDeviceRequest,
+    ): Response<ResponseBody>
+
+    @DELETE
+    suspend fun deleteDevice(
+        @Url url: String,
+    ): Response<ResponseBody>
+
+    /** Plan step 2.14: `DELETE /account` in `api.md` — requires the caller to echo
+     * back its own ownerId as an explicit confirmation. Retrofit's `@DELETE` refuses
+     * to build a request with `@Body` at all ("Non-body HTTP method cannot contain
+     * @Body" — a `RequestFactory` build-time failure, only surfaced by actually
+     * calling this method, not by anything that compiles) even though HTTP itself
+     * and OkHttp both allow a DELETE body and `routes/account.ts` requires one —
+     * `@HTTP(hasBody = true)` is Retrofit's own documented escape hatch for exactly
+     * this combination. `Response<T>` so the caller can distinguish a validation
+     * failure (mistyped confirmation) from success without relying on `HttpException`. */
+    @HTTP(method = "DELETE", path = "", hasBody = true)
+    suspend fun deleteAccount(
+        @Url url: String,
+        @Body body: DeleteAccountRequest,
+    ): Response<ResponseBody>
 }
 
 @Serializable
@@ -291,6 +354,62 @@ data class RenditionDto(
 
 @Serializable
 data class PhotoDetailResponse(val meta: PhotoMetaDto, val renditions: List<RenditionDto>)
+
+/** One `GET /trash` entry (`routes/photos.ts`'s `getTrash`) — the same shape as
+ * [TimelineEntryDto] plus, when the asset's primary rendition has a `HASH` pointer with
+ * a non-zero `blockedAttempts`, the three fields that back plan step 2.13's warning:
+ * *"N attempts to re-upload this from &lt;lastAttemptBy&gt; — delete it there too, or it
+ * returns."* All three are absent together (never partially) — see `getTrash`'s own
+ * `if (!ptr?.blockedAttempts) return dto` short-circuit. */
+@Serializable
+data class TrashEntryDto(
+    val photoId: String,
+    val takenAt: String,
+    val thumbs: Map<String, fr.enry.archivist.data.local.db.ThumbEntry>,
+    val encDek: String,
+    val encKeyId: String,
+    val width: Int,
+    val height: Int,
+    val mime: String,
+    val tzOffsetMin: Int,
+    val status: String,
+    val blockedAttempts: Int? = null,
+    val lastAttemptAt: String? = null,
+    val lastAttemptBy: String? = null,
+)
+
+@Serializable
+data class TrashPageResponse(val items: List<TrashEntryDto>, val cursor: String? = null)
+
+/** One `D#<deviceKey>` item (`GET /devices` in api.md, `DeviceItem` in `items.ts`).
+ * [tzOffsetMin] absent means "no default set" — same convention as the wire item
+ * itself, per design.md's "Device config items". */
+@Serializable
+data class DeviceDto(
+    val deviceKey: String,
+    val label: String,
+    val tzOffsetMin: Int? = null,
+    val firstSeenAt: String,
+    val photoCount: Int,
+)
+
+@Serializable
+data class DevicesResponse(val devices: List<DeviceDto>)
+
+/** Deliberately no default values on either field — see [ArchivistApi.patchDevice]'s
+ * doc for why: a defaulted `tzOffsetMin: Int? = null` would make kotlinx.serialization
+ * drop it from the request body whenever the caller's value is `null` (its own
+ * declared default), making "clear the default" indistinguishable from "leave it
+ * alone" on the wire. Both fields are therefore required, and
+ * [fr.enry.archivist.data.repo.DeviceRepository] always supplies both from its current
+ * view of the device rather than a partial patch. */
+@Serializable
+data class PatchDeviceRequest(val label: String, val tzOffsetMin: Int?)
+
+/** `DELETE /account` in api.md — the caller must echo back its own ownerId as an
+ * explicit "type it to confirm". */
+@Serializable
+data class DeleteAccountRequest(val confirmOwnerId: String)
 
 @Serializable
 data class OriginalUploadDto(val url: String)

@@ -15,6 +15,7 @@ import fr.enry.archivist.data.local.StoredInstance
 import fr.enry.archivist.data.remote.ArchivistApi
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.KdfParamsDto
+import fr.enry.archivist.data.remote.KeyWrapDto
 import fr.enry.archivist.data.remote.PostKeyWrapRequest
 import fr.enry.archivist.data.remote.PutHashSecretRequest
 import java.io.IOException
@@ -89,6 +90,7 @@ class EnrolmentRepository
     ) {
         private var pendingFirstEnrolment: KeyCustody.FirstEnrolment? = null
         private var pendingRecoveryWrapId: String? = null
+        private var pendingRecoveryRegeneration: KeyCustody.RecoveryRegeneration? = null
 
         /** Set when a silent unlock hit `KeyPermanentlyInvalidatedException`: the old
          * wrapping is permanently dead and gets retired once a replacement exists —
@@ -408,6 +410,103 @@ class EnrolmentRepository
                 val hashSecret = masterKey.unwrapHashSecret(decode(body.encHashSecret))
                 hashSecretHolder.set(hashSecret)
                 Result.success(hashSecret)
+            } catch (e: IOException) {
+                Result.failure(e)
+            } catch (e: HttpException) {
+                Result.failure(e)
+            }
+        }
+
+        /** Plan step 2.14's "Keys" settings section: every wrapping this owner has —
+         * metadata only (no `wrapId` query param means the server never returns this
+         * device's own unwrapping material either, unlike [trySilentUnlock]'s call). */
+        suspend fun listKeys(): Result<List<KeyWrapDto>> {
+            val instance = currentInstanceOrThrow()
+            val api = apiFor(instance)
+            return try {
+                Result.success(api.getKeys(keysUrl(instance.document.apiBase)).wraps)
+            } catch (e: IOException) {
+                Result.failure(e)
+            } catch (e: HttpException) {
+                Result.failure(e)
+            }
+        }
+
+        /** De-enrolling a device/passkey, or discarding a stale recovery wrapping —
+         * `deleteKeyWrap` server-side enforces "at least two wrappings, one a
+         * recovery" (design.md), so this can fail with a 409 the caller should show
+         * verbatim rather than retry. */
+        suspend fun removeKey(wrapId: String): Result<Unit> {
+            val instance = currentInstanceOrThrow()
+            val api = apiFor(instance)
+            return try {
+                val response = api.deleteKey(keyUrl(instance.document.apiBase, wrapId))
+                if (!response.isSuccessful) return Result.failure(HttpException(response))
+                Result.success(Unit)
+            } catch (e: IOException) {
+                Result.failure(e)
+            } catch (e: HttpException) {
+                Result.failure(e)
+            }
+        }
+
+        /** Step 1 of "regenerate recovery code" (Settings > Keys): a fresh code
+         * against the master key this device already holds unlocked — see
+         * [KeyCustody.regenerateRecoveryWrap]'s doc for why nothing is sent to the
+         * server until [confirmRecoveryRegeneration] verifies the user copied it down
+         * correctly, same "confirm before you commit" shape as first enrolment. */
+        fun beginRecoveryRegeneration(): Result<KeyCustody.RecoveryRegeneration> {
+            val masterKey =
+                masterKeyHolder.current.value
+                    ?: return Result.failure(IllegalStateException("no master key — device must be unlocked first"))
+            val regeneration = KeyCustody.regenerateRecoveryWrap(masterKey)
+            pendingRecoveryRegeneration = regeneration
+            return Result.success(regeneration)
+        }
+
+        /** Cheap, instant, no network — same shape as [confirmFirstEnrolment]. */
+        fun confirmRecoveryRegeneration(typed: String): Boolean {
+            val pending = pendingRecoveryRegeneration ?: return false
+            return KeyCustody.confirmsGeneratedCode(typed, pending.recoveryCode)
+        }
+
+        /** POSTs the new recovery wrapping, then deletes the old one — in that order,
+         * so the invariant of "at least one recovery wrapping at all times" (design.md)
+         * is never violated even for the instant between the two calls. Best-effort on
+         * the delete: if it fails, the owner ends up with two recovery codes rather
+         * than one — surprising but harmless (either still unwraps the same master
+         * key), and worth surfacing rather than silently swallowing. */
+        suspend fun finishRecoveryRegeneration(): Result<Unit> {
+            val pending =
+                pendingRecoveryRegeneration
+                    ?: return Result.failure(IllegalStateException("no pending recovery-code regeneration to finish"))
+            val instance = currentInstanceOrThrow()
+            val api = apiFor(instance)
+            val apiBase = instance.document.apiBase
+
+            return try {
+                val oldRecoveryWrapId = api.getKeys(keysUrl(apiBase)).wraps.find { it.kind == "recovery" }?.wrapId
+
+                api.postKey(
+                    keysUrl(apiBase),
+                    PostKeyWrapRequest(
+                        kind = "recovery",
+                        label = "Recovery code",
+                        wrapAlg = "AES-KW",
+                        wrappedKey = encode(pending.recoveryWrap.wrappedKey),
+                        kdfSalt = encode(pending.recoveryWrap.kdfSalt),
+                        kdfParams =
+                            KdfParamsDto(
+                                alg = "argon2id",
+                                m = KeyCustody.formatMemoryKib(pending.recoveryWrap.memoryKib),
+                                t = pending.recoveryWrap.iterations,
+                                p = pending.recoveryWrap.parallelism,
+                            ),
+                    ),
+                )
+                oldRecoveryWrapId?.let { runCatching { api.deleteKey(keyUrl(apiBase, it)) } }
+                pendingRecoveryRegeneration = null
+                Result.success(Unit)
             } catch (e: IOException) {
                 Result.failure(e)
             } catch (e: HttpException) {

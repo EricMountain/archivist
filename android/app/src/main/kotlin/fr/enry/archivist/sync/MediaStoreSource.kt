@@ -24,6 +24,26 @@ data class DeviceMediaFile(
 )
 
 /**
+ * What [MediaStoreSource.requestDelete] produced — plan step 2.13's "remove from both".
+ * Deleting a `MediaStore` entry the app doesn't itself own (the ordinary case: these are
+ * the user's own camera-roll photos) requires the user's own confirmation on API 29+, so
+ * this can't just return a boolean.
+ */
+sealed interface MediaDeleteOutcome {
+    /** Deleted with no confirmation needed — the only possible outcome below API 29,
+     * which predates scoped storage's delete restrictions entirely. */
+    data object Deleted : MediaDeleteOutcome
+
+    /** The caller must launch this via
+     * `ActivityResultContracts.StartIntentSenderForResult` — approving it *is* the
+     * deletion (the system performs it directly), there is no further call to make on a
+     * successful result. */
+    data class NeedsConfirmation(val intentSender: android.content.IntentSender) : MediaDeleteOutcome
+
+    data class Failed(val message: String) : MediaDeleteOutcome
+}
+
+/**
  * The one seam between [Scanner]/the folder-selection UI and the real
  * `ContentResolver` — a fake stands in for tests, the same role
  * [fr.enry.archivist.crypto.DeviceKeyProvider] plays for `AndroidKeyStore`: nothing in
@@ -37,4 +57,8 @@ interface MediaStoreSource {
     /** Caller closes it. [Scanner] reads the whole file exactly once, computing the
      * content hash from this same stream — see its class doc. */
     fun openInputStream(contentUri: String): InputStream
+
+    /** Plan step 2.13's "remove from both" — deletes one asset's local file(s) (a
+     * multi-rendition asset can have more than one) from `MediaStore`. */
+    suspend fun requestDelete(contentUris: List<String>): MediaDeleteOutcome
 }

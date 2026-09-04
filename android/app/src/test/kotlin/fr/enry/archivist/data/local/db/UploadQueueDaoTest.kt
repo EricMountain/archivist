@@ -96,6 +96,18 @@ class UploadQueueDaoTest {
         }
 
     @Test
+    fun `getByPhotoId finds every local rendition uploaded under one server asset`() =
+        runTest {
+            dao.insert(entry("content://media/1", contentHash = "hash-jpg").copy(photoId = "p1", renditionId = "r1"))
+            dao.insert(entry("content://media/2", contentHash = "hash-raw").copy(photoId = "p1", renditionId = "r2"))
+            dao.insert(entry("content://media/3", contentHash = "hash-other").copy(photoId = "p2", renditionId = "r3"))
+
+            val rows = dao.getByPhotoId("p1")
+
+            assertEquals(setOf("content://media/1", "content://media/2"), rows.map { it.localUri }.toSet())
+        }
+
+    @Test
     fun `deleteByState clears finished rows without touching the rest`() =
         runTest {
             dao.insert(entry("content://media/1", state = UploadState.DONE))

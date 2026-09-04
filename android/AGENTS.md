@@ -327,3 +327,88 @@ add `junit:junit` + `org.junit.vintage:junit-vintage-engine` so classic
 alongside the existing Jupiter tests under the same `useJUnitPlatform()` task — no
 `useJUnitPlatform()`/JUnit5 migration needed for Robolectric specifically, since Vintage
 lets both coexist. Prefer (b) unless there's a specific reason not to.
+
+**`MediaStore.createDeleteRequest` requires type-specific media URIs
+(`MediaStore.Images.Media`/`MediaStore.Video.Media`) — a `MediaStore.Files` URI crashes
+it outright.** Found live, plan step 2.13: `AndroidMediaStoreSource` builds every URI it
+hands out from the generic `MediaStore.Files` collection (see the entry above), and
+`UploadQueueEntity.localUri` stores that same form — passing one straight to
+`createDeleteRequest` throws `IllegalArgumentException: All requested items must be
+Media items` from inside the platform's own `ContentProvider`, on a background
+dispatcher with nothing upstream catching it, crashing the whole app (confirmed on a
+real emulator, API 37 — not from documentation). Fix: look up the row's own
+`MediaStore.Files.FileColumns.MEDIA_TYPE` and rebuild the same numeric id under the
+matching type-specific collection before calling `createDeleteRequest` — see
+`AndroidMediaStoreSource.toTypedMediaUri`. Once fixed, the real system "Allow \<app\> to
+delete this photo?" confirmation (`com.android.providers.media.PermissionActivity`)
+renders correctly and approving it does perform the deletion.
+
+**A `hiltViewModel()` call inside a composable that has no navigation-library back stack
+resolves to the Activity's own `ViewModelStore`, not a fresh instance per visit.** This
+app has no navigation library (`MainActivity`'s own note) — screens toggle via plain
+local `remember { mutableStateOf(...) }` booleans/ids, so every `DetailScreen()`
+composition calls `hiltViewModel()` against the same `LocalViewModelStoreOwner` (the
+Activity), getting back the *same* `DetailViewModel` instance every time a photo detail
+screen is opened, not a new one. Found live, plan step 2.13: a `LaunchedEffect(deleteState)
+{ if (deleteState is DeleteUiState.Done) onBack() }` correctly closed the screen after a
+successful delete, but never reset `deleteState` back to `Idle` — so the *next* time
+*any* photo's `DetailScreen` opened, this same effect fired immediately on the still-`Done`
+value and bounced straight back to the grid, before a screenshot taken ~1-2s later could
+ever catch it. Looked exactly like "the tap did nothing" from the outside. Fix: reset the
+view model's one-shot state (`viewModel.dismissDelete()`) in the same effect that reacts
+to it, not just on the next explicit user action. General lesson for any future one-shot
+"completed" state on a retained ViewModel in this app: reset it where it's consumed, not
+where it's set — until this app gains real navigation-scoped ViewModels, every screen's
+ViewModel is effectively an Activity singleton.
+
+**`adb exec-out screencap` returns a solid black image for a `FLAG_SECURE` system
+window — not a crash, not a blank/failed capture.** Found live, plan step 2.14: driving
+`NeedsDeviceUnlock`'s "Unlock" button lands on `com.android.settings/.password.
+ConfirmDeviceCredentialActivity` (a `BiometricPrompt` window per `dumpsys window
+mCurrentFocus`), and every screenshot taken while it's focused is solid black — this is
+the platform deliberately refusing to let a screen-capture tool see a credential-entry
+surface, unrelated to anything in this app. Don't debug this as "the emulator hung" or
+"the tap didn't register": check `adb shell dumpsys window | grep mCurrentFocus` first:
+if it names a system password/biometric activity, the black image is expected. There's
+no way to *see* the PIN keypad this way, but `adb shell input text "<pin>"` followed by
+`KEYCODE_ENTER` still reaches it blind and works (confirmed: submits and returns focus
+to the app). Also worth knowing for the same live-testing flow: a real device/emulator's
+screen-off timeout can turn the display off between `am start` and a screenshot;
+`adb shell dumpsys power | grep mWakefulness` distinguishes "asleep" (send
+`KEYCODE_WAKEUP`) from "awake but focus is a secure system window" (the case above,
+which `KEYCODE_WAKEUP` does nothing for).
+
+**Retrofit's `@DELETE` refuses `@Body` outright** — `RequestFactory.Builder.build()`
+throws `IllegalArgumentException: Non-body HTTP method cannot contain @Body`, at the
+first actual call, not at compile time. Found live, plan step 2.14: `DELETE /account`
+(api.md) requires a JSON body (`confirmOwnerId`) — legal HTTP, and OkHttp itself has no
+problem with a DELETE body — but Retrofit hardcodes `@DELETE`/`@GET`/`@HEAD` as
+"non-body" methods regardless of what the underlying client supports, and the check only
+runs when a `RequestFactory` is actually built for that method (so it compiles clean and
+every other test passes; only a test that actually calls the endpoint catches it). Fix:
+`@HTTP(method = "DELETE", path = "", hasBody = true)` instead of `@DELETE` — Retrofit's
+own documented escape hatch for exactly this combination; `path = ""` is required
+alongside a dynamic `@Url` parameter, same as a bare `@GET`/`@POST` would imply. Lesson:
+a `Response<T>`-returning suspend Retrofit method with `@Body` on `@DELETE` needs at
+least one test that actually invokes it (a MockWebServer round trip, not just a fake) —
+nothing short of that catches this.
+
+**`RoomDatabase.clearAllTables()` (and anything else calling `assertNotMainThread()`)
+NPEs in a bare JVM test, and separately needs a background dispatcher in production
+too.** `assertNotMainThread()` reads `Looper.getMainLooper().thread`; the bare
+`android.jar` stub's `isReturnDefaultValues = true` makes `getMainLooper()` return
+`null`, so the very next call NPEs — unconditionally, regardless of which real JVM
+thread is executing, since the crash happens before any thread comparison. Different
+root cause from the `withTransaction` entry above (that one has a modern API that avoids
+calling `assertNotMainThread()` at all); `clearAllTables()` has no such alternative, so
+`buildTestDatabase()`'s builder now sets `.allowMainThreadQueries()` — a test-only
+bypass, safe because a headless JVM test has no real main thread to protect either way;
+production's `LocalStorageModule`-provided database does *not* set this. Found live,
+plan step 2.14's `AccountRepository.deleteAccount()`: fixing the test NPE surfaced the
+*real* bug underneath — that function runs on `viewModelScope`'s default
+`Dispatchers.Main.immediate` unless something switches away, so the unwrapped
+`appDatabase.clearAllTables()` call would have thrown `IllegalStateException: Cannot
+access database on the main thread` on a real device the first time anyone actually
+deleted their account. Fixed with `withContext(Dispatchers.IO) { appDatabase.
+clearAllTables() }`. Neither bug — the Retrofit one above or this one — was visible from
+reading the code; both needed a test that actually drove the call.

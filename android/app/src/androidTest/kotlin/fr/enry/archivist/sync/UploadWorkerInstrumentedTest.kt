@@ -8,6 +8,7 @@ import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.crypto.ObjectRef
 import fr.enry.archivist.crypto.WholeObjectCipher
 import fr.enry.archivist.data.local.StoredInstance
+import fr.enry.archivist.data.local.SyncSettings
 import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.remote.DiscoveryDocument
@@ -193,7 +194,7 @@ class UploadWorkerInstrumentedTest {
                     }
                 }
 
-            UploadWorker.enqueue(context, id)
+            UploadWorker.enqueue(context, id, SyncSettings())
 
             val finalState = awaitTerminalState(id, timeoutMs = 60_000)
             assertEquals(UploadState.DONE, finalState)

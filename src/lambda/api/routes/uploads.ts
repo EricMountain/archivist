@@ -17,6 +17,7 @@ import {
   thumbKey,
 } from "@archivist/core/s3";
 import { attachRendition, createAsset } from "@archivist/core/repo/ingest";
+import { upsertDeviceSighting } from "@archivist/core/repo/devices";
 import { getMetaItem, getRenditionItems } from "@archivist/core/repo/media";
 import {
   getHashPointer,
@@ -327,6 +328,13 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
     // update once presigning has produced real keys. Cheap and idempotent.
     if (Object.keys(thumbs).length > 0) {
       await setThumbs(ownerId, candidatePhotoId, thumbs);
+    }
+    // Plan step 2.14: "devices are auto-registered on first sight" (design.md) — once
+    // per new asset, not per rendition attach, so a RAW+JPEG pair counts as one photo.
+    // Best-effort, same as setThumbs above: outside the create transaction, non-fatal
+    // to the upload if it somehow failed.
+    if (body.deviceKey) {
+      await upsertDeviceSighting(ownerId, body.deviceKey);
     }
 
     return ok({

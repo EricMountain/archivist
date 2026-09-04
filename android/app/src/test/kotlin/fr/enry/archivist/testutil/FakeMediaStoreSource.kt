@@ -2,6 +2,7 @@ package fr.enry.archivist.testutil
 
 import fr.enry.archivist.sync.DeviceFolder
 import fr.enry.archivist.sync.DeviceMediaFile
+import fr.enry.archivist.sync.MediaDeleteOutcome
 import fr.enry.archivist.sync.MediaStoreSource
 import java.io.ByteArrayInputStream
 import java.io.InputStream
@@ -12,6 +13,12 @@ class FakeMediaStoreSource : MediaStoreSource {
     private val folders = mutableListOf<DeviceFolder>()
     private val filesByBucket = mutableMapOf<String, MutableList<DeviceMediaFile>>()
     private val contentByUri = mutableMapOf<String, ByteArray>()
+
+    /** Set by a test to control what [requestDelete] returns; defaults to immediate
+     * success (the API-below-30 no-confirmation-needed path) since most tests don't
+     * care about the confirmation branch specifically. */
+    var deleteOutcome: MediaDeleteOutcome = MediaDeleteOutcome.Deleted
+    val deleteRequests = mutableListOf<List<String>>()
 
     fun addFile(
         bucketId: String,
@@ -37,4 +44,12 @@ class FakeMediaStoreSource : MediaStoreSource {
 
     override fun openInputStream(contentUri: String): InputStream =
         ByteArrayInputStream(contentByUri[contentUri] ?: error("no fake content for $contentUri"))
+
+    override suspend fun requestDelete(contentUris: List<String>): MediaDeleteOutcome {
+        deleteRequests.add(contentUris)
+        if (deleteOutcome is MediaDeleteOutcome.Deleted) {
+            contentUris.forEach { uri -> contentByUri.remove(uri) }
+        }
+        return deleteOutcome
+    }
 }

@@ -17,6 +17,7 @@ import {
 } from "./routes/photos";
 import { getFacetPage, getFacets } from "./routes/facets";
 import { deleteAccount } from "./routes/account";
+import { deleteDeviceRoute, getDevices, patchDevice } from "./routes/devices";
 
 export interface RouteEntry {
   handler: RouteHandler;
@@ -62,6 +63,10 @@ export const routes: Record<string, RouteEntry> = {
 
   "GET /facets": { handler: getFacets, authMode: "owner" },
   "GET /facets/{type}/{value}": { handler: getFacetPage, authMode: "owner" },
+
+  "GET /devices": { handler: getDevices, authMode: "owner" },
+  "PATCH /devices/{deviceKey}": { handler: patchDevice, authMode: "owner" },
+  "DELETE /devices/{deviceKey}": { handler: deleteDeviceRoute, authMode: "owner" },
 
   "DELETE /account": { handler: deleteAccount, authMode: "owner" },
 };

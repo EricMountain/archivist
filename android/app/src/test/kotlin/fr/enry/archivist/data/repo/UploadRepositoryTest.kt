@@ -9,6 +9,7 @@ import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.local.db.AppDatabase
+import fr.enry.archivist.data.local.db.DeviceEntity
 import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.local.db.buildTestDatabase
@@ -114,6 +115,13 @@ class UploadRepositoryTest {
                 cognitoAuthClient = CognitoAuthClient(FakeCognitoAuthApi(), json),
             )
 
+        val deviceRepository =
+            DeviceRepository(
+                instanceStore = instanceStore,
+                archivistApiFactory = archivistApiFactory,
+                deviceDao = db.deviceDao(),
+            )
+
         repository =
             UploadRepository(
                 uploadQueueDao = db.uploadQueueDao(),
@@ -124,6 +132,7 @@ class UploadRepositoryTest {
                 archivistApiFactory = archivistApiFactory,
                 enrolmentStore = enrolmentStore,
                 masterKeyHolder = masterKeyHolder,
+                deviceRepository = deviceRepository,
                 baseOkHttpClient = OkHttpClient.Builder().build(),
             )
     }
@@ -446,6 +455,82 @@ class UploadRepositoryTest {
 
             assertEquals(UploadOutcome.Retry, outcome)
             assertEquals(0, server.requestCount)
+        }
+
+    // ------------------------------------------------------------------
+    // Plan step 2.14: the real per-camera default from DeviceRepository's local cache
+    // -- replacing what this class used to do instead (this device's own current
+    // system timezone, mislabeled TzSrc.DEVICE -- see the class doc for the full
+    // account). `canon-no-offset.jpg` (generated for this test, Pillow, no piexif
+    // dependency needed) deliberately carries camera make/model/serial but neither
+    // OffsetTimeOriginal nor GPS tags, so EXIF alone can't resolve an offset and the
+    // ladder falls through past rungs 1-4 to whichever rung 5 sees -- exactly the
+    // gap a per-device default is supposed to fill. `canon-with-gps.jpg` (2.8's own
+    // fixture) can't be reused here: it carries a real OffsetTimeOriginal, which
+    // outranks the device rung and would make this test pass for the wrong reason.
+    // ------------------------------------------------------------------
+
+    private fun exifFixtureBytes(name: String): ByteArray =
+        checkNotNull(javaClass.classLoader?.getResourceAsStream("exif-fixtures/$name")?.readBytes()) {
+            "missing test fixture exif-fixtures/$name"
+        }
+
+    private suspend fun queueRowForExifFixture(uri: String): Long {
+        val bytes = exifFixtureBytes("canon-no-offset.jpg")
+        mediaStoreSource.addFile("camera", "Camera", uri, "IMG_NO_OFFSET.jpg", bytes)
+        return db.uploadQueueDao().insert(
+            UploadQueueEntity(
+                localUri = uri,
+                displayName = "IMG_NO_OFFSET.jpg",
+                folderUri = "camera",
+                contentHash = "hmac-sha256:no-offset-test",
+                state = UploadState.PENDING,
+                plainBytes = bytes.size.toLong(),
+                fileMtimeEpochSec = 0L,
+                takenAt = null,
+                tzOffsetMin = null,
+                takenAtSrc = null,
+                tzSrc = null,
+                mime = null,
+                width = null,
+                height = null,
+                photoId = null,
+                renditionId = null,
+                attempts = 0,
+                lastError = null,
+                createdAt = "2026-08-30T10:00:00.000Z",
+                updatedAt = "2026-08-30T10:00:00.000Z",
+            ),
+        )
+    }
+
+    @Test
+    fun `deviceKey is derived from EXIF camera tags and sent even with no configured default`() =
+        runTest {
+            connectInstance()
+            val queueId = queueRowForExifFixture("content://media/no-offset-1")
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            val sentBody = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+            assertEquals("canon|eos r5|042024009999", sentBody.string("deviceKey"))
+            assertEquals("assumed-utc", sentBody.string("tzSrc"))
+        }
+
+    @Test
+    fun `a configured device default is used when EXIF has neither an offset nor GPS`() =
+        runTest {
+            connectInstance()
+            db.deviceDao().upsert(DeviceEntity("canon|eos r5|042024009999", "Dad's R5", tzOffsetMin = 540, photoCount = 1, firstSeenAt = "2026-08-01T00:00:00.000Z"))
+            val queueId = queueRowForExifFixture("content://media/no-offset-2")
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            val sentBody = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+            assertEquals(540, sentBody.getValue("tzOffsetMin").jsonPrimitive.content.toInt())
+            assertEquals("device", sentBody.string("tzSrc"))
         }
 }
 

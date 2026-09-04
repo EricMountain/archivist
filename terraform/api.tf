@@ -116,6 +116,9 @@ locals {
     "GET /trash",
     "GET /facets",
     "GET /facets/{type}/{value}",
+    "GET /devices",
+    "PATCH /devices/{deviceKey}",
+    "DELETE /devices/{deviceKey}",
     "DELETE /account",
   ]
 }

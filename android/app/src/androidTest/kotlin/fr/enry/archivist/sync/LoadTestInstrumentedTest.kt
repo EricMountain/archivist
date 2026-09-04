@@ -15,6 +15,7 @@ import androidx.exifinterface.media.ExifInterface
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import fr.enry.archivist.TestEntryPoint
+import fr.enry.archivist.data.local.SyncSettings
 import fr.enry.archivist.data.local.db.FolderSelectionEntity
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.repo.EnrolmentStep
@@ -132,7 +133,7 @@ class LoadTestInstrumentedTest {
             Log.i(TAG, "Scanner queued $queued new file(s)")
 
             val activeIds = entryPoint.uploadQueueDao().getActiveIds()
-            UploadWorker.enqueueAll(context, activeIds)
+            UploadWorker.enqueueAll(context, activeIds, SyncSettings())
 
             val timeoutMs = maxOf(5 * 60_000L, photoCount * 5_000L)
             awaitQueueDrained(timeoutMs)

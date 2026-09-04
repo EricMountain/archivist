@@ -140,5 +140,41 @@ class KeyCustodyTest {
         assertEquals(512, KeyCustody.parseMemoryKib("512KiB"))
     }
 
+    @Test
+    fun `regenerateRecoveryWrap produces a new code that unwraps the same master key`() {
+        val device = freshEcKeyPair()
+        val enrolment = KeyCustody.enrolFirstDevice(device.public)
+
+        val regenerated = KeyCustody.regenerateRecoveryWrap(enrolment.masterKey)
+
+        // A genuinely fresh code and salt, not a repeat of the first one.
+        assertFalse(regenerated.recoveryCode.code == enrolment.recoveryCode.code)
+        assertFalse(regenerated.recoveryWrap.kdfSalt.contentEquals(enrolment.recoveryWrap.kdfSalt))
+
+        val result =
+            KeyCustody.unwrapWithRecoveryCode(
+                rawCode = regenerated.recoveryCode.code,
+                kdfSalt = regenerated.recoveryWrap.kdfSalt,
+                memoryKib = regenerated.recoveryWrap.memoryKib,
+                iterations = regenerated.recoveryWrap.iterations,
+                parallelism = regenerated.recoveryWrap.parallelism,
+                wrappedKey = regenerated.recoveryWrap.wrappedKey,
+            )
+        assertTrue(result is KeyCustody.RecoveryUnwrapResult.Success)
+        assertSameKey(enrolment.masterKey, (result as KeyCustody.RecoveryUnwrapResult.Success).masterKey)
+
+        // The old code must no longer unwrap the new wrapping.
+        val oldCodeAgainstNewWrap =
+            KeyCustody.unwrapWithRecoveryCode(
+                rawCode = enrolment.recoveryCode.code,
+                kdfSalt = regenerated.recoveryWrap.kdfSalt,
+                memoryKib = regenerated.recoveryWrap.memoryKib,
+                iterations = regenerated.recoveryWrap.iterations,
+                parallelism = regenerated.recoveryWrap.parallelism,
+                wrappedKey = regenerated.recoveryWrap.wrappedKey,
+            )
+        assertEquals(KeyCustody.RecoveryUnwrapResult.WrongCodeOrCorrupted, oldCodeAgainstNewWrap)
+    }
+
     private fun otherChar(c: Char): Char = RecoveryCode.ALPHABET.first { it != c }
 }

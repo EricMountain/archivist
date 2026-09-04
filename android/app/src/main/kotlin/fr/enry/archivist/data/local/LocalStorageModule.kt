@@ -13,6 +13,7 @@ import dagger.Module
 import fr.enry.archivist.crypto.DeviceKeyProvider
 import fr.enry.archivist.crypto.DeviceKeystore
 import fr.enry.archivist.data.local.db.AppDatabase
+import fr.enry.archivist.data.local.db.DeviceDao
 import fr.enry.archivist.data.local.db.FolderSelectionDao
 import fr.enry.archivist.data.local.db.LocalTombstoneDao
 import fr.enry.archivist.data.local.db.PhotoDao
@@ -23,7 +24,15 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Qualifier
 import javax.inject.Singleton
+
+/** Distinguishes [SyncSettingsStore]'s `DataStore<Preferences>` from [InstanceStore]'s
+ * unqualified one below — Hilt can't otherwise tell two providers of the same type
+ * apart. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class SyncSettingsDataStore
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -35,6 +44,16 @@ object LocalStorageModule {
     ): DataStore<Preferences> =
         PreferenceDataStoreFactory.create(
             produceFile = { context.preferencesDataStoreFile("instances") },
+        )
+
+    @Provides
+    @Singleton
+    @SyncSettingsDataStore
+    fun provideSyncSettingsDataStore(
+        @ApplicationContext context: Context,
+    ): DataStore<Preferences> =
+        PreferenceDataStoreFactory.create(
+            produceFile = { context.preferencesDataStoreFile("sync_settings") },
         )
 
     /** Backs [TokenStore] — encrypted at rest via a hardware-backed (where available)
@@ -102,4 +121,7 @@ object LocalStorageModule {
 
     @Provides
     fun provideTimelineCursorDao(database: AppDatabase): TimelineCursorDao = database.timelineCursorDao()
+
+    @Provides
+    fun provideDeviceDao(database: AppDatabase): DeviceDao = database.deviceDao()
 }

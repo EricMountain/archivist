@@ -85,6 +85,26 @@ object KeyCustody {
         generated: RecoveryCode.Generated,
     ): Boolean = RecoveryCode.verify(typed) == generated.entropy
 
+    /** A fresh recovery code plus its wrapping, against a master key this device
+     * already holds unlocked — the plan step 2.14 "regenerate recovery code" action
+     * in Settings, reusing [enrolFirstDevice]'s recovery half exactly (same
+     * [RecoveryCode.generate]/[MasterKey.wrapForRecovery] calls) without touching the
+     * device wrapping, since the master key itself never changes here. Nothing is
+     * sent to the server yet — same "confirm before you commit" shape as
+     * [FirstEnrolment]: the caller shows [recoveryCode] once, verifies the user typed
+     * it back correctly via [confirmsGeneratedCode], and only then POSTs [recoveryWrap]
+     * as a new wrapping and deletes the old one. */
+    data class RecoveryRegeneration(
+        val recoveryCode: RecoveryCode.Generated,
+        val recoveryWrap: RecoveryWrap,
+    )
+
+    fun regenerateRecoveryWrap(masterKey: MasterKey): RecoveryRegeneration {
+        val recoveryCode = RecoveryCode.generate()
+        val recoveryWrap = masterKey.wrapForRecovery(recoveryCode.entropy)
+        return RecoveryRegeneration(recoveryCode, recoveryWrap)
+    }
+
     /** The later-device / re-enrolment path: verify [rawCode], derive the KEK from the
      * server's recorded `kdfSalt`/`kdfParams`, and unwrap. */
     fun unwrapWithRecoveryCode(
