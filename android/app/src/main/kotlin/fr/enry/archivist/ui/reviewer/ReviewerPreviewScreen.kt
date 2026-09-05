@@ -103,7 +103,7 @@ private fun PreviewBanner(
         // its own text needs, wrapping it into an unreadable vertical sliver. Found
         // live on a Pixel 8a emulator, not from a layout preview.
         Text(
-            "Preview — no account, nothing uploaded",
+            "Preview mode",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSecondaryContainer,
             maxLines = 1,
