@@ -18,7 +18,7 @@ import androidx.compose.ui.unit.dp
 import fr.enry.archivist.ui.queue.QueueScreen
 import fr.enry.archivist.ui.trash.TrashScreen
 
-private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, ACCOUNT, TRASH, QUEUE }
+private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, ACCOUNT, TRASH, QUEUE, ABOUT }
 
 /**
  * Plan step 2.14: "the minimum that isn't hostile" — a plain menu over the five
@@ -46,6 +46,7 @@ fun SettingsScreen(
             AccountScreen(onBack = { destination = null }, onSessionEnded = onSessionEnded, modifier = modifier)
         SettingsDestination.TRASH -> TrashScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.QUEUE -> QueueScreen(onBack = { destination = null }, modifier = modifier)
+        SettingsDestination.ABOUT -> AboutScreen(onBack = { destination = null }, modifier = modifier)
         null -> SettingsMenu(onBack = onBack, onSelect = { destination = it }, modifier = modifier)
     }
 }
@@ -72,6 +73,8 @@ private fun SettingsMenu(
         MenuRow("Trash", "Recently deleted photos") { onSelect(SettingsDestination.TRASH) }
         HorizontalDivider()
         MenuRow("Account", "Sign out, delete account") { onSelect(SettingsDestination.ACCOUNT) }
+        HorizontalDivider()
+        MenuRow("About", "Version, license, source code") { onSelect(SettingsDestination.ABOUT) }
     }
 }
 

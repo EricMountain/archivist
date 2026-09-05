@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -50,6 +49,10 @@ import fr.enry.archivist.sync.DeviceMediaFile
  * which extends to [ReviewerSettingsScreen] too (its one exception, `StorageScreen`
  * reused as-is, is verified network-free — see `StorageRepository`'s own doc: it only
  * ever touches Coil's on-disk cache).
+ *
+ * No intro dialog here — the explanation lives on `ConnectScreen`, below its own
+ * "Preview without an account" button, so the choice is made with the explanation
+ * already in view rather than sprung on the user as a popup after tapping through.
  */
 @Composable
 fun ReviewerPreviewScreen(
@@ -58,8 +61,7 @@ fun ReviewerPreviewScreen(
     viewModel: ReviewerPreviewViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var showIntro by remember { mutableStateOf(true) }
-    var selected by remember { mutableStateOf<ReviewerPreviewItem?>(null) }
+    var selected by remember { mutableStateOf<DeviceMediaFile?>(null) }
     var showSettings by remember { mutableStateOf(false) }
 
     Column(modifier.fillMaxSize()) {
@@ -68,34 +70,18 @@ fun ReviewerPreviewScreen(
         val current = selected
         when {
             showSettings -> ReviewerSettingsScreen(onBack = { showSettings = false })
-            current != null -> ReviewerDetail(item = current, onClose = { selected = null })
+            current != null -> ReviewerDetail(file = current, onClose = { selected = null })
             state is ReviewerPreviewUiState.Loading ->
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            state is ReviewerPreviewUiState.Empty ->
+                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text("No photos on this device", style = MaterialTheme.typography.bodyLarge)
+                }
             else -> {
                 val loaded = state as ReviewerPreviewUiState.Loaded
-                ReviewerGrid(loaded, onItemClick = { selected = it })
+                ReviewerGrid(loaded.files, onItemClick = { selected = it })
             }
         }
-    }
-
-    if (showIntro) {
-        AlertDialog(
-            onDismissRequest = { showIntro = false },
-            title = { Text("Preview without an account") },
-            text = {
-                Text(
-                    "Every screen in the app is reachable from here, including Settings — " +
-                        "this shows the photos already on this device so you can see how " +
-                        "Archivist works. Nothing is uploaded, encrypted or sent anywhere; " +
-                        "there's no account and no server connection in this mode. Full " +
-                        "functionality — backing up to your own library — needs you to " +
-                        "provision your own infrastructure and connect this app to it; see " +
-                        "this project's GitHub repository for how. Exit any time to connect " +
-                        "to a real instance instead.",
-                )
-            },
-            confirmButton = { TextButton(onClick = { showIntro = false }) { Text("Got it") } },
-        )
     }
 }
 
@@ -133,70 +119,55 @@ private fun PreviewBanner(
 
 @Composable
 private fun ReviewerGrid(
-    loaded: ReviewerPreviewUiState.Loaded,
-    onItemClick: (ReviewerPreviewItem) -> Unit,
+    files: List<DeviceMediaFile>,
+    onItemClick: (DeviceMediaFile) -> Unit,
 ) {
-    Column(Modifier.fillMaxSize()) {
-        if (loaded.usingSamples) {
-            Text(
-                "No photos found on this device — showing bundled samples instead.",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(12.dp),
-            )
-        }
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 96.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            items(loaded.items, key = { it.key }) { item ->
-                Box(
-                    Modifier
-                        .aspectRatio(1f)
-                        .clickable { onItemClick(item) },
-                ) {
-                    AsyncImage(
-                        model = item.previewModel(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 96.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        items(files, key = { it.contentUri }) { file ->
+            Box(
+                Modifier
+                    .aspectRatio(1f)
+                    .clickable { onItemClick(file) },
+            ) {
+                AsyncImage(
+                    model = file.contentUri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }
 }
 
-private fun ReviewerPreviewItem.previewModel(): Any =
-    when (this) {
-        is ReviewerPreviewItem.Device -> file.contentUri
-        is ReviewerPreviewItem.Sample -> drawableRes
-    }
-
-/** Full-screen pinch-zoom view of one item. A self-contained gesture, not a reuse of
+/** Full-screen pinch-zoom view of one file. A self-contained gesture, not a reuse of
  * `ui/detail/DetailScreen.kt`'s `ZoomableThumb` — that one is coupled to the encrypted
  * timeline's `PhotoEntity`/CDN-host model, and pulling it in here is exactly the kind of
  * reuse [ReviewerPreviewViewModel]'s doc warns against. */
 @Composable
 private fun ReviewerDetail(
-    item: ReviewerPreviewItem,
+    file: DeviceMediaFile,
     onClose: () -> Unit,
 ) {
-    var scale by remember(item.key) { mutableFloatStateOf(1f) }
-    var offset by remember(item.key) { mutableStateOf(Offset.Zero) }
+    var scale by remember(file.contentUri) { mutableFloatStateOf(1f) }
+    var offset by remember(file.contentUri) { mutableStateOf(Offset.Zero) }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onClose) { Text("Close") }
         }
         Image(
-            painter = rememberAsyncImagePainter(model = item.previewModel()),
+            painter = rememberAsyncImagePainter(model = file.contentUri),
             contentDescription = null,
             contentScale = ContentScale.Fit,
             modifier =
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .pointerInput(item.key) {
+                    .pointerInput(file.contentUri) {
                         detectPinchZoom { zoomChange, panChange ->
                             val newScale = (scale * zoomChange).coerceIn(1f, 6f)
                             scale = newScale
@@ -205,15 +176,7 @@ private fun ReviewerDetail(
                     }
                     .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
         )
-        if (item is ReviewerPreviewItem.Device) {
-            DeviceFileInfo(item.file)
-        } else if (item is ReviewerPreviewItem.Sample) {
-            Text(
-                item.label,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(16.dp),
-            )
-        }
+        DeviceFileInfo(file)
     }
 }
 

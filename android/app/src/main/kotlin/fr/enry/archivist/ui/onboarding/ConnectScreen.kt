@@ -8,10 +8,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,17 +75,26 @@ fun ConnectScreen(
         }
         // Plan step 2.17: the answer to Play Console's account-access requirement —
         // full functionality reachable with no account, rather than a dummy instance
-        // maintained just for reviewers. Deliberately a plain text button below the
-        // primary CTA: visible enough for a reviewer to find without instructions, but
-        // subordinate to "connect to your own instance", which is still the point of
-        // the app.
-        TextButton(
+        // maintained just for reviewers. A full Button, the same weight as "Connect",
+        // not a subordinate text link — folded in here with its own explanation rather
+        // than a popup dialog shown only after tapping through, so the choice is made
+        // with the explanation already in view.
+        HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
+        Button(
             onClick = onPreviewWithoutAccount,
             enabled = !state.isConnecting,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Preview without an account")
         }
+        Text(
+            text = "Shows every screen in the app, including Settings, using the photos " +
+                "already on this device — no account, no server, nothing uploaded. Full " +
+                "functionality needs you to provision your own infrastructure and connect " +
+                "this app to it; see this project's GitHub repository for how.",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(top = 8.dp),
+        )
     }
 }
 

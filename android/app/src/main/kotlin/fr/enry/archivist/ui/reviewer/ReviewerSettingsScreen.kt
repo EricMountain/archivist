@@ -24,18 +24,20 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import fr.enry.archivist.sync.DeviceFolder
+import fr.enry.archivist.ui.settings.AboutScreen
 import fr.enry.archivist.ui.settings.StorageScreen
 
-private enum class ReviewerSettingsDestination { SYNC, QUEUE, DEVICES, KEYS, STORAGE, TRASH, ACCOUNT }
+private enum class ReviewerSettingsDestination { SYNC, QUEUE, DEVICES, KEYS, STORAGE, TRASH, ACCOUNT, ABOUT }
 
 /**
  * Plan step 2.17's follow-up: a reviewer should be able to reach every Settings section,
  * not just the timeline. Same menu, same section labels as the real
  * `ui/settings/SettingsScreen.kt`, so a reviewer sees the app's real information
- * architecture — but every section here is either genuinely local (Storage reuses the
- * real screen outright, since its cache lives on disk and touches no account; Sync's
- * folder list reads real device folders via [ReviewerSettingsViewModel]) or a plain
- * explanation of what would be here with a real instance connected. Nothing here
+ * architecture — but every section here is either genuinely local (Storage and About
+ * reuse the real screens outright: Storage's cache lives on disk and touches no
+ * account, About is static text and a `LocalUriHandler` link; Sync's folder list reads
+ * real device folders via [ReviewerSettingsViewModel]) or a plain explanation of what
+ * would be here with a real instance connected. Nothing here
  * constructs `AuthRepository`, `DeviceRepository`, `EnrolmentRepository` or any other
  * network-capable type — the real Devices/Keys/Trash/Account/Queue sections are wired to
  * exactly those, which is what would make them crash (no session, no instance) rather
@@ -90,6 +92,7 @@ fun ReviewerSettingsScreen(
                 onBack = { destination = null },
                 modifier = modifier,
             )
+        ReviewerSettingsDestination.ABOUT -> AboutScreen(onBack = { destination = null }, modifier = modifier)
         null -> ReviewerSettingsMenu(onBack = onBack, onSelect = { destination = it }, modifier = modifier)
     }
 }
@@ -120,6 +123,8 @@ private fun ReviewerSettingsMenu(
         MenuRow("Trash", "Recently deleted photos") { onSelect(ReviewerSettingsDestination.TRASH) }
         HorizontalDivider()
         MenuRow("Account", "Sign out, delete account") { onSelect(ReviewerSettingsDestination.ACCOUNT) }
+        HorizontalDivider()
+        MenuRow("About", "Version, license, source code") { onSelect(ReviewerSettingsDestination.ABOUT) }
     }
 }
 

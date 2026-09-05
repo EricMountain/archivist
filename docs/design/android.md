@@ -523,25 +523,28 @@ timeline and detail view built from `MediaStoreSource` — the same seam `Scanne
 read the device's own photos — with no delete, and critically, **nothing in the screen's
 dependency graph capable of a network call**: it depends on `MediaStoreSource` alone,
 not `TimelineViewModel` or any of the authenticated/encrypted machinery those screens
-are built on. A persistent banner and a one-time dialog make clear that nothing is being
-uploaded and no account exists — the dialog also says plainly that every screen,
-including Settings, is reachable from here, and that full functionality needs the
-reviewer (or anyone) to provision their own infrastructure and connect this app to it,
-pointed at this project's GitHub repository rather than a literal URL (never hardcode
-the maintainer's own repo path into a committed file — see CLAUDE.md's "Nothing personal
-in the committed tree"). A bare emulator with no photos falls back to a handful of
-bundled sample images rather than showing an empty grid.
+are built on. The explanation of what this mode does and doesn't do lives on
+`ConnectScreen` itself, folded in below the button as plain body text — not a popup
+shown only after tapping through — saying plainly that every screen including Settings
+is reachable, that nothing is uploaded or sent anywhere, and that full functionality
+needs the reviewer (or anyone) to provision their own infrastructure and connect this
+app to it, pointed at this project's GitHub repository (see "About", below, for the one
+place the literal link actually lives). Once inside, a persistent banner repeats the
+short version ("Preview — no account, nothing uploaded"). A device with no photos shows
+a plain "No photos on this device" message — deliberately not a bundled-sample
+fallback, which risked a reviewer mistaking fabricated content for the device's own.
 
 **Settings is reachable too, not just the timeline** — a reviewer needs to see the whole
 app, and "no settings at all" fell short of that once tried. `ReviewerSettingsScreen`
-mirrors the real Settings menu's seven sections verbatim (same labels, same
+mirrors the real Settings menu's eight sections verbatim (same labels, same
 descriptions) so the information architecture a reviewer sees is the real one, but every
 section is either genuinely local or an explanation rather than a live, network-backed
 screen:
 
-* **Storage** reuses the real `StorageScreen`/`StorageViewModel` outright — verified
-  network-free (`StorageRepository` only ever touches Coil's on-disk cache), so this one
-  section is fully live and functional in preview mode, cache-clear button included.
+* **Storage** and **About** reuse the real screens outright — verified network-free
+  (`StorageRepository` only touches Coil's on-disk cache; `AboutScreen` is static text
+  plus a `LocalUriHandler` link, no ViewModel at all) — so both are fully live and
+  functional in preview mode.
 * **Sync** shows real device folder names (`ReviewerSettingsViewModel`, `MediaStoreSource`
   again) with switches that visibly toggle, all backed by plain `remember` state —
   nothing persisted, nothing that starts an upload, since a real folder selection would
@@ -554,8 +557,26 @@ screen:
 This is deliberately not "a demo mode" for ordinary users to discover and get confused
 by — it only appears before an instance is connected, which for a real user is a
 narrow window at first launch, and exiting it is non-destructive since it never wrote
-anything. Verified end-to-end on a Pixel 8a emulator: fresh install → Preview →
-Settings → all seven sections → back → Exit preview, no crash, no network calls.
+anything. Verified end-to-end on a Pixel 8a emulator: fresh install → Preview → empty
+state → Settings → all eight sections, including tapping the About screen's GitHub link
+through to a real browser → back → Exit preview, no crash, no network calls.
+
+### About
+
+`ui/settings/AboutScreen.kt`, reachable from both the real Settings menu and
+`ReviewerSettingsScreen` (same composable, since it's a plain screen with no ViewModel —
+`LocalContext`/`LocalUriHandler` are Compose ambients, not injected dependencies). Shows
+the installed version (`PackageManager`, not a build-time constant — no new
+`buildConfig` Gradle feature needed for one string), the license, and a link to this
+project's repository. This is also where GPLv3's own suggestion of an "about box"
+displaying Appropriate Legal Notices is satisfied.
+
+**`https://github.com/EricMountain/archivist` is the second of exactly two hardcoded
+personal/identifying strings this repo allows** — see CLAUDE.md's "Nothing personal in
+the committed tree". Unlike a domain or AWS account, the upstream repository isn't
+deployment-specific: every self-hosted instance runs the same client built from this one
+canonical source, so it's treated like the application ID rather than like
+`photos.example.com`.
 
 ## Open questions
 

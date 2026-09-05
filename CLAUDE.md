@@ -64,9 +64,16 @@ domain, an AWS account, or anything else specific to one deployment.** Use
 `photos.example.com`, "the author", "a home server". If a doc needs to reference real
 config, the real config goes in `private/` with a symlink — see `private/README.md`.
 
-The single exception is `fr.enry.archivist`, the Android application ID: permanent once
-published, already public on the Play Store, and documentation would be wrong without
-it.
+Two exceptions:
+
+* `fr.enry.archivist`, the Android application ID: permanent once published, already
+  public on the Play Store, and documentation would be wrong without it.
+* `https://github.com/EricMountain/archivist`, the project's own repository: unlike a
+  domain or AWS account, it isn't deployment-specific config — every self-hosted
+  instance runs the same client built from this one canonical upstream, so it belongs
+  alongside the application ID rather than with `photos.example.com`. Referenced from
+  the app's About screen (`ui/settings/AboutScreen.kt`) per GPLv3's own suggestion of an
+  "about box" with Appropriate Legal Notices.
 
 Before suggesting a commit, grep the tree for the maintainer's name, domain and machine
 hostnames. Don't hardcode those strings anywhere committed — not even inside the check
