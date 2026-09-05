@@ -13,7 +13,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 
 private const val LICENSE_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
-private const val REPO_URL = "https://github.com/EricMountain/archivist"
+const val REPO_URL = "https://github.com/EricMountain/archivist"
 
 /**
  * Plan step 2.17's follow-up: an About pane, the "about box" GPLv3 itself suggests for

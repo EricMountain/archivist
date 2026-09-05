@@ -12,6 +12,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +20,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
+import fr.enry.archivist.ui.settings.REPO_URL
 
 /** Stateless: takes the current [ConnectUiState.NeedsConnection] and a callback, so it
  * doesn't need a ViewModel to preview or test. */
@@ -30,6 +33,7 @@ fun ConnectScreen(
     onPreviewWithoutAccount: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val uriHandler = LocalUriHandler.current
     var hostInput by remember(state.prefillHost) { mutableStateOf(state.prefillHost ?: "") }
 
     Column(
@@ -41,10 +45,13 @@ fun ConnectScreen(
             style = MaterialTheme.typography.headlineSmall,
         )
         Text(
-            text = "Archivist requires your own AWS account — this app has no server of its own.",
+            text = "Full Archivist functionality requires you to set up cloud infrastructure " +
+                    "and connect this app to it - this app comes with no server of its own. " +
+                    "See this project's GitHub repository for how.",
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
+            modifier = Modifier.padding(top = 8.dp),
         )
+        TextButton(onClick = { uriHandler.openUri(REPO_URL) }) { Text(REPO_URL) }
         OutlinedTextField(
             value = hostInput,
             onValueChange = { hostInput = it },
@@ -89,10 +96,7 @@ fun ConnectScreen(
         }
         Text(
             text = "Shows every screen in the app, including Settings, using the photos " +
-                "already on this device — no account, no server, nothing uploaded. Full " +
-                "functionality needs you to provision your own infrastructure and connect " +
-                "this app to it; see this project's GitHub repository for how in Settings " +
-                " → About → Source Code.",
+                "already on this device — no account, no server, nothing uploaded.",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(top = 8.dp),
         )
