@@ -19,6 +19,10 @@ sealed interface ConnectUiState {
 
     data class Connected(val instanceName: String) : ConnectUiState
 
+    /** Plan step 2.17: no host, no session, no master key — just the device's own
+     * photos, read-only. Structurally parallel to [Connected], not a variant of it. */
+    data object ReviewerPreview : ConnectUiState
+
     data class NeedsConnection(
         val isConnecting: Boolean = false,
         val error: ConnectError? = null,
@@ -52,10 +56,10 @@ class ConnectViewModel
             viewModelScope.launch {
                 val stored = instanceRepository.currentInstance.first()
                 _uiState.value =
-                    if (stored != null) {
-                        ConnectUiState.Connected(stored.document.instanceName)
-                    } else {
-                        ConnectUiState.NeedsConnection()
+                    when {
+                        stored != null -> ConnectUiState.Connected(stored.document.instanceName)
+                        instanceRepository.reviewerPreviewEnabled.first() -> ConnectUiState.ReviewerPreview
+                        else -> ConnectUiState.NeedsConnection()
                     }
             }
         }
@@ -77,6 +81,27 @@ class ConnectViewModel
                                 error = ConnectError.ServerTooNew(outcome.serverVersion, SUPPORTED_CRYPTO_VERSION),
                             )
                     }
+            }
+        }
+
+        /** Plan step 2.17. Only meaningful from [ConnectUiState.NeedsConnection] —
+         * reachable before any real connection, which is exactly the reviewer's state
+         * on first launch. */
+        fun enterReviewerPreview() {
+            if (_uiState.value !is ConnectUiState.NeedsConnection) return
+            viewModelScope.launch {
+                instanceRepository.enterReviewerPreview()
+                _uiState.value = ConnectUiState.ReviewerPreview
+            }
+        }
+
+        /** Non-destructive: preview mode never wrote a session or a stored instance, so
+         * this just clears the flag and falls back to the ordinary connect screen. */
+        fun exitReviewerPreview() {
+            if (_uiState.value !is ConnectUiState.ReviewerPreview) return
+            viewModelScope.launch {
+                instanceRepository.exitReviewerPreview()
+                _uiState.value = ConnectUiState.NeedsConnection()
             }
         }
 

@@ -9,7 +9,9 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -69,5 +71,21 @@ class InstanceStoreTest {
 
             assertEquals("photos2.example.com", stored?.host)
             assertEquals("Second instance", stored?.document?.instanceName)
+        }
+
+    @Test
+    fun `reviewer preview defaults to disabled`() =
+        runTest {
+            assertFalse(store.reviewerPreviewEnabled.first())
+        }
+
+    @Test
+    fun `reviewer preview flag round-trips and can be cleared`() =
+        runTest {
+            store.setReviewerPreviewEnabled(true)
+            assertTrue(store.reviewerPreviewEnabled.first())
+
+            store.setReviewerPreviewEnabled(false)
+            assertFalse(store.reviewerPreviewEnabled.first())
         }
 }

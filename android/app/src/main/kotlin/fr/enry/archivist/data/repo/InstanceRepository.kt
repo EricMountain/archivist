@@ -27,6 +27,11 @@ class InstanceRepository
         private val instanceStore: InstanceStore,
     ) {
         val currentInstance: Flow<StoredInstance?> = instanceStore.current
+        val reviewerPreviewEnabled: Flow<Boolean> = instanceStore.reviewerPreviewEnabled
+
+        suspend fun enterReviewerPreview() = instanceStore.setReviewerPreviewEnabled(true)
+
+        suspend fun exitReviewerPreview() = instanceStore.setReviewerPreviewEnabled(false)
 
         suspend fun connect(hostInput: String): ConnectOutcome =
             when (val result = discoveryClient.fetch(hostInput)) {

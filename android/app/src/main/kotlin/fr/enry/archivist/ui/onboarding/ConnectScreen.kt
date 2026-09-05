@@ -11,6 +11,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.dp
 fun ConnectScreen(
     state: ConnectUiState.NeedsConnection,
     onConnect: (String) -> Unit,
+    onPreviewWithoutAccount: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var hostInput by remember(state.prefillHost) { mutableStateOf(state.prefillHost ?: "") }
@@ -70,6 +72,19 @@ fun ConnectScreen(
                 CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp).size(16.dp))
             }
             Text("Connect")
+        }
+        // Plan step 2.17: the answer to Play Console's account-access requirement —
+        // full functionality reachable with no account, rather than a dummy instance
+        // maintained just for reviewers. Deliberately a plain text button below the
+        // primary CTA: visible enough for a reviewer to find without instructions, but
+        // subordinate to "connect to your own instance", which is still the point of
+        // the app.
+        TextButton(
+            onClick = onPreviewWithoutAccount,
+            enabled = !state.isConnecting,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Preview without an account")
         }
     }
 }

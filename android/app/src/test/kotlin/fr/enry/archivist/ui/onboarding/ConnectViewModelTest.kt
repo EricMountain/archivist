@@ -165,6 +165,71 @@ class ConnectViewModelTest {
         }
 
     @Test
+    fun `entering reviewer preview transitions from NeedsConnection`() =
+        runTest(dispatcher) {
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.enterReviewerPreview()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(ConnectUiState.ReviewerPreview, viewModel.uiState.value)
+        }
+
+    @Test
+    fun `reviewer preview is picked up on a fresh launch, like a stored instance`() =
+        runTest(dispatcher) {
+            // Own store, own temp dir — same reasoning as "a previously connected
+            // instance is picked up on start" above: DataStore disallows a second
+            // instance over the same file `setUp()` already opened.
+            val seedDir = Files.createTempDirectory("connect-viewmodel-preview-seed-test").toFile()
+            try {
+                val seedStore =
+                    InstanceStore(
+                        PreferenceDataStoreFactory.create(
+                            scope = CoroutineScope(dispatcher),
+                            produceFile = { File(seedDir, "instances.preferences_pb") },
+                        ),
+                        Json { ignoreUnknownKeys = true },
+                    )
+                seedStore.setReviewerPreviewEnabled(true)
+
+                val fresh = ConnectViewModel(InstanceRepository(DiscoveryClient(fakeApi), seedStore))
+                dispatcher.scheduler.advanceUntilIdle()
+
+                assertEquals(ConnectUiState.ReviewerPreview, fresh.uiState.value)
+            } finally {
+                seedDir.deleteRecursively()
+            }
+        }
+
+    @Test
+    fun `exiting reviewer preview clears the flag and returns to NeedsConnection`() =
+        runTest(dispatcher) {
+            dispatcher.scheduler.advanceUntilIdle()
+            viewModel.enterReviewerPreview()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.exitReviewerPreview()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(ConnectUiState.NeedsConnection(), viewModel.uiState.value)
+        }
+
+    @Test
+    fun `entering reviewer preview is a no-op unless currently needing connection`() =
+        runTest(dispatcher) {
+            dispatcher.scheduler.advanceUntilIdle()
+            fakeApi.response = { document }
+            viewModel.connect("photos.example.com")
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.enterReviewerPreview()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(ConnectUiState.Connected("Home photos"), viewModel.uiState.value)
+        }
+
+    @Test
     fun `connecting again while already connecting is a no-op`() =
         runTest(dispatcher) {
             dispatcher.scheduler.advanceUntilIdle()

@@ -39,6 +39,7 @@ fr.enry.archivist
 ├── sync          WorkManager workers, scan and queue
 └── ui
     ├── timeline  detail, search, queue, settings
+    ├── reviewer  Play reviewer preview mode — no network types reachable from here
     └── theme
 ```
 
@@ -70,6 +71,12 @@ The listing existing changes a few things from "later" to "now":
 * **Data Safety declaration.** Needed before any release. The honest answers here are
   unusually good: data encrypted in transit *and* at rest, keys not held by the
   developer, deletion supported. Worth filling in carefully rather than defensively.
+* **Account access for review.** Because the app requires the reviewer's own AWS
+  account to reach any server functionality, the Play Console's account-access
+  declaration should point reviewers at the in-app "Preview without an account" button
+  (see "Reviewer preview mode" below) rather than supplying credentials for a
+  purpose-built dummy instance — cheaper to maintain and nothing for a reviewer to get
+  locked out of.
 
 ### Media permissions
 
@@ -501,6 +508,54 @@ default.
 
 Re-adding deliberately is possible — it sets `reAddDeleted` on the upload, which is
 also what stops a bulk sync from resurrecting anything.
+
+## Reviewer preview mode
+
+The Play Console offers two ways to satisfy the account-access requirement for an app
+that gates functionality behind login: hand reviewers working credentials, or make full
+functionality reachable without any. A self-hosted app has no account to hand out —
+"working credentials" would mean standing up and maintaining a whole extra AWS instance
+just for Google's reviewers. Plan step 2.17 takes the second path instead.
+
+A "Preview without an account" button on the connect screen (`ConnectScreen`, before
+sign-in and before any permission request) drops straight into a read-only, local-only
+timeline and detail view built from `MediaStoreSource` — the same seam `Scanner` uses to
+read the device's own photos — with no delete, and critically, **nothing in the screen's
+dependency graph capable of a network call**: it depends on `MediaStoreSource` alone,
+not `TimelineViewModel` or any of the authenticated/encrypted machinery those screens
+are built on. A persistent banner and a one-time dialog make clear that nothing is being
+uploaded and no account exists — the dialog also says plainly that every screen,
+including Settings, is reachable from here, and that full functionality needs the
+reviewer (or anyone) to provision their own infrastructure and connect this app to it,
+pointed at this project's GitHub repository rather than a literal URL (never hardcode
+the maintainer's own repo path into a committed file — see CLAUDE.md's "Nothing personal
+in the committed tree"). A bare emulator with no photos falls back to a handful of
+bundled sample images rather than showing an empty grid.
+
+**Settings is reachable too, not just the timeline** — a reviewer needs to see the whole
+app, and "no settings at all" fell short of that once tried. `ReviewerSettingsScreen`
+mirrors the real Settings menu's seven sections verbatim (same labels, same
+descriptions) so the information architecture a reviewer sees is the real one, but every
+section is either genuinely local or an explanation rather than a live, network-backed
+screen:
+
+* **Storage** reuses the real `StorageScreen`/`StorageViewModel` outright — verified
+  network-free (`StorageRepository` only ever touches Coil's on-disk cache), so this one
+  section is fully live and functional in preview mode, cache-clear button included.
+* **Sync** shows real device folder names (`ReviewerSettingsViewModel`, `MediaStoreSource`
+  again) with switches that visibly toggle, all backed by plain `remember` state —
+  nothing persisted, nothing that starts an upload, since a real folder selection would
+  need `Scanner`/`UploadScheduler`/a signed-in session this mode never has.
+* **Upload queue, Devices, Keys, Trash, Account** are a fixed explanation each — what
+  would be here with a real instance connected — rather than the real screens, which are
+  wired to `AuthRepository`/`DeviceRepository`/`EnrolmentRepository` and would either
+  crash or silently do nothing against a session that doesn't exist.
+
+This is deliberately not "a demo mode" for ordinary users to discover and get confused
+by — it only appears before an instance is connected, which for a real user is a
+narrow window at first launch, and exiting it is non-destructive since it never wrote
+anything. Verified end-to-end on a Pixel 8a emulator: fresh install → Preview →
+Settings → all seven sections → back → Exit preview, no crash, no network calls.
 
 ## Open questions
 

@@ -409,6 +409,98 @@ another source keeps re-offering shows the attempt warning.
 
 ---
 
+## 2.17 — Play reviewer preview mode
+
+**Goal.** Let a Play reviewer see every part of the app without an AWS account, an
+instance, sign-in, or a recovery code — the alternative to standing up a dummy instance
+and handing out credentials in the Play Console's account-access form.
+
+**Files.** `ui/reviewer/ReviewerPreviewScreen.kt`, `ui/reviewer/ReviewerPreviewViewModel.kt`,
+`ui/reviewer/ReviewerSettingsScreen.kt`, `ui/reviewer/ReviewerSettingsViewModel.kt`,
+`ui/onboarding/ConnectScreen.kt`, `ui/onboarding/ConnectViewModel.kt`,
+`data/repo/InstanceRepository.kt`, `data/local/InstanceStore.kt`, `MainActivity.kt`,
+`res/drawable-nodpi/reviewer_sample_*.png`, `docs/play/privacy-policy.md`.
+
+**Details.**
+- New `ConnectUiState.ReviewerPreview` sibling to `NeedsConnection`/`Connected`.
+  `ConnectScreen` gains a secondary "Preview without an account" text button below the
+  existing `Connect` button — visually subordinate, since the primary path is still
+  "connect to your own instance." Tapping it calls a new
+  `ConnectViewModel.enterReviewerPreview()`.
+- Persistence: a single `reviewerPreviewEnabled` boolean in the same DataStore
+  `InstanceStore` already uses, independent of the per-host instance map. `connect()`'s
+  `init` block checks it alongside `currentInstance` so a reviewer relaunching the app
+  mid-review doesn't have to tap through again. `exitReviewerPreview()` clears it and
+  returns to `NeedsConnection` — non-destructive, since preview mode never wrote
+  anything to the per-host instance map or any session token in the first place.
+- `MainActivity`'s `ArchivistApp` gets a third top-level branch,
+  `is ConnectUiState.ReviewerPreview -> ReviewerPreviewScreen(...)`, structurally
+  parallel to `NeedsConnection`/`Connected` and touching neither the `signedIn` nor
+  `unlocked` local state — this path never constructs `AuthRepository`,
+  `ArchivistApiFactory`, `CognitoAuthClient`, `UploadRepository` or any other
+  network-capable type. That's the actual guarantee, not just a UI restriction: nothing
+  reachable from `ReviewerPreviewScreen` can make a network call, because nothing in its
+  dependency graph is capable of one.
+- `ReviewerPreviewViewModel` depends on **`MediaStoreSource` alone** (`sync/MediaStoreSource.kt`,
+  already Hilt-injectable, already network- and crypto-free — it's the seam `Scanner`
+  and the folder-selection UI use to reach `ContentResolver`). Calls `listFolders()`
+  then `listFiles(bucketId)` per folder, flattens and sorts by `dateModified` descending.
+  Deliberately does **not** reuse `TimelineViewModel`/`PhotoDetailRepository`/Room/Paging
+  3/`EncryptedImageFetcher` — those exist to solve problems (server pagination,
+  ciphertext decryption) that don't exist here, and reusing them would be the easiest way
+  to accidentally drag a network dependency into this screen.
+- Thumbnails load straight from each file's `content://` URI via Coil's default loader —
+  no decryption, since these are the phone's own plaintext originals. No custom
+  `Fetcher`.
+- Screen: a justified grid (visually similar to the real timeline, but its own
+  Composable) plus a minimal pinch-zoom detail view (filename and size only — not EXIF;
+  read-only, no upload). A persistent banner reading "Preview — no account, nothing
+  uploaded" plus a "Settings" action, on every screen in this mode. A one-time dialog on
+  first entry says plainly that every screen (including Settings) is reachable from
+  here, that nothing is uploaded or sent anywhere, and that full functionality needs the
+  reviewer to provision their own infrastructure and connect this app to it — pointed at
+  this project's GitHub repository generically, never a literal URL (see CLAUDE.md's
+  "Nothing personal in the committed tree" — the maintainer's own repo path must never
+  land in a committed file). An always-visible "Exit preview" action.
+- **Settings is reachable too** (`ReviewerSettingsScreen`), mirroring the real Settings
+  menu's seven section labels verbatim so a reviewer sees the real information
+  architecture. Storage reuses the real `StorageScreen`/`StorageViewModel` outright
+  (verified network-free — `StorageRepository` only touches Coil's disk cache), so it's
+  fully live. Sync shows real device folder names via `ReviewerSettingsViewModel`
+  (`MediaStoreSource` again) with switches backed by plain `remember` state — visibly
+  toggleable, nothing persisted, no upload started. Upload queue/Devices/Keys/Trash/
+  Account are each a fixed explanation of what would be there with a real instance
+  connected, not the real screens — those are wired to `AuthRepository`/
+  `DeviceRepository`/`EnrolmentRepository` and would crash or silently no-op against a
+  session that doesn't exist. No delete, no folder selection that does anything, in
+  either the grid or Settings.
+- If a device has zero photos (a bare emulator), the grid falls back to 4 tiny bundled
+  sample images in `res/drawable-nodpi/` (self-authored, generated rather than sourced,
+  to avoid asset-licensing questions in a publishable repo), labelled as samples rather
+  than silently substituted — plain drawable resources rather than `assets/`, since Coil
+  and `AsyncImage` take a resource id with zero extra plumbing.
+- Guard test: a reflection-based unit test asserting `ReviewerPreviewViewModel`'s and
+  `ReviewerSettingsViewModel`'s constructor parameter types contain none of the
+  network-capable types listed above — cheap, and it's the thing that actually matters
+  here, not the UI copy.
+- Update `docs/design/android.md`: a new "Reviewer preview mode" section, plus a
+  bullet under "Play Console consequences" noting the account-access declaration should
+  point reviewers at the in-app button rather than supplying credentials for a
+  purpose-built dummy instance. Update `docs/play/privacy-policy.md` (and sync
+  `private/instance/privacy-policy.md`, per `private/README.md`) with a "Preview without
+  an account" section and a permissions-bullet tweak, since the app now reads photos for
+  a second reason besides backup.
+
+**Done when.** A fresh install, with no network access at all (airplane mode), can reach
+"Preview without an account" from the first screen, browse a grid and detail view of the
+device's own photos, and navigate into Settings and back out through all seven sections;
+exiting returns cleanly to the connect screen; the constructor guard tests pass;
+`docs/design/android.md` and `docs/play/privacy-policy.md` are updated in the same
+change. Verified end-to-end on a Pixel 8a emulator (`sdk_gphone16k_arm64`, Android 17
+system image) — see STATUS.md for exactly what was exercised.
+
+---
+
 ## Deliberately not in the MVP
 
 Video playback, albums, favourites, people, free-text search, sharing, multi-instance,

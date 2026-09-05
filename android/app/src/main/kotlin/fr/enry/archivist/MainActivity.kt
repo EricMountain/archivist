@@ -24,6 +24,7 @@ import fr.enry.archivist.ui.onboarding.ConnectUiState
 import fr.enry.archivist.ui.onboarding.ConnectViewModel
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.SignInScreen
+import fr.enry.archivist.ui.reviewer.ReviewerPreviewScreen
 import fr.enry.archivist.ui.theme.ArchivistTheme
 import fr.enry.archivist.ui.timeline.TimelineScreen
 
@@ -81,7 +82,18 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                 }
 
             is ConnectUiState.NeedsConnection ->
-                ConnectScreen(state = s, onConnect = connectViewModel::connect, modifier = Modifier.padding(innerPadding))
+                ConnectScreen(
+                    state = s,
+                    onConnect = connectViewModel::connect,
+                    onPreviewWithoutAccount = connectViewModel::enterReviewerPreview,
+                    modifier = Modifier.padding(innerPadding),
+                )
+
+            // Plan step 2.17: structurally parallel to Connected above, not a branch of
+            // it — this path touches neither `signedIn` nor `unlocked`, and nothing
+            // reachable from ReviewerPreviewScreen can construct a network client at all.
+            ConnectUiState.ReviewerPreview ->
+                ReviewerPreviewScreen(onExit = connectViewModel::exitReviewerPreview, modifier = Modifier.padding(innerPadding))
         }
     }
 }

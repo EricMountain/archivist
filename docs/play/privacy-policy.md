@@ -53,6 +53,15 @@ third-party SDK that transmits anything anywhere.
 
 The only network requests Archivist makes are to the server address you configured.
 
+## Preview without an account
+
+The first screen offers "Preview without an account" as an alternative to connecting to
+a server. It shows every screen in the app, including Settings, using the photos already
+on your device — no account, no server, no upload. In this mode the app makes **no
+network requests at all**: there is nowhere configured to send anything to. Full
+functionality — actually backing up a library — requires connecting to a server you or
+someone else has provisioned.
+
 ## Encryption, and what your server can see
 
 Photos and videos are encrypted on your device using a key generated on your device.
@@ -84,8 +93,10 @@ cannot afford to lose.
 ## Permissions the app asks for
 
 **Photos and videos (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`)** — to read the photos in
-the folders you choose to back up. Archivist only uploads from folders you have
-selected. Denying this prevents backup from working.
+the folders you choose to back up, and to show your device's photos in "Preview without
+an account" (see above). Archivist only uploads from folders you have selected, and the
+preview mode never uploads anything at all. Denying this prevents backup, and the
+preview screen, from working.
 
 **Notifications** — to show upload progress and let you stop a running backup.
 
