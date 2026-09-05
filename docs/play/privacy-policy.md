@@ -25,7 +25,8 @@ only you hold. The author is a software supplier, not a processor and not a cont
 because there is nothing for them to process — no telemetry, no phone-home, no shared
 backend.
 
-The author is [NAME], contactable at [EMAIL] about the software itself.
+The author is [NAME], contactable at [EMAIL] about the software itself (see Contact
+below).
 
 ## What the app sends, and where
 
@@ -115,6 +116,10 @@ before the change takes effect. Past versions are listed at the end.
 For questions about a specific server's data handling, contact whoever runs it. If
 that's you, it's your call.
 
+# Version history
+
+- [DATE] — first published.
+
 ---
 
 # Notes before publishing — not part of the policy
@@ -122,6 +127,13 @@ that's you, it's your call.
 Delete this section before making the document public.
 
 **Placeholders:** `[DATE]`, `[NAME]`, `[EMAIL]`.
+
+**Publishing.** Play needs a public URL for this. Fill in the placeholders above,
+delete this "Notes before publishing" section, and save the result as
+`private/instance/privacy-policy.md` — `terraform apply` then publishes it as plain
+text at `https://<domain>/privacy` on your own instance (`terraform/wellknown.tf`; see
+`private/README.md`). That file is gitignored; nothing here gets committed with real
+values filled in.
 
 **This is the app policy, and it is deliberately narrow.** It covers software that
 receives nothing. The separate obligations that come with *running an instance for other
@@ -154,7 +166,3 @@ The first two are worth guarding carefully. A single analytics SDK, added casual
 invalidates the central claim of this document.
 
 **Keep aligned with `data-safety.md`.** Reviewers read both.
-
-# Version history
-
-- [DATE] — first published.

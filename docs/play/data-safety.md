@@ -99,7 +99,11 @@ advertising ID, no ANDROID_ID, no device fingerprint is collected.
 ## Obligations beyond the form
 
 1. **A privacy policy at a public URL**, linked in the listing — `privacy-policy.md`.
-   Not optional, and checked at review.
+   Not optional, and checked at review. Published at `https://<domain>/privacy` on the
+   author's own instance: fill in `privacy-policy.md`'s placeholders, save the result
+   (minus its "Notes before publishing" section) as
+   `private/instance/privacy-policy.md`, and `terraform apply` publishes it as plain
+   text (`terraform/wellknown.tf`) — see `private/README.md`.
 2. **Account deletion.** Play requires apps supporting account creation to offer
    deletion in-app and, normally, through a publicly reachable web URL. That web
    requirement is aimed at developer-held accounts, and here there are none: accounts
