@@ -91,7 +91,8 @@ fun ConnectScreen(
             text = "Shows every screen in the app, including Settings, using the photos " +
                 "already on this device — no account, no server, nothing uploaded. Full " +
                 "functionality needs you to provision your own infrastructure and connect " +
-                "this app to it; see this project's GitHub repository for how.",
+                "this app to it; see this project's GitHub repository for how in Settings " +
+                " → About → Source Code.",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(top = 8.dp),
         )
