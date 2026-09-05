@@ -1,10 +1,24 @@
+import com.github.triplet.gradle.androidpublisher.ResolutionStrategy
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.play.publisher)
 }
+
+// Set by the release workflow (.github/workflows/android-release.yml) from the
+// triggering tag, e.g. "android-v1.2.3" -> "1.2.3". Absent locally and in CI's own
+// PR/main workflow, where the static fallback below is fine -- nothing in those paths
+// publishes anywhere. See "CI and release" in docs/design/android.md.
+val releaseVersionName = System.getenv("ARCHIVIST_VERSION_NAME")
+
+// Also set only by the release workflow, after it decodes the ANDROID_KEYSTORE_BASE64
+// secret to a file. Its absence is what keeps `assembleRelease`/`bundleRelease` working
+// (unsigned) for anyone building this module outside that one workflow.
+val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 
 android {
     namespace = "fr.enry.archivist"
@@ -15,8 +29,19 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1"
+        versionName = releaseVersionName ?: "0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (releaseKeystorePath != null) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -25,6 +50,9 @@ android {
         }
         release {
             isMinifyEnabled = false
+            if (releaseKeystorePath != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -47,6 +75,20 @@ android {
             // instead -- see ExifExtractorTest and android/AGENTS.md.
             isReturnDefaultValues = true
         }
+        // The device plan step 2.16 runs instrumented tests against in CI --
+        // `./gradlew :app:pixel2api30DebugAndroidTest` -- instead of a real emulator or
+        // a third-party runner action. GitHub's standard 2-vCPU Linux runners have
+        // hardware-accelerated Android virtualization; see the "Enable KVM" step in
+        // .github/workflows/android-ci.yml.
+        managedDevices {
+            localDevices {
+                create("pixel2api30") {
+                    device = "Pixel 2"
+                    apiLevel = 30
+                    systemImageSource = "aosp-atd"
+                }
+            }
+        }
     }
 
     packaging {
@@ -62,6 +104,26 @@ ksp {
     // exported". Nothing to diff yet at version 1; this is what a future bump diffs
     // against.
     arg("room.schemaLocation", "$projectDir/schemas")
+}
+
+play {
+    // GPP wires a real Play API call (to resolve the next versionCode) into every
+    // release-variant build once the plugin is enabled -- not just the publish tasks --
+    // so it must stay disabled unless credentials actually exist, or `assembleRelease`/
+    // `bundleRelease` would break for anyone without Play access. Confirmed locally:
+    // `enabled.set(true)` unconditionally makes even a plain `assembleRelease` fail
+    // validating a nonexistent `serviceAccountCredentials` file.
+    enabled.set(System.getenv("ANDROID_PUBLISHER_CREDENTIALS") != null)
+    // Credentials come from that same env var (GPP's own documented convention: the
+    // credentials file's *contents*, not a path to it -- confirmed locally against the
+    // plugin's own parse-failure message) rather than `serviceAccountCredentials` here,
+    // so nothing ever writes the secret to disk.
+    track.set("internal")
+    defaultToAppBundles.set(true)
+    // Play's own current versionCode for this track, plus one -- avoids a manual bump
+    // (and the merge-conflict-prone commit that goes with it) on every release. See
+    // "CI and release" in docs/design/android.md.
+    resolutionStrategy.set(ResolutionStrategy.AUTO)
 }
 
 dependencies {

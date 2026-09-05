@@ -218,6 +218,32 @@ worth grepping for (`grep -rn '/\*' --include=*.kt | grep -v '/\*\*'`, restricte
 lines already inside a comment) if a future KSP failure names a real, correctly-imported
 class as unresolved.
 
+## CI and release (Gradle Play Publisher)
+
+**Applying `com.github.triplet.play` (GPP) breaks `assembleRelease`/`bundleRelease` for
+everyone without Play credentials, not just the publish tasks.** The plugin wires a real
+Play API call (`processReleaseVersionCodes`, needed to resolve `resolutionStrategy.set
+(AUTO)`'s next `versionCode`) into the release variant's build graph unconditionally —
+confirmed live by running a plain `./gradlew :app:assembleRelease` with the plugin
+enabled and no credentials: it fails validating a nonexistent `serviceAccountCredentials`
+file before ever reaching a publish task. This is a known GPP limitation (matches
+Triple-T/gradle-play-publisher issue #659), not a misconfiguration. Fixed in
+`app/build.gradle.kts` with `play { enabled.set(System.getenv
+("ANDROID_PUBLISHER_CREDENTIALS") != null) }` — the plugin stays inert for every
+contributor's machine and for `android-ci.yml` (which never sets that var), and only
+activates in `android-release.yml`. If a future change to the `play { }` block drops
+this guard, `assembleRelease` will start failing outright for anyone without a Play
+service account, which looks like an unrelated build break, not a publishing config
+issue.
+
+**`ANDROID_PUBLISHER_CREDENTIALS` is the credentials file's *contents*, not a path to
+it** — the opposite of the more commonly-repeated claim online (GPP's README wording is
+genuinely ambiguous on this point). Confirmed against the plugin's own runtime error:
+pointing the env var at a file path fails with "Credential parsing may have failed...
+(not a file path)" — the plugin tries to parse the env var's value as the JSON itself.
+`android-release.yml` passes the `PLAY_SERVICE_ACCOUNT_JSON` secret straight through as
+that env var's value and never writes it to disk.
+
 ## Instrumented tests (real device/emulator)
 
 Plan step 2.10 added the first ones (`app/src/androidTest/`) — `ScannerInstrumentedTest`,

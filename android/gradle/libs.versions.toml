@@ -36,6 +36,7 @@ paging = "3.5.1"
 # ("compiled with an incompatible version of Kotlin" at compile time) -- 3.3.0 is the
 # newest release still built against kotlin-stdlib 2.2.0, matching this repo exactly.
 coil = "3.3.0"
+gradlePlayPublisher = "4.1.1"
 
 [libraries]
 tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
@@ -101,3 +102,6 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 hilt-android = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+# Signs and uploads the release bundle to the Play internal track on tag -- see plan
+# step 2.16 and the "CI and release" section of docs/design/android.md.
+play-publisher = { id = "com.github.triplet.play", version.ref = "gradlePlayPublisher" }

@@ -1,0 +1,72 @@
+name: Android CI
+
+# Plan step 2.16 (docs/plans/02-android-mvp.md). Build + unit tests + instrumented
+# tests on a Gradle-managed device for every PR, matching "CI and release" in
+# docs/design/android.md. Release/publish lives in android-release.yml instead --
+# kept separate so a PR run never needs the signing/Play secrets.
+
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - ".github/workflows/android-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # GitHub's standard 2-vCPU Linux runners support hardware-accelerated Android
+      # virtualization, but the calling user still needs KVM group access -- this is
+      # the documented recipe for granting it.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Caches the Gradle User Home (dependencies + build cache) across runs via the
+      # GitHub Actions cache -- this repo's stand-in for a self-hosted remote build
+      # cache server, which a self-hosted-per-user project has nowhere to run.
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon :core:crypto:testDebugUnitTest :app:testDebugUnitTest
+
+      - name: Assemble debug
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Instrumented tests (Gradle managed device)
+        run: ./gradlew --no-daemon :app:pixel2api30DebugAndroidTest
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            android/app/build/reports/tests/
+            android/core/crypto/build/reports/tests/
+            android/app/build/outputs/androidTest-results/
+          retention-days: 14

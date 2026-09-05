@@ -374,19 +374,68 @@ which at roughly 8 minutes a build is more headroom than a solo project will use
 
 `--no-daemon` and the Gradle remote build cache keep runs quick.
 
+### CI and release, as built
+
+`.github/workflows/android-ci.yml` (PR + push to `main`, paths-filtered to `android/**`)
+runs `:core:crypto:testDebugUnitTest`, `:app:testDebugUnitTest`, `:app:assembleDebug`,
+then the instrumented suite on a Gradle Managed Device (`pixel2api30`, `aosp-atd`,
+declared in `app/build.gradle.kts`'s `testOptions.managedDevices`) — GitHub's standard
+Linux runners have hardware-accelerated Android virtualization once the job grants
+itself KVM group access, which the workflow does as its own step rather than relying on
+a third-party emulator-runner action. `gradle/actions/setup-gradle` provides the actual
+caching (GitHub Actions cache standing in for a literal remote cache server, which a
+self-hosted-per-user project has nowhere to run).
+
+`.github/workflows/android-release.yml` triggers on a tag matching `android-v*.*.*` —
+prefixed because this repo also holds the Terraform-deployed backend, which has its own
+release path (none defined yet; not this plan's step). It decodes the keystore secret to
+a runner-local file, derives `versionName` from the tag (`android-v1.2.3` → `1.2.3`), and
+runs `:app:publishBundle` — the Gradle Play Publisher plugin (`com.github.triplet.play`)
+wires that one task to the whole chain (build, sign, upload). `versionCode` is left
+static in `app/build.gradle.kts` and overridden by the plugin's
+`resolutionStrategy.set(ResolutionStrategy.AUTO)`, which reads the Play Console's
+current value and increments it — no manual version-bump commit before tagging.
+
+**A real GPP quirk, found by actually running `assembleRelease` locally while writing
+this, not from its docs**: the plugin wires a Play API call into *every* release-variant
+build (`processReleaseVersionCodes`), not just the publish tasks — so `assembleRelease`/
+`bundleRelease` broke outright for anyone without Play credentials configured, which
+would have meant every contributor's machine and this repo's own PR/`main` CI. Fixed with
+`play { enabled.set(System.getenv("ANDROID_PUBLISHER_CREDENTIALS") != null) }` — the
+plugin is inert unless that env var is set, which only the release workflow does. The
+same env var *is* the credential (its documented convention is the JSON file's contents,
+not a path to it — confirmed against the plugin's own parse-failure message, since the
+opposite is the easy assumption to make and the more commonly-repeated one online), so
+the workflow never writes the secret to disk at all.
+
+**The Play Developer API cannot create an app's first release — only the Play Console
+can**, confirmed against Gradle Play Publisher's own docs and multiple independent
+reports of the same failure. `publishBundle` will fail on a listing that's never had a
+manual upload, no matter how correct the secrets are — a one-time manual `bundleRelease`
++ Console upload has to happen before the first tag. See `docs/ops/android-release-secrets.md`
+for the exact steps, both for that and for creating the secrets themselves.
+
 ### Secrets
 
-Three, all of which must exist before the first release can ship:
+Five, all of which must exist before the first release can ship (GitHub Actions repo
+secrets, read by `android-release.yml`):
 
 | Secret | Notes |
 | --- | --- |
-| Upload keystore | Base64 into a secret; keep the original somewhere durable |
-| Keystore + key passwords | — |
-| Play service account JSON | Scope to release management on this app alone |
+| `ANDROID_KEYSTORE_BASE64` | Upload keystore, base64-encoded; keep the original somewhere durable |
+| `ANDROID_KEYSTORE_PASSWORD` | — |
+| `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` | — |
+| `PLAY_SERVICE_ACCOUNT_JSON` | Raw JSON, scoped to release management on this app alone |
 
 Worth creating these early rather than discovering them mid-release. None of it costs
 anything: the Play Developer API, the service account and the GCP project are all free,
 and the only money in this pipeline was the one-off developer registration.
+
+**Not yet verified live**: nothing in this session could trigger a real GitHub Actions
+run or a real Play Console upload — the workflow YAML, the Gradle Managed Device task
+name, and the Gradle Play Publisher config are written to match each tool's documented
+behavior, but the first actual PR run and the first actual tag are what confirm it, not
+this write-up. See `docs/plans/STATUS.md`, step 2.16.
 
 ## Testing what matters
 

@@ -10,3 +10,9 @@
 app/release/
 app/debug/
 core/*/build/
+
+# Written transiently by .github/workflows/android-release.yml; the real secrets live
+# only in GitHub Actions secrets, never in the repo.
+*.keystore
+*.jks
+play-service-account*.json
