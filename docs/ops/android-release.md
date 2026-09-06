@@ -27,8 +27,8 @@ remember to revert.
 
 ```sh
 rel=v0.2.0
-git tag android-${rel}$ -m "Android app ${rel}$"
-git push origin android-${rel}$
+git tag android-${rel} -m "Android app ${rel}"
+git push origin android-${rel}
 ```
 
 That's the whole trigger. Pushing an `android-v*.*.*` tag runs
