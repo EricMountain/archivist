@@ -130,23 +130,8 @@ service-account flow, but confirm each step's actual output against your own pro
      --iam-account=archivist-publisher@archivist-release.iam.gserviceaccount.com
    ```
 4. **In the Play Console** (this half has no CLI — it's a separate permission system
-   from GCP IAM). Use **Setup → API access**, not Users and permissions → Invite new
-   users: "Invite new users" is the human-oriented flow (Google's own help text talks
-   about the invitee accepting and signing in within 30 days, which a service account
-   can't do — it isn't a person who can click an email link). **API access** is the
-   flow built for this: link the Google Cloud project from step 1 there, and the
-   service account you just created shows up in its own list with a **Grant access**
-   action next to it — no invitation, no pending state, it completes immediately since
-   Play Console is talking to a Cloud project it already recognizes. From there, grant
-   it access to this app only, with just the release permissions the internal track
-   needs (create/edit releases, no financial or account-management scopes) — the
-   narrowest role that works, not account-wide admin, per `android.md`.
-   **Not verified against a real Play Console account this session** — going on
-   Google's own API getting-started docs and how third-party publishing guides
-   (fastlane's `supply` included) describe this setup, all of which route through API
-   access rather than a typed-in invite; if your Play Console's UI looks different,
-   look for wording like "Grant access" next to a listed service account rather than a
-   generic email-invite box.
+   from GCP IAM). Use Users and permissions → Invite new users. Add the IAM account
+   created above, giving it permission to publish test releases.
 
 Then set the secret from the key file's raw contents:
 
