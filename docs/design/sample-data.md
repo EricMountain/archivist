@@ -1,8 +1,9 @@
 # Sample data
 
-Nine assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
+Ten assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
 parts of `design.md` rather than the happy path: multi-rendition grouping, all four
-`takenAtSrc` rungs, three `tzSrc` rungs, chunked encryption, and a sort-key tie.
+`takenAtSrc` rungs, five `tzSrc` rungs, chunked encryption, a sort-key tie, and
+location stripped on upload.
 
 ## Conventions
 
@@ -42,7 +43,7 @@ partition it's read from.
 Facet `<type>` values (`CAMERA`, `DEVICE`, `LABEL`, `LENS`, `REND`, `YEAR`, …) are a
 closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
 
-## The nine assets
+## The ten assets
 
 | # | Asset | Renditions | Exercises |
 | --- | --- | --- | --- |
@@ -55,6 +56,7 @@ closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
 | A7 | Burst frame 2 | 1 (jpg) | … resolved by `photoId` tiebreak |
 | A8 | Video clip | 1 (mp4) | 480 MB, chunked, video as its own asset |
 | A9 | Trashed duplicate | 1 (jpg) | soft delete — absent from the timeline, present in trash |
+| A10 | Beach, GPS present on the phone | 1 (jpg) | `stripLocationOnUpload` — no GPS in `exifEnc`, offset ladder skips rung 3 |
 
 ---
 
@@ -407,6 +409,47 @@ So re-uploading that exact path gets a clear "in the trash" error rather than a
 collision on restore, and a hash-matching re-import is a conflict rather than a silent
 resurrection.
 
+## A10 — location stripped on upload
+
+This owner has `stripLocationOnUpload: true` (see the `#SETTINGS` item below). The
+source JPEG carries a full GPS IFD — latitude, longitude, `GPSDateStamp`/`GPSTimeStamp`
+— but no `OffsetTimeOriginal`, so *without* the setting this would be exactly the kind
+of frame that resolves `tzSrc: gps` (rung 3, "GPS delta"). No sample asset above
+exercises that rung, and this one doesn't either — that's the point: the client strips
+the GPS IFD from its working copy before extraction ever runs, so rung 3 is never
+reachable and the ladder falls through to rung 6, this owner's `homeTz`
+(`Europe/Paris`, which is UTC+2 in August).
+
+```text
+O#01J7X…#M#01K5A2QYN4WRB8VXK3TDMQ7HFC
+                #META    stem        2026/08-beach/IMG_5590
+                         renditions  1
+                         mime        image/jpeg
+                         takenAt     2026-08-02T16:05:33.000Z
+                         tzOffsetMin 120
+                         tzSrc       owner-default   ← rung 3 (gps) skipped, not reached
+                         takenAtSrc  exif
+                         deviceKey   apple|iphone 15|-
+                         exifEnc     <b64>   ← camera make/model/dateTimeOriginal only,
+                                              no gpsDateTimeUtc field: the GPS tags were
+                                              gone from the working copy before this
+                                              client-side blob was ever built
+                         exifIv      <b64>
+                         status      ready
+
+                R#01K5A2QYN4XKD7QMB9TWVRH3F
+                         role  display   path  2026/08-beach/IMG_5590.JPG
+                         plainBytes 4198203   encChunkSize 0
+
+                F#CAMERA#Apple iPhone 15   F#REND#display   F#YEAR#2026
+                … 4 LABEL facets
+```
+
+The original file on the phone still has its GPS tags — only the uploaded copy's EXIF
+was ever touched, and only in a temporary file the client deletes once this upload
+finishes. Nothing above depends on knowing that; it's a fact about the device, not
+about this row.
+
 ## Pointer items
 
 Flat, tiny, and the only place a path appears outside an `R#` item.
@@ -457,6 +500,7 @@ pk                                    sk            attributes
 O#01J7XQP4M2N8VBKD3RTYFW9GHC          #SETTINGS     ownerId      01J7XQP4M2N8VBKD3RT…
                                                     displayName  "Home photos"
                                                     homeTz       Europe/Paris
+                                                    stripLocationOnUpload true   ← A10
                                                     encHashSecret   <b64>
                                                     hashSecretKeyId mk-3
                                                     masterKeyVerSeq 3
@@ -535,6 +579,7 @@ descending, this is the infinite scroll.
 
 ```text
 timelinePk                    timelineSk                                          asset
+O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-08-02T16:05:33.000Z#01K5A2QYN4WRB8VXK3TDMQ7HFC  A10
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-16T04:15:33.000Z#01K5A2QPF9XT2HMB5RKWNVQ3YD  A8
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-15T11:03:12.000Z#01K5A2QMD3ZQ8WKN6BVYTX4HRP  A7
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-15T11:03:12.000Z#01K5A2QKB8YM5RVT7NQXHD2WFG  A6
@@ -545,7 +590,7 @@ O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-06-21T14:30:00.000Z#01K5A2QH2WPB9NXK4TDMR6YFV
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2011-03-02T19:44:10.000Z#01K5A2QF7NKD3VYB8MQXTG5HW9  A4
 ```
 
-Eight rows for **nine** assets, from twelve files. A2 and A3 each contribute two files
+Nine rows for **ten** assets, from twelve files. A2 and A3 each contribute two files
 and one row; A9 contributes none, because its `timelinePk` points at a different partition
 of this same index:
 
@@ -582,16 +627,17 @@ are one query with a different `BETWEEN`.
 
 ## What to check while reading
 
-1. **Twelve files, nine assets, eight timeline rows.** A2 and A3 each contribute two
+1. **Twelve files, ten assets, nine timeline rows.** A2 and A3 each contribute two
    files and one row; A9 is trashed and contributes none. Nothing filters either case
    out — renditions never get timeline_gsi keys, and A9's point at a different partition.
 2. **A6 and A7 share a timestamp to the millisecond.** Only the ULID suffix separates
    them, which is the whole reason `timelineSk` isn't just `takenAt`.
 3. **A4 sits in 2011.** The design can't do better without lying, and `takenAtSrc` is
    how the UI knows to say so.
-4. **Three different `tzSrc` values across A1, A2 and A5**, each resolved from a
+4. **Five different `tzSrc` values across A1, A2, A4, A5 and A10**, each resolved from a
    different rung, with A2's coming from a device config item that A1's device doesn't
-   need.
+   need, and A10's landing on the owner-default rung specifically *because*
+   `stripLocationOnUpload` made the GPS-delta rung above it unreachable.
 5. **Facet items are self-sufficient.** Each carries `thumbs`, `encDek` and dimensions,
    so a facet query paints a grid with no second read.
 6. **`path` appears in exactly two places**: `R#` items and pointer items. Not on
@@ -619,7 +665,7 @@ timeline_gsi's `INCLUDE` projection is what makes this a single round-trip.
   ScanIndexForward: false,
   Limit: 50
 }
-// → A8, A7, A6, A3, A1, A2, A5, A4 — eight assets, never a rendition
+// → A10, A8, A7, A6, A3, A1, A2, A5, A4 — nine assets, never a rendition
 ```
 
 Next page: pass back the previous response's `LastEvaluatedKey` verbatim.

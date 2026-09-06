@@ -18,14 +18,15 @@ import androidx.compose.ui.unit.dp
 import fr.enry.archivist.ui.queue.QueueScreen
 import fr.enry.archivist.ui.trash.TrashScreen
 
-private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, ACCOUNT, TRASH, QUEUE, ABOUT }
+private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, PRIVACY, ACCOUNT, TRASH, QUEUE, ABOUT }
 
 /**
  * Plan step 2.14: "the minimum that isn't hostile" — a plain menu over the five
  * sections the plan names (Sync, Devices, Keys, Storage, Account), plus the Trash
  * entry point plan step 2.13 deferred here (its own STATUS.md note: "plan step 2.14 is
- * Settings, which is where a permanent entry point belongs"). Local `destination`
- * state, not a nav library — same "standalone screen, plain local toggle" convention
+ * Settings, which is where a permanent entry point belongs") and the Privacy section
+ * plan step 2.18 added later. Local `destination` state, not a nav library — same
+ * "standalone screen, plain local toggle" convention
  * [TimelineScreen][fr.enry.archivist.ui.timeline.TimelineScreen] already uses for
  * [fr.enry.archivist.ui.detail.DetailScreen] and this same Trash screen.
  */
@@ -42,6 +43,7 @@ fun SettingsScreen(
         SettingsDestination.DEVICES -> DevicesScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.KEYS -> KeysScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.STORAGE -> StorageScreen(onBack = { destination = null }, modifier = modifier)
+        SettingsDestination.PRIVACY -> PrivacyScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.ACCOUNT ->
             AccountScreen(onBack = { destination = null }, onSessionEnded = onSessionEnded, modifier = modifier)
         SettingsDestination.TRASH -> TrashScreen(onBack = { destination = null }, modifier = modifier)
@@ -69,6 +71,8 @@ private fun SettingsMenu(
         MenuRow("Keys", "Enrolled devices, recovery code") { onSelect(SettingsDestination.KEYS) }
         HorizontalDivider()
         MenuRow("Storage", "Thumbnail cache") { onSelect(SettingsDestination.STORAGE) }
+        HorizontalDivider()
+        MenuRow("Privacy", "Strip location from uploads") { onSelect(SettingsDestination.PRIVACY) }
         HorizontalDivider()
         MenuRow("Trash", "Recently deleted photos") { onSelect(SettingsDestination.TRASH) }
         HorizontalDivider()

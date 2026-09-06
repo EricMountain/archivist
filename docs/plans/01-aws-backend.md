@@ -471,6 +471,44 @@ version of any of them — mutually readable.
 
 ---
 
+## 1.17 — Owner settings endpoint
+
+**Goal.** A place to change library-wide policy without re-running bootstrap — starting
+with `stripLocationOnUpload` (see "Stripping location on upload" in `design.md`), and
+shaped narrowly enough that it doesn't become a way to overwrite secrets like
+`encHashSecret` by accident.
+
+**Files.** `src/core/items.ts` (`OwnerSettingsItem`), `src/core/repo/identity.ts`,
+`src/lambda/api/routes/settings.ts` (new), `src/lambda/api/router.ts`, `terraform/api.tf`.
+
+**Details.**
+- `OwnerSettingsItem` gains `stripLocationOnUpload?: boolean`. Absent means `false` — an
+  owner who bootstrapped before this step exists has no such attribute stored, not a
+  written `false`, and every read path must treat the two identically.
+- `GET /settings`: the non-secret subset of `#SETTINGS` — `homeTz`,
+  `stripLocationOnUpload`, `displayName`. Never `encHashSecret`, `hashSecretKeyId` or
+  `masterKeyVerSeq` — those already have their own routes for a reason, and this one is
+  for policy a client reads before acting, not a general settings dump.
+- `PATCH /settings`: body `{ stripLocationOnUpload?: boolean }` for v1 — reject any
+  other key with a `400` rather than silently ignoring it. Add a narrow, single-purpose
+  repo function (`setStripLocationOnUpload(ownerId, value)`), matching the shape
+  `putHashSecret`/`allocateMasterKeyVer` already use in `src/core/repo/keys.ts`, rather
+  than a generic attribute patcher that could touch anything on the item.
+- Owner-scoped auth, same as every other route in this table.
+- `homeTz` still has no edit path after this step — it was only ever settable once, at
+  bootstrap (a pre-existing gap, not introduced here). Leave it alone; don't fold
+  homeTz-editing into this step's scope.
+- `api.md`'s Routes table already documents both routes — reconcile the implementation
+  against that, don't re-derive the shape.
+
+**Done when.** A fresh owner's `GET /settings` returns `stripLocationOnUpload: false`
+with no such attribute ever written to the item; `PATCH /settings` with
+`{ stripLocationOnUpload: true }` persists it and a subsequent `GET` reflects it; a
+`PATCH` carrying an unrecognised field `400`s. Verified against DynamoDB Local, same
+convention as this plan's other steps.
+
+---
+
 ## Out of scope for this plan
 
 Web client, Rekognition or any labelling, shared libraries, the account-deletion web

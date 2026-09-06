@@ -133,6 +133,7 @@ pk  REGISTRY#OWNERS        sk  O#<ownerId>     one row per owner — see below
 ownerId       01J7XQ…
 displayName        "Home photos"
 homeTz             Europe/Paris   # IANA zone, not an offset — see below
+stripLocationOnUpload false       # default false — see "Stripping location on upload"
 trashRetentionDays 30
 tombstoneRetentionDays 365    # TTL on purge tombstones; refreshed by a blocked
                               # re-upload — see "Purge tombstones"
@@ -792,6 +793,87 @@ A related trap for later: reverse-geocoded `PLACE#Kyoto` facets would be plainte
 city-granularity location is most of what encrypting the coordinates was protecting.
 Worth deciding deliberately rather than adding it as an obvious feature.
 
+### Stripping location on upload
+
+Encrypting `exifEnc` protects GPS from AWS, but it does nothing for the *owner's own*
+copy: the original rendition is encrypted whole-object/streamed as-is, so whatever GPS
+tags the source file carries in its own EXIF segment are still in there, recoverable by
+anyone who ever gets the plaintext back — a future export, a shared device, a compelled
+disclosure of the master key. Some owners will want their backup to simply never carry
+that data, independent of who could theoretically decrypt it.
+
+`stripLocationOnUpload` is a boolean on `#SETTINGS` (default `false` — preserving is the
+less surprising default, and GPS is already outside AWS's reach either way). It is
+**owner-level, not per-device** — deliberately, unlike the Sync section's network/
+charging settings: those are genuinely per-device (a tablet's data plan isn't a phone's),
+but "does this library retain location" is a property of the library, and a setting a
+freshly-enrolled device could silently default the wrong way on is not one worth making
+per-device. Every client reads it from `#SETTINGS` (`GET /settings`, see `api.md`) before
+each upload, the same way it already reads `homeTz`.
+
+**Mechanism, images.** When the setting is on, the client makes a copy of the file —
+the original on device is never opened for writing, only for reading — and removes the
+GPS IFD tags (latitude/longitude/altitude/timestamp/direction/etc., the full tag set
+`androidx.exifinterface` exposes under `TAG_GPS_*`) from that copy before anything else
+happens to it. That stripped copy, not the original, is then what gets EXIF-extracted,
+what gets stream-encrypted, and what gets PUT as the original rendition. The temporary
+copy is deleted once the upload attempt for that file finishes (success or failure) and
+is never itself uploaded, backed up, or left on disk.
+
+Doing the strip *before* extraction, rather than extracting first and then filtering the
+result, is what makes "location information must not be set in DynamoDB for the image
+either" true by construction rather than by a second checklist: `ExifBlob` is built from
+whatever `ExifExtractor` reads off the stripped copy, and the stripped copy has no GPS
+tags to read. `gpsDateTimeUtc` comes back `null`, never gets written to `exifEnc`, and
+rung 3 of the offset ladder (below) is correctly unreachable for that photo — not
+filtered out afterward, just never produced. Thumbnails are unaffected either way: they
+are freshly re-encoded from decoded pixels (`Bitmap.compress`), never copy EXIF through,
+so they carry no location with the setting on *or* off.
+
+**Mechanism, video.** MP4/MOV have no EXIF segment — location lives in ISO-BMFF
+("box") structures instead, and phones don't agree on which: Android's own camera
+writes the 3GPP **`loci`** box (`moov/udta/loci`); an iPhone-shot `.mov` more commonly
+carries it as QuickTime's **`©xyz`** box (`moov/udta/©xyz`) or, in newer files, as an
+entry in the `moov/meta` **keys+ilst** metadata scheme, keyed by
+`com.apple.quicktime.location.ISO6709`. All three end up in a mixed-device household,
+which is exactly this app's target user, so all three are in scope.
+
+The client walks the box tree (every ISO-BMFF box is `[size][type][payload]`,
+recursing into container boxes: `moov` → `udta`/`meta`, `meta` → `keys`/`ilst`) purely
+to find the *boundaries* of a matching box — it never needs to parse or reconstruct a
+location box's internal fields, only to locate one. Once found, it overwrites the
+box's entire payload with zeros and relabels its type as `free` (a type ISO-BMFF
+reserves for exactly this — padding readers must ignore), leaving the box's declared
+size, and therefore every other box's offset and the file's total length, completely
+unchanged. Because nothing shifts, sample-offset tables (`stco`/`co64`, which point
+into `mdat` by absolute file position) never need recomputing regardless of whether
+`moov` sits before or after `mdat` in this particular file — the one property that
+makes this simple enough to hand-roll rather than needing a full re-mux. The `keys`+
+`ilst` case is the one place internal fields *are* read: `ilst`'s children are
+anonymous, referenced only by matching their 1-based position to `keys`' own list, so
+finding the right key name is what identifies which numbered `ilst` child to zero.
+
+This covers the two schemes real-world phone encoders actually use, not every
+conceivable one — a named, honest limit on a hand-rolled parser rather than a
+re-muxing tool like ffmpeg's `-map_metadata -1` would have. An encoder that hides
+location a fourth way passes through unstripped, silently, the same shape of risk any
+format-specific parser carries for a format it wasn't built against. Worth reducing
+with a real fixture set (an Android-recorded MP4, an iPhone-recorded `.mov`, at least
+one third-party camera/app export) rather than assuming coverage.
+
+**Scope.** Images (JPEG/PNG/WebP/HEIC, via `androidx.exifinterface`) and MP4/MOV video,
+via the box editor above. Still out of scope: RAW (already out of scope for the phone
+client entirely — see "The phone will not handle RAW") and any other container family
+(WebM, AVI) — narrow enough that nothing on the phone's own upload path currently
+produces them.
+
+**Settings copy.** The toggle's own description must say plainly that the *original on
+this device is never touched* — only the uploaded copy has its location removed —
+since "strip location" read the other way sounds like it edits the photo in the
+gallery app. Get this wrong and either an owner is needlessly afraid to turn it on, or
+one who wanted their on-device copy scrubbed too is misled into thinking this setting
+did that.
+
 ### `contentHash` is HMAC'd
 
 Dedup needs a stable hash of the *plaintext*, but a raw SHA-256 handed to DynamoDB
@@ -1067,7 +1149,11 @@ is recorded in `tzSrc`:
 
 **GPS delta** (rung 3): `GPSDateStamp`/`GPSTimeStamp` are recorded in UTC, so
 `DateTimeOriginal − GPS UTC`, rounded to the nearest 15 minutes, recovers the offset.
-Covers most geotagged photos predating EXIF 2.31.
+Covers most geotagged photos predating EXIF 2.31. Unreachable when the owner has
+`stripLocationOnUpload` on — see "Stripping location on upload" — since the GPS tags
+this rung needs are removed from the client's working copy before extraction even
+runs; those photos fall straight through to rung 4 or lower, same as a photo with no
+GPS at all.
 
 ### Upload-supplied offset
 

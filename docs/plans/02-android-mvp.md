@@ -509,6 +509,92 @@ Android 17 system image) — see STATUS.md for exactly what was exercised.
 
 ---
 
+## 2.18 — Strip location on upload
+
+**Goal.** An owner who wants it can back up photos *and video* without their own
+encrypted copy ever carrying location — see "Stripping location on upload" in
+`design.md` for why this is worth doing even though GPS already never reaches AWS in
+the clear, and its "Mechanism, video" for why MP4/MOV needs a different mechanism from
+EXIF entirely. Depends on plan step 1.17.
+
+**Files.** `data/repo/OwnerSettingsRepository.kt` (new), `sync/LocationStripper.kt`
+(new), `sync/video/Mp4BoxEditor.kt` (new), `data/repo/UploadRepository.kt`,
+`ui/settings/{SettingsScreen,PrivacyScreen,PrivacyViewModel}.kt` (new screen, wired
+into the existing menu), `ui/reviewer/ReviewerSettingsScreen.kt`,
+`docs/play/privacy-policy.md`, plus a handful of small synthetic MP4 fixtures under
+`app/src/test/resources/` (see below).
+
+**Details.**
+- `OwnerSettingsRepository`: a thin wrapper over `GET`/`PATCH /settings`. This is
+  server truth for one value, not a list — no Room cache needed the way `DeviceRepository`
+  has one; read it the same way `UploadRepository` already reads `instanceStore.current`
+  (a `Flow`'s `first()`) rather than inventing a second caching strategy.
+- `LocationStripper`: given a `contentUri` and mime, dispatches by mime rather than
+  trying one mechanism then the other — `image/jpeg`/`png`/`webp`/`heic` (the same set
+  `ExifExtractor.mimeFromDisplayName` already knows) go through `ExifInterface`
+  (nulling every `TAG_GPS_*` attribute, then `saveAttributes()`); `video/mp4`/
+  `video/quicktime` go through `Mp4BoxEditor`. Both write to a fresh file under
+  `cacheDir` (not `noBackupFilesDir` — deleted within the same work item, not a durable
+  cache) and return its path; `null` for an unsupported mime or when the setting is
+  off, and callers fall back to the original `contentUri` unchanged. Never opens the
+  MediaStore original for writing, for either path.
+- `Mp4BoxEditor`: walks the ISO-BMFF box tree of the copy (`[size][type][payload]`,
+  handling the `size == 0` "extends to EOF" and `size == 1` 64-bit-largesize cases,
+  recursing into `moov` → `udta`/`meta` and `meta` → `keys`/`ilst`) looking for
+  `moov/udta/loci`, `moov/udta/©xyz`, or — via `keys`+`ilst` — an entry whose key name
+  is `com.apple.quicktime.location.ISO6709`. For each match, overwrite the box's
+  payload with zeros and its type field with `free`, leaving the box's declared size
+  (and therefore every other offset in the file, including `stco`/`co64`) untouched —
+  see `design.md` for why this needs no re-mux. No match found means nothing to strip,
+  not an error. This is deliberately not a general MP4 metadata scrubber: an encoder
+  hiding location a fourth way passes through unstripped — a named residual limit
+  (`design.md`), not something this step should try to close by guessing at other
+  vendor-specific boxes.
+- Test fixtures: small hand-built (or Python-`struct`-generated, matching this repo's
+  existing precedent of scripting throwaway fixture generation rather than committing a
+  generator) synthetic MP4s — no real decodable video needed, just a byte-correct box
+  skeleton (`ftyp`/`moov` with a `loci` or `©xyz`/`keys`+`ilst` payload/`mdat`) — for
+  `Mp4BoxEditorTest`. Cover at least: `loci` present, `©xyz` present, `keys`+`ilst`
+  present, no location box at all (no-op), and `moov` before *and* after `mdat` (proving
+  the offset-preservation claim, not just asserting it). If real device recordings are
+  available (an Android-recorded MP4 with location on, an iPhone-recorded `.mov` with
+  location on), use them too — synthetic fixtures alone prove the box-walking logic but
+  not that it recognizes exactly what real encoders produce.
+- `UploadRepository.uploadOne`: resolve the effective source once, right after `mime`
+  is known, and use it consistently for both existing reads of `row.localUri` —
+  `ExifExtractor.extract` and `putOriginal`'s encrypting stream — which currently read
+  the original independently and would otherwise need to agree by coincidence. Delete
+  the temporary file in a `finally` around the whole method, so a WorkManager retry
+  doesn't leak one copy per attempt.
+- Settings: new **Privacy** section (`PrivacyScreen`), one switch, persisted via
+  `OwnerSettingsRepository`. Copy must say plainly that **the original file on this
+  device is never touched — only the uploaded copy has its location removed**; read
+  the other way, "strip location" sounds like it edits the file sitting in the phone's
+  own gallery, and getting this backwards either scares an owner off a safe setting or
+  reassures one who wanted their on-device copy scrubbed too.
+- `ReviewerSettingsScreen`: add the same Privacy row as a fixed explanation — it needs a
+  real signed-in session to mean anything, same as Devices/Keys/Trash/Account, not a
+  `remember`-backed live toggle like Sync's. Bump the "mirrors the real Settings menu's
+  N sections" count (code comment and `android.md`'s reviewer-mode section) from eight
+  to nine.
+- `docs/play/privacy-policy.md`: this narrows what the server can read rather than
+  widening it, so likely needs no wording change — confirm that rather than assuming it,
+  since `CLAUDE.md` calls this file out specifically.
+
+**Done when.** With the setting on: uploading a JPEG carrying a real GPS IFD produces a
+rendition whose decrypted bytes have no GPS tags and whose decrypted `#META.exifEnc`
+has no `gpsDateTimeUtc` field; uploading an MP4/MOV carrying a `loci`, `©xyz` or
+keys+ilst location entry produces a rendition whose decrypted bytes have that box
+zeroed and relabelled `free`, verified by re-walking the decrypted output's own box
+tree, not just diffing bytes. The MediaStore original is byte-for-byte unmodified in
+every case (checksum before/after). With the setting off, behaviour for both photo and
+video is unchanged from today. A fixture set mirrors `Timestamps`' own convention —
+GPS-present-and-stripped, GPS-present-and-preserved, GPS-absent, for both a photo and a
+video — covering the EXIF-blob content, the offset ladder's fallthrough past rung 3,
+and `Mp4BoxEditor`'s own cases above.
+
+---
+
 ## Deliberately not in the MVP
 
 Video playback, albums, favourites, people, free-text search, sharing, multi-instance,

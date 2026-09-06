@@ -169,6 +169,33 @@ acceptable because RAWs arrive from the camera via the home server, not from the
 means the home-side importer, not this app, owns RAW thumbnailing. Worth stating
 because it's easy to assume feature parity between the two ingest paths.
 
+### Stripping location
+
+When `stripLocationOnUpload` (fetched from `GET /settings`, cached alongside the other
+owner-level settings) is on, the upload worker never opens the MediaStore original for
+writing — it copies the bytes to a file in `cacheDir` (not `noBackupFilesDir`; it's
+transient, deleted within the same work item, not a durable cache), opens that copy
+with `androidx.exifinterface.media.ExifInterface`, nulls out every `TAG_GPS_*`
+attribute, and calls `saveAttributes()`. That copy, not the original, is what
+`ExifExtractor` reads and what the encrypting stream PUTs — see "Stripping location on
+upload" in `design.md` for why doing it in that order (strip, then extract) is what
+keeps GPS out of `exifEnc` and out of the offset ladder's GPS-delta rung, rather than
+needing a second pass to scrub either.
+
+`ExifInterface` can rewrite JPEG, PNG, WebP and HEIC in place; it cannot touch RAW
+(already out of scope — see "The phone will not handle RAW" below) or MP4/MOV, which
+carry location as an ISO-BMFF box instead of EXIF. For those, the same temp-copy
+approach hands off to a small first-party box editor instead of `ExifInterface` — see
+"Mechanism, video" in `design.md` for the two schemes it targets (3GPP `loci`,
+QuickTime `©xyz`/keys+ilst) and why zeroing a box's payload and relabelling it `free`
+in place, rather than removing or re-muxing anything, needs no `stco`/`co64` offset
+recomputation regardless of the file's box order.
+
+**The Settings copy for this toggle must say plainly that the original on the device
+is never touched** — only the uploaded copy loses its location — since "strip
+location" read the other way sounds like it edits the file sitting in the phone's own
+gallery.
+
 ### Decrypting for display
 
 CloudFront serves ciphertext, so `AsyncImage` can't fetch a URL directly. A custom Coil
@@ -186,9 +213,14 @@ Durable across process death, because a 500-photo import will outlive the UI:
 
 1. User picks media (Photo Picker, or a watched folder via `MediaStore`).
 2. Row per file into a Room `upload_queue` with state `PENDING`.
-3. `WorkManager` picks it up: extract EXIF → resolve timestamp and offset → generate
-   thumbnails → `POST` metadata to get a `photoId` and presigned URLs → stream-encrypt
-   and PUT → mark `DONE`.
+3. `WorkManager` picks it up: if the owner's `stripLocationOnUpload` setting is on and
+   the file is a format the app knows how to strip (JPEG/PNG/WebP/HEIC via
+   `ExifInterface`, MP4/MOV via the box editor), strip its location into a temporary
+   copy first (see "Stripping location" below) — everything after this point works
+   from that copy instead of the original. Extract EXIF → resolve timestamp and offset
+   → generate thumbnails → `POST` metadata to get a `photoId` and presigned URLs →
+   stream-encrypt and PUT → mark `DONE`. The temporary copy, if any, is deleted once
+   this attempt finishes, success or not.
 4. Failures retry with exponential backoff; the queue survives reboots.
 
 The metadata `POST` happens *before* the bytes, matching the pending-`#META` handshake
@@ -235,7 +267,9 @@ Android will kill them. Encryption is CPU-heavy enough to be noticeable on batte
 * **Upload queue** — visible and cancellable. A silent queue that has stalled on a
   constraint is a support nightmare of one's own making.
 * **Settings** — devices and their timezone defaults, home timezone, sync policy,
-  cache ceiling, enrolled keys.
+  cache ceiling, enrolled keys, and **Privacy** (strip location on upload — see "Hard
+  parts" below; owner-level, synced via `GET`/`PATCH /settings`, not a per-device
+  toggle like Sync's).
 
 ## Connecting to an instance
 

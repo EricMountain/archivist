@@ -158,6 +158,24 @@ interface ArchivistApi {
         @Url url: String,
     ): Response<ResponseBody>
 
+    /** Plan step 2.18: `GET /settings` in `api.md` — owner-level policy every client
+     * reads before it acts, the same way it already needs `homeTz`. Currently just
+     * [SettingsResponse.stripLocationOnUpload]. */
+    @GET
+    suspend fun getSettings(
+        @Url url: String,
+    ): SettingsResponse
+
+    /** Plan step 2.18: `PATCH /settings` — v1 only accepts `stripLocationOnUpload`,
+     * deliberately narrow (see `routes/settings.ts`'s own doc). `Response<T>` for the
+     * same reason as [deleteKey]: a validation failure (an unrecognised field) is an
+     * ordinary outcome the caller checks for. */
+    @PATCH
+    suspend fun patchSettings(
+        @Url url: String,
+        @Body body: PatchSettingsRequest,
+    ): Response<ResponseBody>
+
     /** Plan step 2.14: `DELETE /account` in `api.md` — requires the caller to echo
      * back its own ownerId as an explicit confirmation. Retrofit's `@DELETE` refuses
      * to build a request with `@Body` at all ("Non-body HTTP method cannot contain
@@ -410,6 +428,21 @@ data class PatchDeviceRequest(val label: String, val tzOffsetMin: Int?)
  * explicit "type it to confirm". */
 @Serializable
 data class DeleteAccountRequest(val confirmOwnerId: String)
+
+/** `GET /settings` in api.md — the non-secret subset of the owner's `#SETTINGS` item.
+ * [stripLocationOnUpload] defaults `false` server-side when the attribute was never
+ * written (an owner who bootstrapped before plan step 1.17 existed), so this always
+ * comes back a concrete boolean, never absent. */
+@Serializable
+data class SettingsResponse(
+    val homeTz: String,
+    val displayName: String? = null,
+    val stripLocationOnUpload: Boolean = false,
+)
+
+/** `PATCH /settings` in api.md — v1 only accepts this one field. */
+@Serializable
+data class PatchSettingsRequest(val stripLocationOnUpload: Boolean)
 
 @Serializable
 data class OriginalUploadDto(val url: String)

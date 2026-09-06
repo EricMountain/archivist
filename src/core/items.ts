@@ -283,6 +283,11 @@ export interface OwnerSettingsItem {
   ownerId: string;
   displayName: string;
   homeTz: string;
+  /** Strip GPS/location from the uploaded copy of every photo and video — see
+   * "Stripping location on upload" in design.md. Absent means `false`; an owner who
+   * bootstrapped before this setting existed has no attribute stored, not a written
+   * `false`, and every read path must treat the two identically. */
+  stripLocationOnUpload?: boolean;
   trashRetentionDays: number;
   /** TTL window for purge tombstones, in days. Default 365. */
   tombstoneRetentionDays: number;

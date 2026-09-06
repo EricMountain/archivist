@@ -23,9 +23,13 @@ import fr.enry.archivist.domain.ExifBlob
 import fr.enry.archivist.domain.ExifExtractor
 import fr.enry.archivist.domain.Timestamps
 import fr.enry.archivist.domain.Ulid
+import fr.enry.archivist.sync.LocationStripper
 import fr.enry.archivist.sync.MediaStoreSource
 import fr.enry.archivist.sync.Thumbnailer
+import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Base64
@@ -110,6 +114,8 @@ class UploadRepository
         private val enrolmentStore: EnrolmentStore,
         private val masterKeyHolder: MasterKeyHolder,
         private val deviceRepository: DeviceRepository,
+        private val ownerSettingsRepository: OwnerSettingsRepository,
+        private val locationStripper: LocationStripper,
         private val baseOkHttpClient: OkHttpClient,
     ) {
         /** The current master key version (`mk-<n>`) rarely changes (only on
@@ -143,12 +149,23 @@ class UploadRepository
             val api = apiFor(instance)
             val apiBase = instance.document.apiBase
 
+            var strippedFile: File? = null
             return try {
                 row = persist(row.copy(state = UploadState.EXTRACTING))
 
+                val mime = ExifExtractor.mimeFromDisplayName(row.displayName) ?: "application/octet-stream"
+                // Plan step 2.18: strip before extraction, not after — so the offset
+                // ladder's GPS-delta rung and exifEnc's gpsDateTimeUtc field are both
+                // naturally absent when this is on, never produced rather than
+                // filtered out afterward. See "Stripping location on upload" in
+                // design.md.
+                if (ownerSettingsRepository.stripLocationOnUpload().getOrDefault(false)) {
+                    strippedFile = locationStripper.strip(row.localUri, mime)
+                }
+
                 val exif =
                     withContext(Dispatchers.IO) {
-                        mediaStoreSource.openInputStream(row.localUri).use { ExifExtractor.extract(it) }
+                        effectiveInputStream(strippedFile, row.localUri).use { ExifExtractor.extract(it) }
                     }
                 val fileMtime = row.fileMtimeEpochSec?.let(Instant::ofEpochSecond) ?: Instant.now()
                 val deviceKey =
@@ -174,7 +191,6 @@ class UploadRepository
                         // this step doesn't otherwise need.
                         TimestampFields(nowIso(), "upload", 0, "assumed-utc")
                     }
-                val mime = ExifExtractor.mimeFromDisplayName(row.displayName) ?: "application/octet-stream"
 
                 row =
                     persist(
@@ -277,11 +293,18 @@ class UploadRepository
                     candidateIv = candidateIv,
                     encryptedThumbs = encryptedThumbs,
                     masterKey = masterKey,
+                    strippedFile = strippedFile,
                 )
             } catch (e: IOException) {
                 recordAttempt(row, e.message ?: "network error")
             } catch (e: Exception) {
                 recordAttempt(row, e.message ?: (e::class.simpleName ?: "unknown error"))
+            } finally {
+                // Deleted here rather than left for the OS to reclaim from cacheDir
+                // eventually — this is a full plaintext copy of a personal photo or
+                // video, and a WorkManager retry creates a fresh one each attempt, so
+                // leaving old ones around would leak one per retry.
+                strippedFile?.delete()
             }
         }
 
@@ -296,6 +319,7 @@ class UploadRepository
             candidateIv: ByteArray?,
             encryptedThumbs: List<EncryptedThumb>,
             masterKey: MasterKey,
+            strippedFile: File?,
         ): UploadOutcome {
             if (response.skipped == true) {
                 // kind: purged, no reAddDeleted -- design.md's "Purge tombstones":
@@ -366,6 +390,7 @@ class UploadRepository
                 photoId = photoId,
                 renditionId = renditionId,
                 localUri = row.localUri,
+                strippedFile = strippedFile,
             )
 
             if (uploadThumbs) {
@@ -406,6 +431,7 @@ class UploadRepository
             photoId: String,
             renditionId: String,
             localUri: String,
+            strippedFile: File?,
         ) {
             val aad = Aad.of(photoId, ObjectRef.Rendition(renditionId))
             val length = ciphertextLength(plainBytes, chunkSize)
@@ -422,11 +448,21 @@ class UploadRepository
                             } else {
                                 StreamingCipher.encryptingStream(dek, aad, sink.outputStream())
                             }
-                        mediaStoreSource.openInputStream(localUri).use { input -> cipherOut.use { out -> input.copyTo(out) } }
+                        effectiveInputStream(strippedFile, localUri).use { input -> cipherOut.use { out -> input.copyTo(out) } }
                     }
                 }
             put(url, body)
         }
+
+        /** The bytes to actually read for this upload attempt — [strippedFile] when
+         * plan step 2.18's location stripping ran for this file, the untouched
+         * MediaStore original otherwise. Used for both the EXIF re-extraction in
+         * [uploadOne] and the encrypting PUT in [putOriginal], which previously read
+         * [localUri] independently and would otherwise need to agree by coincidence. */
+        private fun effectiveInputStream(
+            strippedFile: File?,
+            localUri: String,
+        ): InputStream = strippedFile?.let { FileInputStream(it) } ?: mediaStoreSource.openInputStream(localUri)
 
         private suspend fun putBytes(
             url: String,

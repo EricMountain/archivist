@@ -181,6 +181,15 @@ Python's Pillow — `Image.Exif`/`get_ifd()` — and committed under
 `app/src/test/resources/exif-fixtures/`) and only ever *read* it back through
 `ExifInterface` in the test itself.
 
+**Confirmed again, plan step 2.18:** `LocationStripper`'s `ExifInterface.setAttribute`/
+`saveAttributes` calls (nulling `TAG_GPS_*` on a copy) hit the exact same
+`android.util.Pair` corruption above, since it's the same write path — not just a
+fixture-generation inconvenience this time, but the method under test itself. That
+half of `LocationStripperTest` is a real device/emulator instrumented test
+(`LocationStripperInstrumentedTest`) instead of a JVM one; `Mp4BoxEditor`'s own write
+path (raw `RandomAccessFile`, no `ExifInterface` involved) has no such problem and is
+fully JVM-testable.
+
 **`ExifInterface.getGpsDateTime()` is genuinely nullable (`Long?`), not a sentinel
 value.** Easy to assume otherwise — some library versions' docs describe a negative
 sentinel for "not present" — but 1.4.2's Kotlin-visible signature is `@Nullable Long`,

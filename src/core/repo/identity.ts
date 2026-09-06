@@ -1,6 +1,6 @@
 // Patterns 6, 6b, 9, 10 — users, owners, devices. Pattern 9 (IDP -> userId) lives in
 // repo/pointers.ts alongside the other pointer reads.
-import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ddb, tableName } from "../db";
 import {
   deviceSk,
@@ -45,6 +45,24 @@ export async function getOwnerSettings(
     }),
   );
   return res.Item as OwnerSettingsItem | undefined;
+}
+
+/** `GET`/`PATCH /settings` (plan step 1.17) — a narrow, single-purpose write, matching
+ * `putHashSecret`'s shape in `repo/keys.ts`, rather than a generic attribute patcher
+ * that could touch anything else on `#SETTINGS` (`encHashSecret`, `masterKeyVerSeq`)
+ * by accident. */
+export async function setStripLocationOnUpload(
+  ownerId: string,
+  value: boolean,
+): Promise<void> {
+  await ddb().send(
+    new UpdateCommand({
+      TableName: tableName(),
+      Key: { pk: ownerPk(ownerId), sk: settingsSk() },
+      UpdateExpression: "SET stripLocationOnUpload = :v",
+      ExpressionAttributeValues: { ":v": value },
+    }),
+  );
 }
 
 /** Pattern 6: the settings screen's device list, one Query per owner. */

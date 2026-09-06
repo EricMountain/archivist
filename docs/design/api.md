@@ -72,6 +72,8 @@ authorization model in one sentence.
 | `DELETE /keys/{wrapId}` | Removes a key wrapping (e.g. de-enrolling a lost device). | Owner |
 | `POST /keys/version` | Atomically mints the next master key version (`mk-<n>`) — called once at first enrolment or at rotation, never per-device. | Owner |
 | `GET /keys/hash-secret` | Returns the owner's wrapped `hashSecret` (`encHashSecret`/`hashSecretKeyId`) — a device with the master key unwraps it the same way it would a DEK. `404` until the first device has ever called the `PUT` below. | Owner |
+| `GET /settings` | Returns the owner's non-secret `#SETTINGS` fields (`homeTz`, `stripLocationOnUpload`, …) — every client reads this before enqueueing uploads, the same way it already needs `homeTz`. | Owner |
+| `PATCH /settings` | Updates one or more owner settings. v1 only accepts `stripLocationOnUpload` — deliberately narrow, not a generic patch of every `#SETTINGS` field (`homeTz` still has no edit path; out of scope here). | Owner |
 | `PUT /keys/hash-secret` | Stores the owner's wrapped `hashSecret`, used to HMAC `contentHash` for dedup. | Owner |
 | `POST /uploads` | The stem/hash handshake: validates client-asserted metadata, checks for an existing live/trashed/purged match by content hash, creates or attaches to an asset, and returns **presigned S3 PUT URLs** for the ciphertext and thumbnails. | Owner |
 | `GET /photos` | Timeline page, paginated. | Owner |

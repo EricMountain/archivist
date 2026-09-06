@@ -18,6 +18,7 @@ import {
 import { getFacetPage, getFacets } from "./routes/facets";
 import { deleteAccount } from "./routes/account";
 import { deleteDeviceRoute, getDevices, patchDevice } from "./routes/devices";
+import { getSettings, patchSettings } from "./routes/settings";
 
 export interface RouteEntry {
   handler: RouteHandler;
@@ -69,4 +70,7 @@ export const routes: Record<string, RouteEntry> = {
   "DELETE /devices/{deviceKey}": { handler: deleteDeviceRoute, authMode: "owner" },
 
   "DELETE /account": { handler: deleteAccount, authMode: "owner" },
+
+  "GET /settings": { handler: getSettings, authMode: "owner" },
+  "PATCH /settings": { handler: patchSettings, authMode: "owner" },
 };

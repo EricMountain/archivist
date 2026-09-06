@@ -27,7 +27,7 @@ import fr.enry.archivist.sync.DeviceFolder
 import fr.enry.archivist.ui.settings.AboutScreen
 import fr.enry.archivist.ui.settings.StorageScreen
 
-private enum class ReviewerSettingsDestination { SYNC, QUEUE, DEVICES, KEYS, STORAGE, TRASH, ACCOUNT, ABOUT }
+private enum class ReviewerSettingsDestination { SYNC, QUEUE, DEVICES, KEYS, STORAGE, PRIVACY, TRASH, ACCOUNT, ABOUT }
 
 /**
  * Plan step 2.17's follow-up: a reviewer should be able to reach every Settings section,
@@ -38,10 +38,10 @@ private enum class ReviewerSettingsDestination { SYNC, QUEUE, DEVICES, KEYS, STO
  * account, About is static text and a `LocalUriHandler` link; Sync's folder list reads
  * real device folders via [ReviewerSettingsViewModel]) or a plain explanation of what
  * would be here with a real instance connected. Nothing here
- * constructs `AuthRepository`, `DeviceRepository`, `EnrolmentRepository` or any other
- * network-capable type — the real Devices/Keys/Trash/Account/Queue sections are wired to
- * exactly those, which is what would make them crash (no session, no instance) rather
- * than just not apply.
+ * constructs `AuthRepository`, `DeviceRepository`, `EnrolmentRepository`,
+ * `OwnerSettingsRepository` or any other network-capable type — the real
+ * Devices/Keys/Privacy/Trash/Account/Queue sections are wired to exactly those, which
+ * is what would make them crash (no session, no instance) rather than just not apply.
  */
 @Composable
 fun ReviewerSettingsScreen(
@@ -76,6 +76,15 @@ fun ReviewerSettingsScreen(
                 modifier = modifier,
             )
         ReviewerSettingsDestination.STORAGE -> StorageScreen(onBack = { destination = null }, modifier = modifier)
+        ReviewerSettingsDestination.PRIVACY ->
+            InertSection(
+                title = "Privacy",
+                body = "Strip location from uploads lives here once you've connected to a real instance — " +
+                    "it's a setting shared by every device backing up to your library, so preview mode (no " +
+                    "library, no server) has nothing to show or save.",
+                onBack = { destination = null },
+                modifier = modifier,
+            )
         ReviewerSettingsDestination.TRASH ->
             InertSection(
                 title = "Trash",
@@ -119,6 +128,8 @@ private fun ReviewerSettingsMenu(
         MenuRow("Keys", "Enrolled devices, recovery code") { onSelect(ReviewerSettingsDestination.KEYS) }
         HorizontalDivider()
         MenuRow("Storage", "Thumbnail cache") { onSelect(ReviewerSettingsDestination.STORAGE) }
+        HorizontalDivider()
+        MenuRow("Privacy", "Strip location from uploads") { onSelect(ReviewerSettingsDestination.PRIVACY) }
         HorizontalDivider()
         MenuRow("Trash", "Recently deleted photos") { onSelect(ReviewerSettingsDestination.TRASH) }
         HorizontalDivider()

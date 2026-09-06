@@ -1,5 +1,6 @@
 package fr.enry.archivist.data.repo
 
+import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import fr.enry.archivist.crypto.Aad
 import fr.enry.archivist.crypto.MasterKey
@@ -18,10 +19,13 @@ import fr.enry.archivist.data.remote.CognitoAuthClient
 import fr.enry.archivist.data.remote.DiscoveryDocument
 import fr.enry.archivist.data.remote.KeyWrapDto
 import fr.enry.archivist.data.remote.KeysResponse
+import fr.enry.archivist.data.remote.SettingsResponse
+import fr.enry.archivist.sync.LocationStripper
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeMediaStoreSource
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import fr.enry.archivist.testutil.FakeThumbnailer
+import fr.enry.archivist.testutil.SyntheticMp4
 import java.io.File
 import java.nio.file.Files
 import java.util.Base64
@@ -38,10 +42,13 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 
 class UploadRepositoryTest {
     private lateinit var server: MockWebServer
@@ -67,6 +74,15 @@ class UploadRepositoryTest {
     /** Set by a test before calling [uploadOne] to control `POST /uploads`'s response. */
     private var uploadResponseBody: String = ""
 
+    /** Plan step 2.18: backs every dispatcher's `GET /api/settings` response — off by
+     * default, same as `stripLocationOnUpload`'s own server-side default. */
+    private var stripLocationEnabled: Boolean = false
+
+    private fun settingsResponse(): MockResponse =
+        MockResponse().setResponseCode(200).setBody(
+            json.encodeToString(SettingsResponse.serializer(), SettingsResponse(homeTz = "UTC", stripLocationOnUpload = stripLocationEnabled)),
+        )
+
     @BeforeEach
     fun setUp() {
         server = MockWebServer()
@@ -76,6 +92,7 @@ class UploadRepositoryTest {
                     val path = request.path.orEmpty()
                     recordedBodies[path] = request.body.readByteArray()
                     return when {
+                        path.startsWith("/api/settings") -> settingsResponse()
                         path.startsWith("/api/keys") ->
                             MockResponse().setResponseCode(200).setBody(
                                 json.encodeToString(
@@ -121,6 +138,10 @@ class UploadRepositoryTest {
                 archivistApiFactory = archivistApiFactory,
                 deviceDao = db.deviceDao(),
             )
+        val ownerSettingsRepository =
+            OwnerSettingsRepository(instanceStore = instanceStore, archivistApiFactory = archivistApiFactory)
+        val cacheContext = mock<Context>().also { whenever(it.cacheDir).thenReturn(tempDir) }
+        val locationStripper = LocationStripper(context = cacheContext, mediaStoreSource = mediaStoreSource)
 
         repository =
             UploadRepository(
@@ -133,6 +154,8 @@ class UploadRepositoryTest {
                 enrolmentStore = enrolmentStore,
                 masterKeyHolder = masterKeyHolder,
                 deviceRepository = deviceRepository,
+                ownerSettingsRepository = ownerSettingsRepository,
+                locationStripper = locationStripper,
                 baseOkHttpClient = OkHttpClient.Builder().build(),
             )
     }
@@ -213,6 +236,7 @@ class UploadRepositoryTest {
                         val bodyBytes = request.body.readByteArray()
                         recordedBodies[path] = bodyBytes
                         return when {
+                            path.startsWith("/api/settings") -> settingsResponse()
                             path.startsWith("/api/keys") ->
                                 MockResponse().setResponseCode(200).setBody(
                                     json.encodeToString(
@@ -531,6 +555,124 @@ class UploadRepositoryTest {
             val sentBody = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
             assertEquals(540, sentBody.getValue("tzOffsetMin").jsonPrimitive.content.toInt())
             assertEquals("device", sentBody.string("tzSrc"))
+        }
+
+    // ------------------------------------------------------------------
+    // Plan step 2.18: stripLocationOnUpload strips a video's location into a
+    // temporary copy before extraction and PUT -- the queued file itself (as
+    // mediaStoreSource would still serve it) is never touched.
+    // ------------------------------------------------------------------
+
+    private suspend fun queueVideoRow(
+        localUri: String,
+        displayName: String,
+        contentHash: String,
+        bytes: ByteArray,
+    ): Long {
+        mediaStoreSource.addFile("camera", "Camera", localUri, displayName, bytes)
+        return db.uploadQueueDao().insert(
+            UploadQueueEntity(
+                localUri = localUri,
+                displayName = displayName,
+                folderUri = "camera",
+                contentHash = contentHash,
+                state = UploadState.PENDING,
+                plainBytes = bytes.size.toLong(),
+                fileMtimeEpochSec = 0L,
+                takenAt = null,
+                tzOffsetMin = null,
+                takenAtSrc = null,
+                tzSrc = null,
+                mime = null,
+                width = null,
+                height = null,
+                photoId = null,
+                renditionId = null,
+                attempts = 0,
+                lastError = null,
+                createdAt = "2026-08-30T10:00:00.000Z",
+                updatedAt = "2026-08-30T10:00:00.000Z",
+            ),
+        )
+    }
+
+    private fun createEchoDispatcher(
+        renditionId: String,
+        mediaPathSuffix: String,
+    ) = object : Dispatcher() {
+        override fun dispatch(request: RecordedRequest): MockResponse {
+            val path = request.path.orEmpty()
+            val bodyBytes = request.body.readByteArray()
+            recordedBodies[path] = bodyBytes
+            return when {
+                path.startsWith("/api/settings") -> settingsResponse()
+                path.startsWith("/api/keys") ->
+                    MockResponse().setResponseCode(200).setBody(
+                        json.encodeToString(
+                            KeysResponse.serializer(),
+                            KeysResponse(listOf(KeyWrapDto(wrapId, "device", "Test device", "mk-1"))),
+                        ),
+                    )
+                path == "/api/uploads" -> {
+                    val sent = json.decodeFromString<Map<String, JsonElement>>(String(bodyBytes))
+                    val photoId = sent.string("photoId")
+                    val encDek = sent.string("encDek")
+                    val body =
+                        """{"photoId":"$photoId","renditionId":"$renditionId","created":true,"encDek":"$encDek","encKeyId":"mk-1",
+                        |${originalUploadJson(mediaPathSuffix)}}
+                        """.trimMargin().replace("\n", "")
+                    MockResponse().setResponseCode(200).setBody(body)
+                }
+                else -> MockResponse().setResponseCode(200)
+            }
+        }
+    }
+
+    private fun decryptOriginal(
+        mediaPathSuffix: String,
+        renditionId: String,
+    ): ByteArray {
+        val sentBody = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+        val photoId = sentBody.string("photoId")
+        val dek = masterKey.unwrapDek(decode(sentBody.string("encDek")))
+        val encIv = decode(sentBody.string("encIv"))
+        val originalCiphertext = recordedBodies.entries.single { it.key.startsWith("/media/$mediaPathSuffix") }.value
+        return WholeObjectCipher.decrypt(dek, encIv, Aad.of(photoId, ObjectRef.Rendition(renditionId)), originalCiphertext)
+    }
+
+    @Test
+    fun `strips a video's location before upload when stripLocationOnUpload is on`() =
+        runTest {
+            connectInstance()
+            stripLocationEnabled = true
+            val videoBytes = SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox(SyntheticMp4.lociBox())))
+            val queueId = queueVideoRow("content://media/video1", "clip.mp4", "hmac-sha256:video-test", videoBytes)
+            server.dispatcher = createEchoDispatcher(renditionId = "rv1", mediaPathSuffix = "video-orig")
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            val plaintext = decryptOriginal("video-orig", "rv1")
+            assertFalse(String(plaintext, Charsets.ISO_8859_1).contains("loci"))
+            // The queued file's own bytes are untouched -- proves this never wrote
+            // through to the "original" MediaStore would still serve.
+            assertTrue(String(videoBytes, Charsets.ISO_8859_1).contains("loci"))
+        }
+
+    @Test
+    fun `leaves a video's location intact when stripLocationOnUpload is off`() =
+        runTest {
+            connectInstance()
+            stripLocationEnabled = false
+            val videoBytes = SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox(SyntheticMp4.lociBox())))
+            val queueId = queueVideoRow("content://media/video2", "clip2.mp4", "hmac-sha256:video-test-2", videoBytes)
+            server.dispatcher = createEchoDispatcher(renditionId = "rv2", mediaPathSuffix = "video-orig-2")
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            val plaintext = decryptOriginal("video-orig-2", "rv2")
+            assertTrue(String(plaintext, Charsets.ISO_8859_1).contains("loci"))
         }
 }
 

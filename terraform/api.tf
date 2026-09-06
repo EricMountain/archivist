@@ -120,6 +120,8 @@ locals {
     "PATCH /devices/{deviceKey}",
     "DELETE /devices/{deviceKey}",
     "DELETE /account",
+    "GET /settings",
+    "PATCH /settings",
   ]
 }
 
