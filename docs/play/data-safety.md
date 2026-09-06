@@ -34,7 +34,7 @@ infrastructure, and AWS is a processor.
 | --- | --- |
 | Does your app collect or share any of the required user data types? | **Yes** — transmitted to the user's own server |
 | Is all user data collected by your app encrypted in transit? | **Yes** — HTTPS throughout; image bytes and raw EXIF are additionally encrypted client-side before upload |
-| Do you provide a way for users to request their data be deleted? | **Yes** — in-app account deletion; the data lives on the user's own server |
+| Do you provide a way for users to request their data be deleted? | **Yes** — in-app account deletion, plus the required web URL (`docs/play/delete-account.md`); the data lives on the user's own server |
 
 ## Data types
 
@@ -105,12 +105,24 @@ advertising ID, no ANDROID_ID, no device fingerprint is collected.
    `private/instance/privacy-policy.md`, and `terraform apply` publishes it as plain
    text (`terraform/wellknown.tf`) — see `private/README.md`.
 2. **Account deletion.** Play requires apps supporting account creation to offer
-   deletion in-app and, normally, through a publicly reachable web URL. That web
-   requirement is aimed at developer-held accounts, and here there are none: accounts
-   exist on servers the developer cannot reach. In-app deletion exists, and destroying
-   the deployment removes everything. Be ready to explain this in review notes rather
-   than hoping it goes unnoticed — a reviewer looking for a deletion URL and not finding
-   one will reject first and ask later.
+   deletion in-app *and* a publicly reachable web URL, submitted in Play Console's Data
+   Safety form (App content → Data safety → Account deletion). This applies regardless
+   of who ends up holding the data — there's no exemption for self-hosted accounts, and
+   the earlier assumption that a review-notes explanation would suffice was wrong. The
+   URL doesn't have to perform the deletion itself: Google's own guidance accepts a page
+   that describes how to request it. `docs/play/delete-account.md` is that page —
+   generic across every instance since there's one Play listing but many deployments —
+   and its GitHub-rendered URL
+   (`https://github.com/EricMountain/archivist/blob/main/docs/play/delete-account.md`)
+   is what goes in the Play Console field. In-app deletion (`DELETE /account`, Settings
+   → Account → Delete Account) is the real, immediate mechanism the page points to;
+   destroying the deployment also removes everything.
+
+   **Known limitation, deliberately not solved here:** deletion is self-service only —
+   an operator has no way to fully purge someone else's data if that person can't sign
+   in themselves (see `docs/ops/create-user.md`'s Troubleshooting section). The page
+   says so plainly rather than overpromising; closing that gap would mean an
+   admin-initiated deletion endpoint, which is out of scope for now.
 3. **Deletion must mean deletion.** The archive keeps ~100-byte purge tombstones after
    photos are erased (see `design.md`). Account deletion has to remove those too, or
    the claim isn't accurate.

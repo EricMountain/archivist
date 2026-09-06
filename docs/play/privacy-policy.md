@@ -151,10 +151,12 @@ receives nothing. The separate obligations that come with *running an instance f
 people* are in `instance-privacy-policy.md`. Anyone running an instance for others needs
 that one as well, and the two documents should not be merged.
 
-**No account deletion URL is needed here.** Play's account-deletion requirement applies
-to accounts *the developer* creates and holds. Accounts here exist on the user's own
-server, and deletion means deleting their own data or destroying their own deployment.
-Say so plainly if a reviewer asks; the in-app account deletion still exists.
+**The account deletion URL doesn't go here.** Play does require one — see
+`docs/play/delete-account.md`, submitted once by the author in Play Console's Data
+Safety form. Unlike everything else in this file, it isn't filled in per operator: there
+is one Play listing but many self-hosted instances, so the page is deliberately generic
+rather than pointing at any one deployment. The in-app account deletion it describes
+still exists and is the real mechanism.
 
 **Controller identity.** The author is named as a software supplier rather than a
 controller, so a role address (`privacy@…`) on your own domain is enough. This is a much
