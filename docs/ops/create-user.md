@@ -188,9 +188,8 @@ aws cognito-idp admin-delete-user \
   --username someone@example.com
 ```
 
-**They'd already signed in and have a library.** There's no admin-side "delete this
-other person's library" endpoint — `DELETE /account` (plan step 1.15) is self-service
-only, requiring the owner's own JWT and an explicit confirmation. Deleting the Cognito
-user alone leaves their DynamoDB partition and S3 objects behind. If this comes up for
-real, treat it as a gap worth closing (an admin-initiated deletion path) rather than
-hand-deleting table rows.
+**They'd already signed in and have a library, and you need to remove it too.**
+`DELETE /account` (plan step 1.15) is self-service only, requiring the owner's own JWT
+and an explicit confirmation — deleting the Cognito user alone leaves their DynamoDB
+partition and S3 objects behind. See `docs/ops/delete-user.md` for the admin-initiated
+path instead of hand-deleting table rows.

@@ -28,13 +28,8 @@ This is the normal, recommended way to delete your account.
 
 If you've lost your device, uninstalled the app, or otherwise can't sign in, contact
 whoever operates the instance you use — the person who invited you, or yourself, if
-you're the one running it. They can remove your sign-in immediately.
-
-A full purge of your data on their instance currently depends on the same in-app,
-self-service deletion described above. If you can regain access to the app on any
-enrolled device (or your recovery code), that remains the way to complete the deletion
-yourself. This is a known limitation, not an oversight — worth stating plainly rather
-than promising more than the software does today.
+you're the one running it. They can remove your sign-in and fully delete your library
+on their end, without needing you to regain access to the app first.
 
 ## Nothing to contact the developer about
 

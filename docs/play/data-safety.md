@@ -118,11 +118,10 @@ advertising ID, no ANDROID_ID, no device fingerprint is collected.
    → Account → Delete Account) is the real, immediate mechanism the page points to;
    destroying the deployment also removes everything.
 
-   **Known limitation, deliberately not solved here:** deletion is self-service only —
-   an operator has no way to fully purge someone else's data if that person can't sign
-   in themselves (see `docs/ops/create-user.md`'s Troubleshooting section). The page
-   says so plainly rather than overpromising; closing that gap would mean an
-   admin-initiated deletion endpoint, which is out of scope for now.
+   **Admin-initiated deletion** (someone can't sign in themselves to complete it) is
+   handled by `docs/ops/delete-user.md` and `tools/admin-delete-account.mjs` — an
+   operator-run script, not a new API endpoint or role, since the operator already has
+   the AWS access it needs.
 3. **Deletion must mean deletion.** The archive keeps ~100-byte purge tombstones after
    photos are erased (see `design.md`). Account deletion has to remove those too, or
    the claim isn't accurate.
