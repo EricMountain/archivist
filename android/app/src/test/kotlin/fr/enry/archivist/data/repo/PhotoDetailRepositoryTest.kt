@@ -216,8 +216,8 @@ class PhotoDetailRepositoryTest {
     fun `fetchDetail reports exifDecryptFailed rather than silently null when EXIF exists but the key can't decrypt it`() =
         runTest {
             connectInstance()
-            // Master key never set -- locked, same as a photo opened right after
-            // ArchivistApplication's ProcessLifecycleOwner.onStop observer cleared it.
+            // Master key never set -- locked, same as a photo opened before this device
+            // has ever unlocked in this process (or after an explicit sign-out).
             val blob = ExifBlob(cameraMake = "Canon")
             val (exifEnc, exifIv) = encryptExif(blob)
             server.enqueue(MockResponse().setResponseCode(200).setBody(detailResponseJson(exifEnc, exifIv)))

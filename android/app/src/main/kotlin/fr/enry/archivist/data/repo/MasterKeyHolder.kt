@@ -14,14 +14,20 @@ import kotlinx.coroutines.flow.asStateFlow
  * (see [fr.enry.archivist.data.local.InstanceStore]'s per-host storage, kept for future
  * multi-instance support that doesn't exist yet either).
  *
- * [ArchivistApplication][fr.enry.archivist.ArchivistApplication] clears this from a
- * `ProcessLifecycleOwner.onStop` observer (i.e. once the app has actually left the
- * foreground, not on every `onTrimMemory` call — see that class's own doc), per
- * "Locked state" in android.md. Re-unlocking after that means running the enrolment
- * repository's silent-unlock path again — cheap, since it's usually just a Keystore
- * ECDH unwrap with no visible prompt at all (see "Time-based auth" in android.md), and
+ * **Deliberately not cleared just for the app being backgrounded** (see
+ * [ArchivistApplication][fr.enry.archivist.ArchivistApplication]'s own doc for the full
+ * account, and design.md's "Encryption" section for the threat model this follows: AWS/
+ * the operator never seeing plaintext, not defending key material already resident in
+ * memory against a local attacker holding an already-unlocked device). Only
+ * [AuthRepository.signOut][fr.enry.archivist.data.repo.AuthRepository.signOut] and
+ * [AccountRepository.deleteAccount][fr.enry.archivist.data.repo.AccountRepository.deleteAccount]
+ * — deliberate, session-ending user actions — call [clear]. Re-unlocking after either
+ * means running the enrolment repository's silent-unlock path again — cheap, since it's
+ * usually just a Keystore ECDH unwrap with no visible prompt at all (see "Time-based
+ * auth" in android.md) — and
  * [ui.timeline.TimelineScreen][fr.enry.archivist.ui.timeline.TimelineScreen] re-runs it
- * automatically as soon as it observes [current] go `null`.
+ * automatically as soon as it observes [current] go `null`, for whatever rare reason
+ * that happens while it's on screen.
  */
 @Singleton
 class MasterKeyHolder

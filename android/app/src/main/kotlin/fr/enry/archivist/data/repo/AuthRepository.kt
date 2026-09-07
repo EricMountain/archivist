@@ -28,6 +28,8 @@ class AuthRepository
         private val cognitoAuthClient: CognitoAuthClient,
         private val tokenStore: TokenStore,
         private val archivistApiFactory: ArchivistApiFactory,
+        private val masterKeyHolder: MasterKeyHolder,
+        private val hashSecretHolder: HashSecretHolder,
     ) {
         fun currentSession(host: String): AuthSession? = tokenStore.get(host)
 
@@ -110,8 +112,18 @@ class AuthRepository
             } ?: PasskeyRegistrationComplete.Failed(null, "not signed in")
         }
 
+        /** Deliberately clears [masterKeyHolder]/[hashSecretHolder] here too, not just
+         * the token — this is a real, pre-existing gap found while removing this app's
+         * background-triggered key clear (see `ArchivistApplication`'s own doc):
+         * signing out ended the Cognito session and dropped the token, but left the
+         * previous owner's decryption key resident in memory, available to whoever
+         * signs in next on the same device. [AccountRepository.deleteAccount] already
+         * did this; plain sign-out should too, since it's the other deliberate,
+         * session-ending action. */
         suspend fun signOut() {
             val instance = currentInstanceOrThrow()
+            masterKeyHolder.clear()
+            hashSecretHolder.clear()
             val session = tokenStore.get(instance.host) ?: return
             cognitoAuthClient.revoke(instance.document.region, instance.document.cognito.clientId, session.refreshToken)
             tokenStore.clear(instance.host)

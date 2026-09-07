@@ -13,9 +13,6 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.HiltAndroidApp
 import dagger.hilt.components.SingletonComponent
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.ProcessLifecycleOwner
 import fr.enry.archivist.crypto.EncryptedImageFetcher
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
@@ -66,29 +63,19 @@ class ArchivistApplication : Application(), Configuration.Provider, SingletonIma
             val holders = EntryPointAccessors.fromApplication(this@ArchivistApplication, MasterKeyHolderEntryPoint::class.java)
             holders.uploadScheduler().enqueueAll(holders.uploadQueueDao().getActiveIds())
         }
-
-        // Per [MasterKey][fr.enry.archivist.crypto.MasterKey]'s own contract: "call
-        // clear ... whenever the app locks." Deliberately `ProcessLifecycleOwner.onStop`
-        // rather than `onTrimMemory`: `onTrimMemory` also fires at
-        // `TRIM_MEMORY_RUNNING_LOW`/`RUNNING_CRITICAL` while the app is still fully
-        // foreground and in active use (e.g. swiping through the photo viewer decoding
-        // large bitmaps under general system memory pressure) — reacting to those wiped
-        // the key mid-session for no security benefit and left the UI stuck (see the
-        // `TimelineScreen`/`EnrolmentViewModel` fix this same change makes).
-        // `ProcessLifecycleOwner.onStop` only fires once all activities have actually
-        // left the foreground, matching "the app locks" instead of "the system is
-        // generally low on RAM". [HashSecretHolder] gets the same treatment for the
-        // same reason — see its own doc.
-        ProcessLifecycleOwner.get().lifecycle.addObserver(
-            object : DefaultLifecycleObserver {
-                override fun onStop(owner: LifecycleOwner) {
-                    val holders = EntryPointAccessors.fromApplication(this@ArchivistApplication, MasterKeyHolderEntryPoint::class.java)
-                    holders.masterKeyHolder().clear()
-                    holders.hashSecretHolder().clear()
-                }
-            },
-        )
     }
+
+    // **2026-09-07: deliberately no backgrounding-triggered key clear here — see
+    // MasterKeyHolder's own doc for the full account.** This class used to clear
+    // MasterKeyHolder/HashSecretHolder on every onTrimMemory call, then (same day,
+    // briefly) on ProcessLifecycleOwner.onStop instead. Both were removed: per
+    // design.md's "Encryption" section, this app's threat model is the server/operator
+    // seeing plaintext, not a local attacker holding an already-unlocked device, and
+    // there's no other stated reason to force a silent re-unlock (and the WorkManager
+    // upload queue stall that goes with it, see UploadOutcome.NeedsUnlock) just for
+    // being backgrounded. The key is still cleared explicitly on sign-out
+    // (AuthRepository.signOut) and delete-account (AccountRepository.deleteAccount) —
+    // deliberate acts that should end the session for real, not implicit ones.
 
     /** Plan step 2.11: registers [EncryptedImageFetcher] so `AsyncImage(model =
      * EncryptedThumbRef(...))` resolves through it, and roots the disk cache in

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -37,6 +38,12 @@ import kotlinx.coroutines.flow.first
 private const val KEY_QUEUE_ID = "queueId"
 private const val NOTIFICATION_CHANNEL_ID = "uploads"
 private const val NOTIFICATION_ID = 4201
+private const val NEEDS_UNLOCK_NOTIFICATION_CHANNEL_ID = "needs-unlock"
+
+/** Fixed, distinct from [NOTIFICATION_ID]: every retry of every queued file re-derives
+ * the *same* outcome while the key is missing, and [android.app.Notification.Builder.setOnlyAlertOnce]
+ * needs a stable id to actually stay "only once" rather than re-alerting per file/retry. */
+private const val NEEDS_UNLOCK_NOTIFICATION_ID = 4202
 
 /** The seam between [fr.enry.archivist.ui.settings.FoldersViewModel] (and anything
  * else that queues uploads) and WorkManager itself — same role
@@ -73,8 +80,15 @@ class WorkManagerUploadScheduler
  * duplicate.
  *
  * The actual upload logic lives in [UploadRepository] — this class is WorkManager
- * plumbing around it: constraints, backoff, the foreground notification, and mapping
- * [UploadOutcome] onto [Result].
+ * plumbing around it: constraints, backoff, the foreground notification, mapping
+ * [UploadOutcome] onto [Result], and (2026-09-07) a separate low-priority notification
+ * for [UploadOutcome.NeedsUnlock] — the master key is no longer cleared just for being
+ * backgrounded (see `ArchivistApplication`'s own doc), so in practice this only fires
+ * right after a fresh sign-in/enrolment hasn't happened yet, not on every ordinary
+ * background cycle. **Known gap, not new to this change**: `POST_NOTIFICATIONS` is
+ * declared in the manifest but never requested at runtime (see its own comment there),
+ * so on API 33+ neither this nor the existing foreground notification actually shows
+ * until the user grants it via system settings, or a future step adds the prompt.
  */
 @HiltWorker
 class UploadWorker
@@ -84,6 +98,7 @@ class UploadWorker
         @Assisted params: WorkerParameters,
         private val uploadRepository: UploadRepository,
         private val uploadQueueDao: UploadQueueDao,
+        private val syncSettingsStore: SyncSettingsStore,
     ) : CoroutineWorker(appContext, params) {
         override suspend fun doWork(): Result {
             val queueId = inputData.getLong(KEY_QUEUE_ID, -1L)
@@ -92,10 +107,65 @@ class UploadWorker
             setForeground(foregroundInfo(queueId))
 
             return when (val outcome = uploadRepository.uploadOne(queueId)) {
-                UploadOutcome.Success -> Result.success()
+                UploadOutcome.Success -> {
+                    cancelNeedsUnlockNotification()
+                    Result.success()
+                }
                 UploadOutcome.Retry -> Result.retry()
+                UploadOutcome.NeedsUnlock -> {
+                    maybeNotifyNeedsUnlock()
+                    Result.retry()
+                }
                 is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
             }
+        }
+
+        /** Per the Sync settings toggle (default on) -- a low-priority, alert-once
+         * notification, not the ongoing foreground one above: this fires from
+         * *outside* the foreground-service window (WorkManager already gave up on this
+         * attempt by the time [UploadOutcome.NeedsUnlock] comes back) and can span many
+         * backoff retries, possibly each a fresh `UploadWorker` instance with no memory
+         * of the last one -- `setOnlyAlertOnce(true)` against the same fixed id is what
+         * keeps re-posting it on every retry from re-alerting (sound/vibrate/heads-up)
+         * more than once. */
+        private suspend fun maybeNotifyNeedsUnlock() {
+            if (!syncSettingsStore.settings.first().notifyWhenUploadNeedsUnlock) return
+            val context = applicationContext
+            createNeedsUnlockNotificationChannelIfNeeded(context)
+
+            val openApp =
+                PendingIntent.getActivity(
+                    context,
+                    0,
+                    Intent(context, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+            val notification =
+                NotificationCompat.Builder(context, NEEDS_UNLOCK_NOTIFICATION_CHANNEL_ID)
+                    .setContentTitle(context.getString(R.string.needs_unlock_notification_title))
+                    .setContentText(context.getString(R.string.needs_unlock_notification_text))
+                    .setSmallIcon(android.R.drawable.stat_sys_upload)
+                    .setOnlyAlertOnce(true)
+                    .setAutoCancel(true)
+                    .setContentIntent(openApp)
+                    .build()
+            NotificationManagerCompat.from(context).notify(NEEDS_UNLOCK_NOTIFICATION_ID, notification)
+        }
+
+        private fun cancelNeedsUnlockNotification() {
+            NotificationManagerCompat.from(applicationContext).cancel(NEEDS_UNLOCK_NOTIFICATION_ID)
+        }
+
+        private fun createNeedsUnlockNotificationChannelIfNeeded(context: Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            val manager = context.getSystemService(NotificationManager::class.java)
+            val channel =
+                NotificationChannel(
+                    NEEDS_UNLOCK_NOTIFICATION_CHANNEL_ID,
+                    context.getString(R.string.needs_unlock_notification_channel_name),
+                    NotificationManager.IMPORTANCE_LOW,
+                )
+            manager.createNotificationChannel(channel)
         }
 
         /** One notification per in-flight file — "long-running worker with a

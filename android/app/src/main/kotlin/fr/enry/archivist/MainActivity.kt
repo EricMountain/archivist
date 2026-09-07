@@ -57,9 +57,10 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                     unlocked ->
                         // TimelineViewModel re-checks MasterKeyHolder continuously (see
                         // its own doc), so this stale local `unlocked` boolean staying
-                        // true after a later lock (ArchivistApplication's
-                        // ProcessLifecycleOwner.onStop observer) no longer matters -- the
-                        // screen itself falls back to the locked state. onSessionEnded
+                        // true after a later lock (sign-out/delete-account -- see
+                        // ArchivistApplication's own doc for why backgrounding alone no
+                        // longer counts) no longer matters -- the screen itself falls
+                        // back to the locked state. onSessionEnded
                         // (plan step 2.14's Account > sign out / delete account) resets
                         // both local flags so the next recomposition falls through to
                         // SignInScreen, same as a fresh launch.

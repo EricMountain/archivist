@@ -11,6 +11,12 @@ import kotlinx.coroutines.flow.map
 data class SyncSettings(
     val allowMeteredNetwork: Boolean = false,
     val requiresCharging: Boolean = false,
+    /** 2026-09-07: whether [fr.enry.archivist.sync.UploadWorker] posts a low-priority
+     * notification when a queued upload can't proceed because the master key isn't in
+     * memory yet (see `UploadOutcome.NeedsUnlock`'s own doc). Defaults on — the
+     * alternative is a queue that silently retries-and-fails with no visible signal at
+     * all. */
+    val notifyWhenUploadNeedsUnlock: Boolean = true,
 )
 
 /**
@@ -35,6 +41,7 @@ class SyncSettingsStore
                 SyncSettings(
                     allowMeteredNetwork = prefs[ALLOW_METERED_KEY] ?: false,
                     requiresCharging = prefs[REQUIRES_CHARGING_KEY] ?: false,
+                    notifyWhenUploadNeedsUnlock = prefs[NOTIFY_WHEN_LOCKED_KEY] ?: true,
                 )
             }
 
@@ -46,8 +53,13 @@ class SyncSettingsStore
             dataStore.edit { it[REQUIRES_CHARGING_KEY] = requires }
         }
 
+        suspend fun setNotifyWhenUploadNeedsUnlock(notify: Boolean) {
+            dataStore.edit { it[NOTIFY_WHEN_LOCKED_KEY] = notify }
+        }
+
         private companion object {
             val ALLOW_METERED_KEY = booleanPreferencesKey("allow_metered_network")
             val REQUIRES_CHARGING_KEY = booleanPreferencesKey("requires_charging")
+            val NOTIFY_WHEN_LOCKED_KEY = booleanPreferencesKey("notify_when_upload_needs_unlock")
         }
     }

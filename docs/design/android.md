@@ -221,7 +221,13 @@ Durable across process death, because a 500-photo import will outlive the UI:
    → generate thumbnails → `POST` metadata to get a `photoId` and presigned URLs →
    stream-encrypt and PUT → mark `DONE`. The temporary copy, if any, is deleted once
    this attempt finishes, success or not.
-4. Failures retry with exponential backoff; the queue survives reboots.
+4. Failures retry with exponential backoff; the queue survives reboots. A missing master
+   key (`UploadOutcome.NeedsUnlock`) retries the same way, plus — per the Sync setting
+   `notifyWhenUploadNeedsUnlock` (default on) — a low-priority, alert-once notification
+   asking the user to open the app, since nothing in the background can re-derive the
+   key on its own (see "Key unlock" above for why the key isn't just kept around
+   indefinitely to sidestep this — it is, deliberately, past the first unlock; this case
+   is only the narrower one of never having unlocked yet, or having signed out).
 
 The metadata `POST` happens *before* the bytes, matching the pending-`#META` handshake
 in `design.md`. The server assigns identity and decides grouping; the client only
@@ -359,19 +365,34 @@ Two separate ceremonies, for the reasons in `design.md`:
   `KeyguardManager.createConfirmDeviceCredentialIntent`, then retry.
 
 The master key is held in memory only (`MasterKeyHolder`, `:app`) — never in
-SharedPreferences, never on disk — and cleared from a `ProcessLifecycleOwner.onStop`
-observer in `ArchivistApplication`, per plan step 2.5. Deliberately not
-`onTrimMemory`: that callback also fires at `TRIM_MEMORY_RUNNING_LOW`/`RUNNING_CRITICAL`
-while the app is still fully foreground (e.g. under general system memory pressure while
-swiping through the photo viewer), which isn't "the app locked" and clearing the key
-there just breaks the UI mid-session for no security benefit. Re-unwrapping needs the
-device to have been unlocked within the last 5 minutes (see above); if not, the app asks
-the user to unlock rather than crashing. `TimelineScreen` re-runs the enrolment
-repository's `checkStep()` itself as soon as it observes `MasterKeyHolder.current` go
-`null` (rather than trusting a cached `EnrolmentViewModel`'s stale `Unlocked` state), so
-the key being cleared mid-session now self-heals instead of hanging; anything else that
-reads the master key should still check `MasterKeyHolder.current` rather than assume it
-stays set for the app's whole lifetime.
+SharedPreferences, never on disk. **Not cleared just for the app being backgrounded, by
+deliberate decision** (2026-09-07, revised from this step's original design after a real
+threat-model discussion — see `docs/plans/STATUS.md`'s 2.11 row for the full account).
+Two earlier attempts at a backgrounding-triggered clear were tried and both removed:
+first `onTrimMemory` (any level — which also fires at `TRIM_MEMORY_RUNNING_LOW`/
+`RUNNING_CRITICAL` while the app is still fully foreground, e.g. under general system
+memory pressure while swiping through the photo viewer, wiping the key mid-session for
+no benefit), then a `ProcessLifecycleOwner.onStop` observer (correctly scoped to actual
+backgrounding, but still the wrong thing to clear on at all). The reason: per
+"Encryption" in design.md, this app's threat model is AWS/the operator seeing plaintext,
+not a local, physically-present attacker interacting with an already-unlocked device —
+the device's own lock screen and OS sandboxing are that boundary, not this app clearing
+key material out from under itself. Clearing the key merely for being backgrounded also
+has a real cost: `UploadWorker`'s queue runs in the background too, and a cleared key
+stalls every upload until the app is foregrounded again (see "Upload pipeline" below and
+`UploadOutcome.NeedsUnlock`) — there is no way for a background worker to silently
+re-derive the key on its own.
+
+The master key is cleared only by two deliberate, session-ending user actions:
+`AuthRepository.signOut()` and `AccountRepository.deleteAccount()` (Settings > Account).
+Re-unwrapping after either needs the device to have been unlocked within the last 5
+minutes (see above); if not, the app asks the user to unlock rather than crashing.
+`TimelineScreen` re-runs the enrolment repository's `checkStep()` itself as soon as it
+observes `MasterKeyHolder.current` go `null` (rather than trusting a cached
+`EnrolmentViewModel`'s stale `Unlocked` state), so the rare case of the key going away
+while it's on screen self-heals instead of hanging; anything else that reads the master
+key should still check `MasterKeyHolder.current` rather than assume it stays set for the
+app's whole lifetime.
 
 Enrolment (`KeyCustody.kt` in `:core:crypto`, `EnrolmentRepository`/`EnrolmentViewModel`/
 `EnrolmentScreen` in `:app`) writes a `kind: device` wrapping item — generated in memory

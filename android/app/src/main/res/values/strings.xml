@@ -5,4 +5,11 @@
          Android doesn't kill the worker mid-transfer. -->
     <string name="upload_notification_channel_name">Backup</string>
     <string name="upload_notification_title">Backing up %1$s</string>
+
+    <!-- 2026-09-07: low-priority nudge shown when queued uploads can't proceed because
+         the master key isn't in memory (e.g. right after sign-in on a fresh install, or
+         after signing out/in as a different owner); see Sync settings' own toggle. -->
+    <string name="needs_unlock_notification_channel_name">Backup paused</string>
+    <string name="needs_unlock_notification_title">Backup paused</string>
+    <string name="needs_unlock_notification_text">Open Archivist to resume uploading</string>
 </resources>

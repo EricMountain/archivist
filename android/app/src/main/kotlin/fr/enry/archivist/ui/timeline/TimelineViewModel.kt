@@ -63,14 +63,15 @@ internal fun Flow<PagingData<PhotoEntity>>.toTimelineItems(): Flow<PagingData<Ti
 
 /**
  * Plan step 2.11. [locked] gates the whole screen off the grid the moment the master
- * key disappears — including mid-session, from `ArchivistApplication`'s
- * `ProcessLifecycleOwner.onStop` observer — per "Locked state" in android.md: the
- * timeline is metadata and renders fine with no key at all, so without this the app
- * would look healthy while every thumbnail failed to decrypt. This is also what
- * actually fixes the staleness plan step 2.5's own STATUS.md note flagged:
- * `MainActivity`'s local `unlocked` boolean never re-checks [MasterKeyHolder] after the
- * first unlock, but this screen does, continuously — see [TimelineScreen]'s own
- * `locked` branch for how it forces [fr.enry.archivist.ui.onboarding.EnrolmentViewModel]
+ * key disappears — sign-out, delete-account, or (rare) never having unlocked yet in
+ * this process; ordinary backgrounding no longer clears it, see
+ * `ArchivistApplication`'s own doc — per "Locked state" in android.md: the timeline is
+ * metadata and renders fine with no key at all, so without this the app would look
+ * healthy while every thumbnail failed to decrypt. This is also what actually fixes the
+ * staleness plan step 2.5's own STATUS.md note flagged: `MainActivity`'s local
+ * `unlocked` boolean never re-checks [MasterKeyHolder] after the first unlock, but this
+ * screen does, continuously — see [TimelineScreen]'s own `locked` branch for how it
+ * forces [fr.enry.archivist.ui.onboarding.EnrolmentViewModel]
  * to re-check rather than trusting a possibly-stale cached instance.
  */
 @HiltViewModel

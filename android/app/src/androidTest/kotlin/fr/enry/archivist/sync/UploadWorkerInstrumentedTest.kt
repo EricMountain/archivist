@@ -69,8 +69,12 @@ class UploadWorkerInstrumentedTest {
     fun setUp() {
         runBlocking {
             // Refuses to run against a device someone is actively using -- see the
-            // class doc's "Safety" note. A locked (post-backgrounding, or never
-            // unlocked this process) app is the only state this test considers safe.
+            // class doc's "Safety" note. The master key is no longer cleared just for
+            // being backgrounded (see ArchivistApplication's own doc), so "locked" here
+            // really means never unlocked this process (fresh install, or the app was
+            // force-stopped/reinstalled since) or explicitly signed out -- a live
+            // session merely in the background still reads as unlocked and correctly
+            // fails this check.
             assumeTrue(
                 "refusing to run: this device's master key is currently unlocked (a live session, not idle) -- see this test's Safety note",
                 entryPoint.masterKeyHolder().current.value == null,

@@ -6,9 +6,10 @@ import java.security.SecureRandom
 /**
  * The master key: 256 bits, random, per owner, and never allowed to leave a client in
  * plaintext. This holder is the only place the raw bytes live -- an in-memory,
- * non-exportable key that is never written to disk or logged. Call [clear] whenever the
- * app locks (`ArchivistApplication`'s `ProcessLifecycleOwner.onStop` observer, not
- * `onTrimMemory` — see that class's own doc for why).
+ * non-exportable key that is never written to disk or logged. Call [clear] on an actual
+ * session-ending event — sign-out, delete-account — not on backgrounding: see
+ * `ArchivistApplication`'s own doc for why this app doesn't try to protect key material
+ * already in memory against a local, physically-present attacker.
  */
 class MasterKey private constructor(private var bytes: ByteArray?) {
     val isPresent: Boolean

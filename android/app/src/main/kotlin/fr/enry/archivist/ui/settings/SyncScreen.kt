@@ -45,6 +45,12 @@ fun SyncScreen(
             checked = settings.requiresCharging,
             onCheckedChange = viewModel::setRequiresCharging,
         )
+        SettingsSwitchRow(
+            title = "Notify when uploads need unlocking",
+            subtitle = "Low-priority notification if a queued upload is waiting on the app being opened",
+            checked = settings.notifyWhenUploadNeedsUnlock,
+            onCheckedChange = viewModel::setNotifyWhenUploadNeedsUnlock,
+        )
         HorizontalDivider()
         // Weighted, not fillMaxSize -- FoldersScreen's own FolderList wraps a
         // LazyColumn, which needs a bounded height from its parent (this Column

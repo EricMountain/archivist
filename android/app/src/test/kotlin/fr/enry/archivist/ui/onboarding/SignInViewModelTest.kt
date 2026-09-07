@@ -11,6 +11,8 @@ import fr.enry.archivist.data.remote.CognitoAuthClient
 import fr.enry.archivist.data.remote.DiscoveryDocument
 import fr.enry.archivist.data.remote.StartWebAuthnRegistrationResponse
 import fr.enry.archivist.data.repo.AuthRepository
+import fr.enry.archivist.data.repo.HashSecretHolder
+import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import java.io.File
@@ -75,7 +77,14 @@ class SignInViewModelTest {
                 cognitoAuthClient = CognitoAuthClient(fakeCognitoApi, json),
             )
         val repository =
-            AuthRepository(instanceStore, CognitoAuthClient(fakeCognitoApi, json), tokenStore, archivistApiFactory)
+            AuthRepository(
+                instanceStore,
+                CognitoAuthClient(fakeCognitoApi, json),
+                tokenStore,
+                archivistApiFactory,
+                MasterKeyHolder(),
+                HashSecretHolder(),
+            )
 
         runTest(dispatcher) {
             instanceStore.save(

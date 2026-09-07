@@ -1,6 +1,7 @@
 package fr.enry.archivist.data.repo
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.remote.ArchivistApiFactory
@@ -36,6 +37,8 @@ class AuthRepositoryTest {
     private lateinit var fakeCognitoApi: FakeCognitoAuthApi
     private lateinit var tokenStore: TokenStore
     private lateinit var instanceStore: InstanceStore
+    private lateinit var masterKeyHolder: MasterKeyHolder
+    private lateinit var hashSecretHolder: HashSecretHolder
     private lateinit var repository: AuthRepository
 
     private val host = "photos.example.com"
@@ -60,12 +63,16 @@ class AuthRepositoryTest {
                 tokenStore = tokenStore,
                 cognitoAuthClient = CognitoAuthClient(fakeCognitoApi, json),
             )
+        masterKeyHolder = MasterKeyHolder()
+        hashSecretHolder = HashSecretHolder()
         repository =
             AuthRepository(
                 instanceStore = instanceStore,
                 cognitoAuthClient = CognitoAuthClient(fakeCognitoApi, json),
                 tokenStore = tokenStore,
                 archivistApiFactory = archivistApiFactory,
+                masterKeyHolder = masterKeyHolder,
+                hashSecretHolder = hashSecretHolder,
             )
     }
 
@@ -187,5 +194,18 @@ class AuthRepositoryTest {
 
             assertEquals(null, tokenStore.get(host))
             assertEquals("refresh", fakeCognitoApi.lastRevokeTokenRequest?.token)
+        }
+
+    @Test
+    fun `sign-out clears the resident master key and hash secret, not just the token`() =
+        runTest {
+            connectInstance()
+            masterKeyHolder.set(MasterKey.of(ByteArray(32)))
+            hashSecretHolder.set(ByteArray(32))
+
+            repository.signOut()
+
+            assertEquals(null, masterKeyHolder.current.value)
+            assertEquals(null, hashSecretHolder.current.value)
         }
 }

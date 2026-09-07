@@ -54,10 +54,18 @@ import okio.BufferedSink
 sealed interface UploadOutcome {
     data object Success : UploadOutcome
 
-    /** Network error, a `5xx`, a locked master key, or anything else that might
-     * resolve itself — retry with backoff, per plan step 2.10's "distinguish permanent
-     * failures... from transient ones". */
+    /** Network error, a `5xx`, or anything else that might resolve itself — retry with
+     * backoff, per plan step 2.10's "distinguish permanent failures... from transient
+     * ones". */
     data object Retry : UploadOutcome
+
+    /** Same retry-with-backoff semantics as [Retry], kept as its own case specifically
+     * so [fr.enry.archivist.sync.UploadWorker] can tell "no master key" apart from an
+     * ordinary transient failure and (per the user's "Sync" setting) surface a
+     * low-priority notification asking them to open the app — a queue stuck on this
+     * outcome will otherwise just retry-and-fail silently forever, since nothing in the
+     * background can re-derive the key on its own (see `MasterKeyHolder`'s own doc). */
+    data object NeedsUnlock : UploadOutcome
 
     data class PermanentFailure(val message: String) : UploadOutcome
 }
@@ -145,7 +153,7 @@ class UploadRepository
             val contentHash = row.contentHash ?: return failPermanently(row, "no content hash recorded")
             val plainBytes = row.plainBytes ?: return failPermanently(row, "no file size recorded")
 
-            val masterKey = masterKeyHolder.current.value ?: return UploadOutcome.Retry
+            val masterKey = masterKeyHolder.current.value ?: return UploadOutcome.NeedsUnlock
             val instance = instanceStore.current.first() ?: return UploadOutcome.Retry
             val api = apiFor(instance)
             val apiBase = instance.document.apiBase

@@ -109,6 +109,8 @@ class AccountViewModelTest {
                 cognitoAuthClient = CognitoAuthClient(fakeCognitoApi, json),
                 tokenStore = tokenStore,
                 archivistApiFactory = archivistApiFactory,
+                masterKeyHolder = MasterKeyHolder(),
+                hashSecretHolder = HashSecretHolder(),
             )
         val accountRepository =
             AccountRepository(

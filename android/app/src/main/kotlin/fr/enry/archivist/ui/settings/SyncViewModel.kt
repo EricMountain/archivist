@@ -32,4 +32,8 @@ class SyncViewModel
         fun setRequiresCharging(requires: Boolean) {
             viewModelScope.launch { store.setRequiresCharging(requires) }
         }
+
+        fun setNotifyWhenUploadNeedsUnlock(notify: Boolean) {
+            viewModelScope.launch { store.setNotifyWhenUploadNeedsUnlock(notify) }
+        }
     }

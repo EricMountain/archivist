@@ -487,7 +487,7 @@ class UploadRepositoryTest {
         }
 
     @Test
-    fun `a locked master key retries without making any network call at all`() =
+    fun `a locked master key reports NeedsUnlock without making any network call at all`() =
         runTest {
             connectInstance()
             val queueId = queueRow()
@@ -495,7 +495,7 @@ class UploadRepositoryTest {
 
             val outcome = repository.uploadOne(queueId)
 
-            assertEquals(UploadOutcome.Retry, outcome)
+            assertEquals(UploadOutcome.NeedsUnlock, outcome)
             assertEquals(0, server.requestCount)
         }
 
