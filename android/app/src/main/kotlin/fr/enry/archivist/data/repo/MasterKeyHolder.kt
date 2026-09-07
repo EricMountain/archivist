@@ -14,10 +14,14 @@ import kotlinx.coroutines.flow.asStateFlow
  * (see [fr.enry.archivist.data.local.InstanceStore]'s per-host storage, kept for future
  * multi-instance support that doesn't exist yet either).
  *
- * [ArchivistApplication][fr.enry.archivist.ArchivistApplication] clears this from
- * `onTrimMemory`, per "Locked state" in android.md. Re-unlocking after that means
- * running the enrolment repository's silent-unlock path again — cheap, since it's just
- * a Keystore biometric prompt.
+ * [ArchivistApplication][fr.enry.archivist.ArchivistApplication] clears this from a
+ * `ProcessLifecycleOwner.onStop` observer (i.e. once the app has actually left the
+ * foreground, not on every `onTrimMemory` call — see that class's own doc), per
+ * "Locked state" in android.md. Re-unlocking after that means running the enrolment
+ * repository's silent-unlock path again — cheap, since it's usually just a Keystore
+ * ECDH unwrap with no visible prompt at all (see "Time-based auth" in android.md), and
+ * [ui.timeline.TimelineScreen][fr.enry.archivist.ui.timeline.TimelineScreen] re-runs it
+ * automatically as soon as it observes [current] go `null`.
  */
 @Singleton
 class MasterKeyHolder

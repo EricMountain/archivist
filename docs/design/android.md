@@ -359,12 +359,19 @@ Two separate ceremonies, for the reasons in `design.md`:
   `KeyguardManager.createConfirmDeviceCredentialIntent`, then retry.
 
 The master key is held in memory only (`MasterKeyHolder`, `:app`) — never in
-SharedPreferences, never on disk — and cleared from `ArchivistApplication.onTrimMemory`,
-per plan step 2.5. Re-unwrapping needs the device to have been unlocked within the last
-5 minutes (see above); if not, the app asks the user to unlock rather than crashing.
-Nothing past the initial unlock screen yet re-prompts if the key is cleared mid-session
-by `onTrimMemory`; later steps that read the master key should check
-`MasterKeyHolder.current` rather than assume it stays set for the app's whole lifetime.
+SharedPreferences, never on disk — and cleared from a `ProcessLifecycleOwner.onStop`
+observer in `ArchivistApplication`, per plan step 2.5. Deliberately not
+`onTrimMemory`: that callback also fires at `TRIM_MEMORY_RUNNING_LOW`/`RUNNING_CRITICAL`
+while the app is still fully foreground (e.g. under general system memory pressure while
+swiping through the photo viewer), which isn't "the app locked" and clearing the key
+there just breaks the UI mid-session for no security benefit. Re-unwrapping needs the
+device to have been unlocked within the last 5 minutes (see above); if not, the app asks
+the user to unlock rather than crashing. `TimelineScreen` re-runs the enrolment
+repository's `checkStep()` itself as soon as it observes `MasterKeyHolder.current` go
+`null` (rather than trusting a cached `EnrolmentViewModel`'s stale `Unlocked` state), so
+the key being cleared mid-session now self-heals instead of hanging; anything else that
+reads the master key should still check `MasterKeyHolder.current` rather than assume it
+stays set for the app's whole lifetime.
 
 Enrolment (`KeyCustody.kt` in `:core:crypto`, `EnrolmentRepository`/`EnrolmentViewModel`/
 `EnrolmentScreen` in `:app`) writes a `kind: device` wrapping item — generated in memory

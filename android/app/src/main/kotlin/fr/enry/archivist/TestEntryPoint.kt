@@ -21,7 +21,8 @@ import fr.enry.archivist.sync.Scanner
  * a custom test runner) — nothing plan step 2.10's instrumented tests need *replaces* a
  * production binding, they only seed a few (a connected instance, an unlocked master
  * key) and read state back afterward, so the same `EntryPointAccessors` pattern
- * [ArchivistApplication]'s own `onTrimMemory` already uses is enough.
+ * [ArchivistApplication]'s own `ProcessLifecycleOwner.onStop` observer already uses is
+ * enough.
  *
  * **Lives in `main`, not `androidTest`, even though it's only ever used from
  * `androidTest`.** Hilt aggregates every `@InstallIn(SingletonComponent::class)`

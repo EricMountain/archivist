@@ -69,7 +69,7 @@ class UploadWorkerInstrumentedTest {
     fun setUp() {
         runBlocking {
             // Refuses to run against a device someone is actively using -- see the
-            // class doc's "Safety" note. A locked (post-onTrimMemory, or never
+            // class doc's "Safety" note. A locked (post-backgrounding, or never
             // unlocked this process) app is the only state this test considers safe.
             assumeTrue(
                 "refusing to run: this device's master key is currently unlocked (a live session, not idle) -- see this test's Safety note",

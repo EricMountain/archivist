@@ -43,6 +43,7 @@ import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.ui.detail.DetailScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
+import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -66,7 +67,21 @@ fun TimelineScreen(
 ) {
     val locked by viewModel.locked.collectAsStateWithLifecycle()
     if (locked) {
-        EnrolmentScreen(onUnlocked = {}, modifier = modifier)
+        // hiltViewModel() here resolves to the *same* EnrolmentViewModel instance the
+        // original sign-in flow created -- this app has no navigation library, so every
+        // call site is keyed only by class name against MainActivity's own
+        // ViewModelStore (see AGENTS.md's "hiltViewModel() ... resolves to the
+        // Activity's own ViewModelStore" note, same bug class as DetailViewModel's
+        // dismissDelete()). Its uiState can therefore still read Unlocked from *before*
+        // this lock, and init{} won't rerun on a cached instance -- so this screen has
+        // to force a fresh checkStep() itself rather than trust the stale state, or the
+        // app hangs on a spinner forever with nothing left to re-check it. checkStep()
+        // is what actually re-populates MasterKeyHolder; onUnlocked is deliberately a
+        // no-op here since TimelineViewModel.locked flipping back to false (once
+        // checkStep() succeeds) is what un-mounts this branch on its own.
+        val enrolmentViewModel: EnrolmentViewModel = hiltViewModel()
+        LaunchedEffect(Unit) { enrolmentViewModel.checkStep() }
+        EnrolmentScreen(onUnlocked = {}, modifier = modifier, viewModel = enrolmentViewModel)
         return
     }
 

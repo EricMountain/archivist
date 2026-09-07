@@ -13,6 +13,9 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.HiltAndroidApp
 import dagger.hilt.components.SingletonComponent
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import fr.enry.archivist.crypto.EncryptedImageFetcher
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
@@ -63,18 +66,28 @@ class ArchivistApplication : Application(), Configuration.Provider, SingletonIma
             val holders = EntryPointAccessors.fromApplication(this@ArchivistApplication, MasterKeyHolderEntryPoint::class.java)
             holders.uploadScheduler().enqueueAll(holders.uploadQueueDao().getActiveIds())
         }
-    }
 
-    /** Per [MasterKey][fr.enry.archivist.crypto.MasterKey]'s own contract: "call clear
-     * from onTrimMemory and whenever the app locks." No level threshold — any trim
-     * signal clears it; re-unlocking is just another (cheap) Keystore biometric
-     * prompt. [HashSecretHolder] gets the same treatment for the same reason — see its
-     * own doc. */
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        val holders = EntryPointAccessors.fromApplication(this, MasterKeyHolderEntryPoint::class.java)
-        holders.masterKeyHolder().clear()
-        holders.hashSecretHolder().clear()
+        // Per [MasterKey][fr.enry.archivist.crypto.MasterKey]'s own contract: "call
+        // clear ... whenever the app locks." Deliberately `ProcessLifecycleOwner.onStop`
+        // rather than `onTrimMemory`: `onTrimMemory` also fires at
+        // `TRIM_MEMORY_RUNNING_LOW`/`RUNNING_CRITICAL` while the app is still fully
+        // foreground and in active use (e.g. swiping through the photo viewer decoding
+        // large bitmaps under general system memory pressure) — reacting to those wiped
+        // the key mid-session for no security benefit and left the UI stuck (see the
+        // `TimelineScreen`/`EnrolmentViewModel` fix this same change makes).
+        // `ProcessLifecycleOwner.onStop` only fires once all activities have actually
+        // left the foreground, matching "the app locks" instead of "the system is
+        // generally low on RAM". [HashSecretHolder] gets the same treatment for the
+        // same reason — see its own doc.
+        ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : DefaultLifecycleObserver {
+                override fun onStop(owner: LifecycleOwner) {
+                    val holders = EntryPointAccessors.fromApplication(this@ArchivistApplication, MasterKeyHolderEntryPoint::class.java)
+                    holders.masterKeyHolder().clear()
+                    holders.hashSecretHolder().clear()
+                }
+            },
+        )
     }
 
     /** Plan step 2.11: registers [EncryptedImageFetcher] so `AsyncImage(model =

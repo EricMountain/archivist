@@ -217,7 +217,7 @@ class PhotoDetailRepositoryTest {
         runTest {
             connectInstance()
             // Master key never set -- locked, same as a photo opened right after
-            // ArchivistApplication.onTrimMemory cleared it.
+            // ArchivistApplication's ProcessLifecycleOwner.onStop observer cleared it.
             val blob = ExifBlob(cameraMake = "Canon")
             val (exifEnc, exifIv) = encryptExif(blob)
             server.enqueue(MockResponse().setResponseCode(200).setBody(detailResponseJson(exifEnc, exifIv)))
