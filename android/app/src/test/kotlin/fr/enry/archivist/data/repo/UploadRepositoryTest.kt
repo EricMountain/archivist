@@ -2,6 +2,7 @@ package fr.enry.archivist.data.repo
 
 import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import app.cash.turbine.test
 import fr.enry.archivist.crypto.Aad
 import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.crypto.ObjectRef
@@ -58,6 +59,7 @@ class UploadRepositoryTest {
     private lateinit var enrolmentStore: EnrolmentStore
     private lateinit var masterKeyHolder: MasterKeyHolder
     private lateinit var mediaStoreSource: FakeMediaStoreSource
+    private lateinit var uploadEvents: UploadEvents
     private lateinit var repository: UploadRepository
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -142,6 +144,7 @@ class UploadRepositoryTest {
             OwnerSettingsRepository(instanceStore = instanceStore, archivistApiFactory = archivistApiFactory)
         val cacheContext = mock<Context>().also { whenever(it.cacheDir).thenReturn(tempDir) }
         val locationStripper = LocationStripper(context = cacheContext, mediaStoreSource = mediaStoreSource)
+        uploadEvents = UploadEvents()
 
         repository =
             UploadRepository(
@@ -157,6 +160,7 @@ class UploadRepositoryTest {
                 ownerSettingsRepository = ownerSettingsRepository,
                 locationStripper = locationStripper,
                 baseOkHttpClient = OkHttpClient.Builder().build(),
+                uploadEvents = uploadEvents,
             )
     }
 
@@ -389,6 +393,20 @@ class UploadRepositoryTest {
             assertNull(row.photoId)
             assertTrue(db.localTombstoneDao().exists("hmac-sha256:test"))
             assertTrue(recordedBodies.keys.none { it.startsWith("/media/") || it.startsWith("/thumb/") })
+        }
+
+    @Test
+    fun `every markDone path notifies UploadEvents, not just the fully-uploaded one`() =
+        runTest {
+            connectInstance()
+            val queueId = queueRow()
+            uploadResponseBody = """{"skipped":true}"""
+
+            uploadEvents.completed.test {
+                val outcome = repository.uploadOne(queueId)
+                assertEquals(UploadOutcome.Success, outcome)
+                awaitItem()
+            }
         }
 
     // ------------------------------------------------------------------

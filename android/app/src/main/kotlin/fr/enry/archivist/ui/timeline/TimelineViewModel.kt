@@ -11,11 +11,13 @@ import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
+import fr.enry.archivist.data.repo.UploadEvents
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -75,6 +77,7 @@ class TimelineViewModel
         photoRepository: PhotoRepository,
         masterKeyHolder: MasterKeyHolder,
         instanceStore: InstanceStore,
+        uploadEvents: UploadEvents,
     ) : ViewModel() {
         val locked: StateFlow<Boolean> =
             masterKeyHolder.current
@@ -93,4 +96,12 @@ class TimelineViewModel
             photoRepository.timeline()
                 .toTimelineItems()
                 .cachedIn(viewModelScope)
+
+        /** Fires once per finished upload -- see [UploadEvents]'s own doc for why the
+         * timeline needs this at all (unlike the queue screen, which observes
+         * `upload_queue` directly). [fr.enry.archivist.ui.timeline.TimelineScreen] collects
+         * this to call `LazyPagingItems.refresh()`, since that's what actually re-runs
+         * [fr.enry.archivist.data.repo.TimelineRemoteMediator]'s `GET /photos`, not just a
+         * local Room re-query. */
+        val uploadCompleted: SharedFlow<Unit> = uploadEvents.completed
     }

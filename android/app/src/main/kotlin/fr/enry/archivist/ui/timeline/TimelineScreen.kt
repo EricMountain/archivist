@@ -20,9 +20,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +72,15 @@ fun TimelineScreen(
 
     val items = viewModel.timeline.collectAsLazyPagingItems()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
+
+    // See TimelineViewModel.uploadCompleted's own doc: the timeline has no other way to
+    // learn a queued file finished uploading -- Room's own Flow invalidation never
+    // fires here because the upload pipeline never writes to the `photos` table itself,
+    // only `refresh()` (which re-runs TimelineRemoteMediator's GET /photos) does.
+    val currentItems = rememberUpdatedState(items)
+    LaunchedEffect(viewModel) {
+        viewModel.uploadCompleted.collect { currentItems.value.refresh() }
+    }
 
     // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
     // state, not a nav-library back stack -- this app has none yet (see MainActivity's

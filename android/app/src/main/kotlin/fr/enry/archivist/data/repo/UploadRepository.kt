@@ -117,6 +117,7 @@ class UploadRepository
         private val ownerSettingsRepository: OwnerSettingsRepository,
         private val locationStripper: LocationStripper,
         private val baseOkHttpClient: OkHttpClient,
+        private val uploadEvents: UploadEvents,
     ) {
         /** The current master key version (`mk-<n>`) rarely changes (only on
          * rotation, which nothing in this app triggers yet) — cached for the life of
@@ -510,6 +511,9 @@ class UploadRepository
             renditionId: String?,
         ) {
             persist(row.copy(state = UploadState.DONE, photoId = photoId, renditionId = renditionId, lastError = null))
+            // Timeline's `photos` table only refills on a RemoteMediator REFRESH, which
+            // otherwise only happens on cold start -- see UploadEvents' own doc.
+            uploadEvents.notifyUploadCompleted()
         }
 
         private suspend fun recordAttempt(
