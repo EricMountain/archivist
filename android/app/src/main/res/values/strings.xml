@@ -4,10 +4,12 @@
     <!-- Plan step 2.10: the foreground notification a long-running upload shows so
          Android doesn't kill the worker mid-transfer. -->
     <string name="upload_notification_channel_name">Backup</string>
-    <string name="upload_notification_title">Backing up %1$s</string>
-    <!-- Queue depth: how many photos (including the one named in the title above)
-         are still waiting on this device, shown as the notification's content text
-         and again in Settings > Sync. -->
+    <!-- One notification for the whole batch, not one per file — see UploadWorker's
+         NOTIFICATION_ID doc for why a per-file title/id caused constant pop-in/pop-out
+         notification churn once several files upload concurrently. -->
+    <string name="upload_notification_title">Backing up photos</string>
+    <!-- Queue depth: how many photos are still waiting on this device, shown as the
+         notification's content text and again in Settings > Sync. -->
     <plurals name="upload_queue_depth">
         <item quantity="one">%1$d photo left to upload</item>
         <item quantity="other">%1$d photos left to upload</item>

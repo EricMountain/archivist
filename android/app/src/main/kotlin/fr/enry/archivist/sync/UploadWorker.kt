@@ -40,26 +40,22 @@ import kotlinx.coroutines.sync.withPermit
 private const val KEY_QUEUE_ID = "queueId"
 private const val NOTIFICATION_CHANNEL_ID = "uploads"
 
-/** Base for [notificationIdFor], not a notification id on its own — see that
- * function's doc for why a single shared id can't work here. */
-private const val NOTIFICATION_ID_BASE = 4201
+/** One notification for the whole batch, deliberately shared across every concurrently
+ * running [UploadWorker] rather than one id per file (tried, and reverted — see
+ * `docs/plans/STATUS.md`'s 2026-09-08 notes on this file for the two failed shapes:
+ * a single id with *per-file* content flips between whichever worker posted last, and
+ * one id *per file* pops a separate tray entry in and out for every file, which reads
+ * as constant motion once a long queue is moving several files at a time under
+ * [UploadConcurrencyLimiter]). [buildProgressNotification]'s content is aggregate
+ * (queue depth only, no per-file name) precisely so that whichever worker happens to
+ * (re)post it next shows the same coherent picture instead of racing a sibling's
+ * stale snapshot. */
+private const val NOTIFICATION_ID = 4201
 private const val NEEDS_UNLOCK_NOTIFICATION_CHANNEL_ID = "needs-unlock"
 
-/** [WorkManager] can run several [UploadWorker]s concurrently (nothing here chains
- * them serially), so a single shared notification id — this class's original
- * choice, `NOTIFICATION_ID = 4201` used unconditionally — actively breaks "one
- * notification per in-flight file" (see [buildProgressNotification]'s doc): whichever
- * worker finishes first cancels/replaces the one shared notification out from under
- * every other still-uploading file, and with several finishing in quick succession
- * the notification can end up not visibly showing at all. WorkManager's own
- * multiple-concurrent-foreground-workers support requires a distinct id per worker to
- * behave — this derives one from [queueId], which is already unique per row. */
-private fun notificationIdFor(queueId: Long): Int = (NOTIFICATION_ID_BASE + queueId).toInt()
-
-/** Fixed, distinct from [notificationIdFor]'s per-queue-row ids: every retry of every
- * queued file re-derives the *same* outcome while the key is missing, and
- * [android.app.Notification.Builder.setOnlyAlertOnce] needs a stable id to actually stay
- * "only once" rather than re-alerting per file/retry. */
+/** Fixed, distinct from [NOTIFICATION_ID]: every retry of every queued file re-derives
+ * the *same* outcome while the key is missing, and [android.app.Notification.Builder.setOnlyAlertOnce]
+ * needs a stable id to actually stay "only once" rather than re-alerting per file/retry. */
 private const val NEEDS_UNLOCK_NOTIFICATION_ID = 4202
 
 /** The seam between [fr.enry.archivist.ui.settings.FoldersViewModel] (and anything
@@ -148,9 +144,9 @@ class UploadWorker
                 // plain NotificationManagerCompat.notify() here has no such owner.
                 val settings = syncSettingsStore.settings.first()
                 if (settings.uploadAsForegroundService) {
-                    setForeground(foregroundInfo(queueId))
+                    setForeground(foregroundInfo())
                 } else if (settings.showUploadProgressNotification) {
-                    postProgressNotification(queueId)
+                    postProgressNotification()
                 }
 
                 try {
@@ -167,7 +163,7 @@ class UploadWorker
                         is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
                     }
                 } finally {
-                    if (!settings.uploadAsForegroundService) cancelProgressNotification(queueId)
+                    if (!settings.uploadAsForegroundService) cancelProgressNotification()
                 }
             }
 
@@ -219,20 +215,21 @@ class UploadWorker
             manager.createNotificationChannel(channel)
         }
 
-        /** One notification per in-flight file — "long-running worker with a
-         * foreground notification for large files, or Android kills it" (the plan's
-         * own words). Shown for every file, not just large ones: a queue of many small
-         * files can run long in aggregate too, and there's no reliable way to know a
-         * file is "large" before [UploadRepository] has already read it. Shared between
-         * [foregroundInfo] and [postProgressNotification] — same content either way,
-         * only how it's delivered to the system differs. Content text is the queue
-         * depth ([UploadQueueDao.observeRemainingCount]) — how many photos, this one
-         * included, are still waiting — same number Settings > Sync shows. */
-        private suspend fun buildProgressNotification(queueId: Long): Notification {
+        /** One notification for the whole batch (see [NOTIFICATION_ID]'s doc for why
+         * this shows aggregate progress rather than naming the current file) —
+         * "long-running worker with a foreground notification for large files, or
+         * Android kills it" (the plan's own words), extended to cover a long queue of
+         * small files running long in aggregate too. Shared between [foregroundInfo]
+         * and [postProgressNotification] — same content either way, only how it's
+         * delivered to the system differs. Content text is the queue depth
+         * ([UploadQueueDao.observeRemainingCount]) — same number Settings > Sync
+         * shows — read fresh on every call, so whichever concurrently-running worker
+         * (re)posts this next always shows the current true count rather than a stale
+         * snapshot from whenever it started. */
+        private suspend fun buildProgressNotification(): Notification {
             val context = applicationContext
             createNotificationChannelIfNeeded(context)
 
-            val displayName = uploadQueueDao.getById(queueId)?.displayName ?: context.getString(R.string.app_name)
             val remaining = uploadQueueDao.observeRemainingCount().first()
             val openApp =
                 PendingIntent.getActivity(
@@ -242,7 +239,7 @@ class UploadWorker
                     PendingIntent.FLAG_IMMUTABLE,
                 )
             return NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setContentTitle(context.getString(R.string.upload_notification_title, displayName))
+                .setContentTitle(context.getString(R.string.upload_notification_title))
                 .setContentText(context.resources.getQuantityString(R.plurals.upload_queue_depth, remaining, remaining))
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setOngoing(true)
@@ -250,25 +247,24 @@ class UploadWorker
                 .build()
         }
 
-        private suspend fun foregroundInfo(queueId: Long): ForegroundInfo {
-            val notification = buildProgressNotification(queueId)
-            val notificationId = notificationIdFor(queueId)
+        private suspend fun foregroundInfo(): ForegroundInfo {
+            val notification = buildProgressNotification()
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             } else {
-                ForegroundInfo(notificationId, notification)
+                ForegroundInfo(NOTIFICATION_ID, notification)
             }
         }
 
         /** The background-mode equivalent of [foregroundInfo] — an ordinary, non-foreground
          * notification, so it has no automatic lifecycle of its own; [cancelProgressNotification]
          * is what removes it once this attempt finishes, success or not. */
-        private suspend fun postProgressNotification(queueId: Long) {
-            NotificationManagerCompat.from(applicationContext).notify(notificationIdFor(queueId), buildProgressNotification(queueId))
+        private suspend fun postProgressNotification() {
+            NotificationManagerCompat.from(applicationContext).notify(NOTIFICATION_ID, buildProgressNotification())
         }
 
-        private fun cancelProgressNotification(queueId: Long) {
-            NotificationManagerCompat.from(applicationContext).cancel(notificationIdFor(queueId))
+        private fun cancelProgressNotification() {
+            NotificationManagerCompat.from(applicationContext).cancel(NOTIFICATION_ID)
         }
 
         private fun createNotificationChannelIfNeeded(context: Context) {
