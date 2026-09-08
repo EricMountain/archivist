@@ -38,12 +38,27 @@ import kotlinx.coroutines.flow.first
 
 private const val KEY_QUEUE_ID = "queueId"
 private const val NOTIFICATION_CHANNEL_ID = "uploads"
-private const val NOTIFICATION_ID = 4201
+
+/** Base for [notificationIdFor], not a notification id on its own — see that
+ * function's doc for why a single shared id can't work here. */
+private const val NOTIFICATION_ID_BASE = 4201
 private const val NEEDS_UNLOCK_NOTIFICATION_CHANNEL_ID = "needs-unlock"
 
-/** Fixed, distinct from [NOTIFICATION_ID]: every retry of every queued file re-derives
- * the *same* outcome while the key is missing, and [android.app.Notification.Builder.setOnlyAlertOnce]
- * needs a stable id to actually stay "only once" rather than re-alerting per file/retry. */
+/** [WorkManager] can run several [UploadWorker]s concurrently (nothing here chains
+ * them serially), so a single shared notification id — this class's original
+ * choice, `NOTIFICATION_ID = 4201` used unconditionally — actively breaks "one
+ * notification per in-flight file" (see [buildProgressNotification]'s doc): whichever
+ * worker finishes first cancels/replaces the one shared notification out from under
+ * every other still-uploading file, and with several finishing in quick succession
+ * the notification can end up not visibly showing at all. WorkManager's own
+ * multiple-concurrent-foreground-workers support requires a distinct id per worker to
+ * behave — this derives one from [queueId], which is already unique per row. */
+private fun notificationIdFor(queueId: Long): Int = (NOTIFICATION_ID_BASE + queueId).toInt()
+
+/** Fixed, distinct from [notificationIdFor]'s per-queue-row ids: every retry of every
+ * queued file re-derives the *same* outcome while the key is missing, and
+ * [android.app.Notification.Builder.setOnlyAlertOnce] needs a stable id to actually stay
+ * "only once" rather than re-alerting per file/retry. */
 private const val NEEDS_UNLOCK_NOTIFICATION_ID = 4202
 
 /** The seam between [fr.enry.archivist.ui.settings.FoldersViewModel] (and anything
@@ -141,7 +156,7 @@ class UploadWorker
                     is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
                 }
             } finally {
-                if (!settings.uploadAsForegroundService) cancelProgressNotification()
+                if (!settings.uploadAsForegroundService) cancelProgressNotification(queueId)
             }
         }
 
@@ -226,10 +241,11 @@ class UploadWorker
 
         private suspend fun foregroundInfo(queueId: Long): ForegroundInfo {
             val notification = buildProgressNotification(queueId)
+            val notificationId = notificationIdFor(queueId)
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             } else {
-                ForegroundInfo(NOTIFICATION_ID, notification)
+                ForegroundInfo(notificationId, notification)
             }
         }
 
@@ -237,11 +253,11 @@ class UploadWorker
          * notification, so it has no automatic lifecycle of its own; [cancelProgressNotification]
          * is what removes it once this attempt finishes, success or not. */
         private suspend fun postProgressNotification(queueId: Long) {
-            NotificationManagerCompat.from(applicationContext).notify(NOTIFICATION_ID, buildProgressNotification(queueId))
+            NotificationManagerCompat.from(applicationContext).notify(notificationIdFor(queueId), buildProgressNotification(queueId))
         }
 
-        private fun cancelProgressNotification() {
-            NotificationManagerCompat.from(applicationContext).cancel(NOTIFICATION_ID)
+        private fun cancelProgressNotification(queueId: Long) {
+            NotificationManagerCompat.from(applicationContext).cancel(notificationIdFor(queueId))
         }
 
         private fun createNotificationChannelIfNeeded(context: Context) {
