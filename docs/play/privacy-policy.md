@@ -101,9 +101,11 @@ preview screen, from working.
 **Photo & video location (`ACCESS_MEDIA_LOCATION`)** — a separate, optional permission
 that only governs whether Archivist can read the location a camera already recorded
 inside a photo or video's own metadata. **You can deny this.** Doing so does not stop
-backup: Android hands every app, Archivist included, copies of your photos and videos
-with that location already removed, and there is nothing further for the app to do. If
-you allow it, that location is uploaded encrypted along with everything else, unless
+backup: Android hands Archivist copies of your photos and videos with that location
+already removed, and there is nothing further for the app to do. This only affects what
+Archivist itself can read — it is an ordinary per-app permission, like any other, so
+another app you've separately granted it to would still see the original. If you allow
+it for Archivist, that location is uploaded encrypted along with everything else, unless
 your library owner has separately turned on "Strip location from uploads" in Settings,
 which removes it from every device's uploads regardless of this permission.
 

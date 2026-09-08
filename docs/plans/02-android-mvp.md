@@ -611,19 +611,31 @@ ladder's GPS-delta rung both need real location to reach the app at all).
 `ui/reviewer/ReviewerSettingsScreen.kt`, `AndroidManifest.xml`.
 
 **Details.**
-- `PermissionOnboardingScreen(includeNotifications, content)`: gates `content` behind
-  whichever of three permissions aren't yet granted, one rationale screen per
-  permission (Android only shows one system dialog at a time regardless). Computed once
-  per entry from live `ContextCompat.checkSelfPermission` state — no persisted "already
-  asked" flag anywhere, so a decline is free to ask again on a later, genuinely fresh
-  launch rather than being remembered as settled forever.
-- Wired into `MainActivity.kt` in two places: around `TimelineScreen` (after `unlocked`,
-  `includeNotifications = true` — this is the first point Sync/notifications actually
-  matter) and around `ReviewerPreviewScreen` (`includeNotifications = false` — preview
-  mode never uploads). The preview-mode placement is deliberate, not just for a Play
-  reviewer to see the same rationale a real user does: `MediaStoreSource` cannot see
-  anything beyond files this app itself created without the media-library permission
-  either, so preview mode was silently non-functional before this without it.
+- `PermissionOnboardingScreen(content)`: gates `content` behind whichever permissions
+  aren't yet granted, one rationale screen per permission (Android only shows one
+  system dialog at a time regardless). Computed once per entry from live
+  `ContextCompat.checkSelfPermission` state — no persisted "already asked" flag
+  anywhere, so a decline is free to ask again on a later, genuinely fresh launch rather
+  than being remembered as settled forever.
+- Wired into `MainActivity.kt` in two places, both with every step enabled: around
+  `TimelineScreen` (after `unlocked` — this is the first point Sync/notifications
+  actually matter) and around `ReviewerPreviewScreen`. The preview-mode placement is
+  deliberate on two counts, not just for a Play reviewer to see the same rationale a
+  real user does: `MediaStoreSource` cannot see anything beyond files this app itself
+  created without the media-library permission, so preview mode was silently
+  non-functional before this without it — and every step shows there, notifications
+  included, even though preview mode itself never fires one, so a reviewer sees the
+  app's complete, real set of prompts rather than a mode-dependent subset.
+- On API 34+, the media-library request can come back with
+  `READ_MEDIA_VISUAL_USER_SELECTED` instead of full access (the system dialog's
+  "Select photos and videos…" option). A follow-up step (`PartialMediaAccessStep`)
+  detects this via `checkSelfPermission` and explains that Sync will only see the
+  selected files, with an "Add more" button. There's no separate "reselect" intent —
+  re-requesting `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`/`READ_MEDIA_VISUAL_USER_SELECTED`
+  together, with the already-granted one included in the array, is what the platform
+  documents for reopening the system's own selection UI. A user who made this choice in
+  an earlier session reaches this step directly next launch, skipping the request
+  screen — there's nothing left to newly ask for.
 - `ACCESS_MEDIA_LOCATION` step offers "Don't allow" as its own button, not just the
   system dialog's — denying it is a legitimate, encouraged per-device alternative to
   Settings > Privacy's "Strip location from uploads" (owner-level, synced across every
@@ -638,15 +650,20 @@ ladder's GPS-delta rung both need real location to reach the app at all).
   granting the permission actually do something — holding it without this change would
   have kept reading redacted originals regardless.
 - `AndroidManifest.xml`: add `ACCESS_MEDIA_LOCATION` (API 29+; not needed below it,
-  since pre-scoped-storage reads were never redacted).
+  since pre-scoped-storage reads were never redacted) and
+  `READ_MEDIA_VISUAL_USER_SELECTED` (API 34+; declared per Google's own guidance,
+  alongside `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`, for the partial-access flow above to
+  work correctly — never requested on its own).
 
 **Done when.** A fresh install reaching the timeline for the first time is asked for
 media library access, then (API 29+) media location, then (API 33+) notifications, in
 that order, one system dialog at a time; declining media location via the screen's own
 "Don't allow" button never shows the system dialog at all and leaves the permission
-denied. Reviewer preview mode shows the same media-library/media-location screens
-(no notifications step) and can list real device photos afterward — confirmed it
-couldn't before, since nothing previously requested that permission anywhere in the app.
+denied. Reviewer preview mode shows the same three (all three, notifications included)
+and can list real device photos afterward — confirmed it couldn't before, since nothing
+previously requested that permission anywhere in the app. Answering the API 34+ system
+dialog with "Select photos and videos…" shows the partial-access follow-up instead of
+silently proceeding, and "Add more" reopens the system's selection UI.
 `ACCESS_MEDIA_LOCATION`, once granted, results in `ExifExtractor` seeing real GPS tags
 from a fixture JPEG's EXIF — confirmed by code inspection of the `setRequireOriginal`
 gating in `AndroidMediaStoreSource`, not a live device run (this environment has no

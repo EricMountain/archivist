@@ -95,13 +95,14 @@ private fun MediaLocationAlternative(context: Context = LocalContext.current) {
 
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Text(
-            "There's also a stronger, per-device option: deny this device's \"Photos and videos: " +
+            "There's also a stronger, per-app option: deny Archivist's own \"Photos and videos: " +
                 "location\" permission entirely (in system Settings, not the switch above), and " +
-                "Android hands this app — and every other app — copies with location already " +
-                "removed, for every photo and video it reads, regardless of the switch above. " +
-                "Unlike that switch, this is per-device rather than shared across your library, " +
-                "and it also means this device can't use a photo's GPS fix to help place it in " +
-                "the timeline.",
+                "Android hands this app copies with location already removed, for every photo " +
+                "and video it reads, regardless of the switch above. This only affects " +
+                "Archivist on this device — another app you've separately granted the same " +
+                "permission to would still see the original. Unlike the switch above, it's a " +
+                "choice made here rather than shared across your library, and it also means " +
+                "this device can't use a photo's GPS fix to help place it in the timeline.",
             style = MaterialTheme.typography.bodySmall,
         )
         Text(

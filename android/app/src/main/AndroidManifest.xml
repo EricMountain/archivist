@@ -20,6 +20,18 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- Plan step 2.19: on API 34+, requesting READ_MEDIA_IMAGES/VIDEO can surface a
+         third option ("Select photos and videos…") alongside Allow/Deny, granting this
+         instead of the two above. Google's own guidance is to declare all three
+         permissions together for that flow to work correctly — PermissionOnboarding
+         Screen detects the resulting partial-access state via checkSelfPermission on
+         this one, and widens it by re-requesting all three together (there is no
+         separate "reselect" intent; including this already-granted permission in that
+         second request is what reopens the system's own selection UI). Never requested
+         on its own; only ever granted as an alternative outcome of the
+         READ_MEDIA_IMAGES/VIDEO request above. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
     <!-- Plan step 2.19: on API 29+, ContentResolver hands back MediaStore originals
          with GPS location already redacted — from EXIF and from video location boxes
          alike — unless the app both holds this and calls

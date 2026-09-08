@@ -210,21 +210,36 @@ persisted "already asked" flag. A denial (of the system dialog, or of the app's 
 rationale screen) must be free to ask again on a later, genuinely fresh app launch
 rather than being remembered as settled forever; the screen recomputes what's still
 missing from live `ContextCompat.checkSelfPermission` state every time it's entered, and
-stores nothing of its own. The same screens run in reviewer preview mode too, minus the
-notification step preview never needs (preview mode never uploads anything) — that's
-both what puts them in front of a Play reviewer and what actually lets `MediaStoreSource`
-see anything there at all: see "Media permissions" above — without one of
-`READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`/`READ_EXTERNAL_STORAGE`, a MediaStore query only
-ever returns files this app itself created, which is none, since it never takes photos.
-Their answers in preview mode carry over exactly as far as the OS permission grant
-itself does — a real grant is a real grant regardless of which flow asked for it, but a
-decline there leaves nothing recorded to block asking again once a real account exists.
+stores nothing of its own. **Every step shows in reviewer preview mode too, notifications
+included**, even though preview mode itself never fires one — these screens exist so a
+Play reviewer sees the complete, real set of prompts the app can ever show, not just
+whatever subset a given mode happens to use. The media-library step specifically is also
+what actually lets `MediaStoreSource` see anything there at all: see "Media permissions"
+above — without one of `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`/`READ_EXTERNAL_STORAGE`, a
+MediaStore query only ever returns files this app itself created, which is none, since
+it never takes photos. Answers made in preview mode carry over exactly as far as the OS
+permission grant itself does — a real grant is a real grant regardless of which flow
+asked for it, but a decline there leaves nothing recorded to block asking again once a
+real account exists.
 
-Three permissions, requested as three separate steps since Android only ever shows one
-system dialog at a time regardless of how many are asked together:
+Four permissions, requested as separate steps since Android only ever shows one system
+dialog at a time regardless of how many are asked together:
 
 * **`READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`** (API 33+) or **`READ_EXTERNAL_STORAGE`**
   (28–32) — core function; declining just means Sync's folder list comes up empty.
+
+  **On API 34+, the system dialog offers a third option**, "Select photos and
+  videos…", alongside Allow/Deny — granting `READ_MEDIA_VISUAL_USER_SELECTED` instead
+  of the two permissions above, scoped to just the files the user picked.
+  `PermissionOnboardingScreen` detects this (`mediaAccessState`, checking
+  `READ_MEDIA_VISUAL_USER_SELECTED` when the full permissions aren't held) and shows a
+  follow-up step explaining that Sync will only ever see the selected files, with an
+  "Add more" button. There's no separate intent for reopening the system's selection
+  UI — re-requesting the same permission array, with the already-granted
+  `READ_MEDIA_VISUAL_USER_SELECTED` included, is what the platform documents for
+  that. A user who already made this choice in an earlier session reaches the
+  follow-up step directly on the next launch, skipping the request screen — there's
+  nothing left to newly ask for.
 * **`ACCESS_MEDIA_LOCATION`** (API 29+; doesn't exist below it, and isn't needed there
   either, since pre-scoped-storage reads were never redacted in the first place).
   Without it, `ContentResolver` hands back MediaStore originals with GPS location
@@ -268,12 +283,6 @@ in existing files, which `ACCESS_MEDIA_LOCATION` alone governs. Key unlock's
 device-credential confirmation (`KeyguardManager.createConfirmDeviceCredentialIntent`,
 see "Auth and key unlock" below) isn't a permission dialog either — no `uses-permission`
 backs it.
-
-**Not handled yet**: a user who picks "Select photos…" on API 34+ instead of "Allow
-all" gets `READ_MEDIA_VISUAL_USER_SELECTED` — a real grant, just a narrower one than
-unattended folder sync assumes. The app doesn't currently detect this case or offer
-`ACTION_USER_SELECT_IMAGES` to widen it; a folder scan under partial access will just
-find fewer files than the user expects, silently, rather than explaining why.
 
 ### Decrypting for display
 

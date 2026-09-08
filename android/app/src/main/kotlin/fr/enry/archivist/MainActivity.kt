@@ -69,7 +69,7 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                         // Plan step 2.19: media/notification permissions are asked here,
                         // after registration and key unlock, not any earlier -- this is
                         // the first point backup/sync actually needs them.
-                        PermissionOnboardingScreen(includeNotifications = true, modifier = Modifier.padding(innerPadding)) {
+                        PermissionOnboardingScreen(modifier = Modifier.padding(innerPadding)) {
                             TimelineScreen(
                                 onSessionEnded = {
                                     unlocked = false
@@ -104,11 +104,12 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
             //
             // Plan step 2.19: preview mode needs the media-library permission just as
             // much as a real session does -- MediaStoreSource can't see anything beyond
-            // this app's own files without it -- and showing the same rationale here is
-            // also what puts it in front of a Play reviewer. No notifications step:
-            // preview mode never uploads, so there's nothing to notify about.
+            // this app's own files without it. All three steps show here, notifications
+            // included, even though preview mode itself never fires one -- these screens
+            // exist so a Play reviewer sees the complete, real set of prompts this app
+            // can ever show, not just the subset a given mode happens to use.
             ConnectUiState.ReviewerPreview ->
-                PermissionOnboardingScreen(includeNotifications = false, modifier = Modifier.padding(innerPadding)) {
+                PermissionOnboardingScreen(modifier = Modifier.padding(innerPadding)) {
                     ReviewerPreviewScreen(onExit = connectViewModel::exitReviewerPreview, modifier = Modifier.padding(innerPadding))
                 }
         }
