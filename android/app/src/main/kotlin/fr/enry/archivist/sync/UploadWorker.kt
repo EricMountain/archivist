@@ -35,6 +35,7 @@ import fr.enry.archivist.data.repo.UploadRepository
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.withPermit
 
 private const val KEY_QUEUE_ID = "queueId"
 private const val NOTIFICATION_CHANNEL_ID = "uploads"
@@ -126,39 +127,49 @@ class UploadWorker
         private val uploadRepository: UploadRepository,
         private val uploadQueueDao: UploadQueueDao,
         private val syncSettingsStore: SyncSettingsStore,
+        private val uploadConcurrencyLimiter: UploadConcurrencyLimiter,
     ) : CoroutineWorker(appContext, params) {
-        override suspend fun doWork(): Result {
-            val queueId = inputData.getLong(KEY_QUEUE_ID, -1L)
-            if (queueId < 0) return Result.failure()
+        /** The [UploadConcurrencyLimiter] permit is held for this entire function body —
+         * a row waiting on one stays at whatever state it already had (`PENDING` for a
+         * fresh one) and gets no notification of its own, so only up to
+         * [UploadConcurrencyLimiter.MAX_CONCURRENT_UPLOADS] files are ever actually
+         * mid-upload (and thus holding real memory — file buffers, thumbnails, crypto
+         * state) at once, regardless of how many `UploadWorker`s WorkManager itself has
+         * started. See that class's own doc for why this can't be done via WorkManager's
+         * own scheduler configuration instead. */
+        override suspend fun doWork(): Result =
+            uploadConcurrencyLimiter.semaphore.withPermit {
+                val queueId = inputData.getLong(KEY_QUEUE_ID, -1L)
+                if (queueId < 0) return@withPermit Result.failure()
 
-            // Settings.uploadAsForegroundService picks the mechanism; only the
-            // background path needs its own cleanup below -- WorkManager dismisses a
-            // foreground notification itself once setForeground's window ends, but a
-            // plain NotificationManagerCompat.notify() here has no such owner.
-            val settings = syncSettingsStore.settings.first()
-            if (settings.uploadAsForegroundService) {
-                setForeground(foregroundInfo(queueId))
-            } else if (settings.showUploadProgressNotification) {
-                postProgressNotification(queueId)
-            }
-
-            try {
-                return when (val outcome = uploadRepository.uploadOne(queueId)) {
-                    UploadOutcome.Success -> {
-                        cancelNeedsUnlockNotification()
-                        Result.success()
-                    }
-                    UploadOutcome.Retry -> Result.retry()
-                    UploadOutcome.NeedsUnlock -> {
-                        maybeNotifyNeedsUnlock()
-                        Result.retry()
-                    }
-                    is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
+                // Settings.uploadAsForegroundService picks the mechanism; only the
+                // background path needs its own cleanup below -- WorkManager dismisses a
+                // foreground notification itself once setForeground's window ends, but a
+                // plain NotificationManagerCompat.notify() here has no such owner.
+                val settings = syncSettingsStore.settings.first()
+                if (settings.uploadAsForegroundService) {
+                    setForeground(foregroundInfo(queueId))
+                } else if (settings.showUploadProgressNotification) {
+                    postProgressNotification(queueId)
                 }
-            } finally {
-                if (!settings.uploadAsForegroundService) cancelProgressNotification(queueId)
+
+                try {
+                    when (val outcome = uploadRepository.uploadOne(queueId)) {
+                        UploadOutcome.Success -> {
+                            cancelNeedsUnlockNotification()
+                            Result.success()
+                        }
+                        UploadOutcome.Retry -> Result.retry()
+                        UploadOutcome.NeedsUnlock -> {
+                            maybeNotifyNeedsUnlock()
+                            Result.retry()
+                        }
+                        is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
+                    }
+                } finally {
+                    if (!settings.uploadAsForegroundService) cancelProgressNotification(queueId)
+                }
             }
-        }
 
         /** Per the Sync settings toggle (default on) -- a low-priority, alert-once
          * notification, not the ongoing foreground one above: this fires from
