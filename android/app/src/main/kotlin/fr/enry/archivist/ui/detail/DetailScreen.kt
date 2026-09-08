@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -378,13 +379,29 @@ private fun MetadataPanel(
  * property a modal viewer needs, not just looking like one. `usePlatformDefaultWidth =
  * false` is what lets the dialog's content fill the screen rather than the platform's
  * default "shrink to content, centered" dialog sizing.
+ *
+ * `decorFitsSystemWindows = false` is the other half of that, and was missing until a
+ * live landscape screenshot showed why: with it left at its default `true`, the
+ * dialog's *window* -- a real second Android window, not just this Box -- lays itself
+ * out clear of the status/navigation bars the same way a plain (non-edge-to-edge)
+ * activity would, leaving a real gap around the edges where the underlying,
+ * genuinely-edge-to-edge (`MainActivity.enableEdgeToEdge()`) [DetailScreen] showed
+ * through the 90%-opacity scrim -- narrow and easy to miss in portrait (a thin sliver
+ * above the gesture bar) but wide in landscape, where a 3-button nav bar can occupy an
+ * entire side and the gap read as "the image is offset". `false` here makes the dialog
+ * genuinely edge-to-edge like the rest of the app, matching window insets rather than
+ * avoiding them -- see the `Close` button below for the one place that then needs its
+ * own inset padding back.
  */
 @Composable
 private fun OriginalOverlay(
     state: OriginalUiState,
     onDismiss: () -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
         Box(
             Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.9f)),
             contentAlignment = Alignment.Center,
@@ -449,13 +466,14 @@ private fun OriginalOverlay(
                             // as this step goes for that case.
                             Text("This file's format can't be previewed in-app.", modifier = Modifier.align(Alignment.Center))
                         }
-                        // A Dialog's own window already excludes the status bar by
-                        // default (unlike the plain-Box overlay this replaced, which
-                        // needed its own statusBarsPadding() to keep Close from
-                        // rendering under the clock/battery icons -- confirmed live
-                        // that this is no longer needed here: the button already
-                        // clears the status bar with no extra modifier).
-                        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd)) { Text("Close") }
+                        // decorFitsSystemWindows = false above means this window no
+                        // longer clears the status bar for free (see the class doc) --
+                        // without this, Close renders under the clock/battery icons
+                        // again, the same problem the pre-Dialog Box overlay had.
+                        TextButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding(),
+                        ) { Text("Close") }
                     }
                 }
             }
