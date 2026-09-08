@@ -595,6 +595,67 @@ and `Mp4BoxEditor`'s own cases above.
 
 ---
 
+## 2.19 — Runtime permission onboarding
+
+**Goal.** Actually request the runtime permissions backup needs, instead of only
+declaring them. Two concrete gaps this closes: `POST_NOTIFICATIONS` (declared since
+2.10, never requested, so neither the upload-progress nor the `NeedsUnlock` notification
+could show on API 33+) and `ACCESS_MEDIA_LOCATION` (not declared at all, so
+`ContentResolver` was silently handing back MediaStore originals with GPS already
+redacted — see "Runtime permissions" in `android.md` for why that's not just a
+notification cosmetic issue: it's the mechanism 2.18's `LocationStripper` and the offset
+ladder's GPS-delta rung both need real location to reach the app at all).
+
+**Files.** `ui/onboarding/PermissionOnboardingScreen.kt` (new), `MainActivity.kt`,
+`sync/AndroidMediaStoreSource.kt`, `ui/settings/PrivacyScreen.kt`,
+`ui/reviewer/ReviewerSettingsScreen.kt`, `AndroidManifest.xml`.
+
+**Details.**
+- `PermissionOnboardingScreen(includeNotifications, content)`: gates `content` behind
+  whichever of three permissions aren't yet granted, one rationale screen per
+  permission (Android only shows one system dialog at a time regardless). Computed once
+  per entry from live `ContextCompat.checkSelfPermission` state — no persisted "already
+  asked" flag anywhere, so a decline is free to ask again on a later, genuinely fresh
+  launch rather than being remembered as settled forever.
+- Wired into `MainActivity.kt` in two places: around `TimelineScreen` (after `unlocked`,
+  `includeNotifications = true` — this is the first point Sync/notifications actually
+  matter) and around `ReviewerPreviewScreen` (`includeNotifications = false` — preview
+  mode never uploads). The preview-mode placement is deliberate, not just for a Play
+  reviewer to see the same rationale a real user does: `MediaStoreSource` cannot see
+  anything beyond files this app itself created without the media-library permission
+  either, so preview mode was silently non-functional before this without it.
+- `ACCESS_MEDIA_LOCATION` step offers "Don't allow" as its own button, not just the
+  system dialog's — denying it is a legitimate, encouraged per-device alternative to
+  Settings > Privacy's "Strip location from uploads" (owner-level, synced across every
+  device), not merely a fallback. `PrivacyScreen` explains the distinction and links to
+  the app's system permission settings; `ReviewerSettingsScreen`'s inert Privacy section
+  gets one added sentence pointing at the real permission prompt the reviewer already
+  saw on the way in.
+- `AndroidMediaStoreSource.openInputStream`: calls `MediaStore.setRequireOriginal(uri)`
+  only when `ACCESS_MEDIA_LOCATION` is actually held at read time (calling it without
+  the permission throws `UnsupportedOperationException` on open, rather than degrading
+  gracefully), falling back to the ordinary redacted `Uri` otherwise. This is what makes
+  granting the permission actually do something — holding it without this change would
+  have kept reading redacted originals regardless.
+- `AndroidManifest.xml`: add `ACCESS_MEDIA_LOCATION` (API 29+; not needed below it,
+  since pre-scoped-storage reads were never redacted).
+
+**Done when.** A fresh install reaching the timeline for the first time is asked for
+media library access, then (API 29+) media location, then (API 33+) notifications, in
+that order, one system dialog at a time; declining media location via the screen's own
+"Don't allow" button never shows the system dialog at all and leaves the permission
+denied. Reviewer preview mode shows the same media-library/media-location screens
+(no notifications step) and can list real device photos afterward — confirmed it
+couldn't before, since nothing previously requested that permission anywhere in the app.
+`ACCESS_MEDIA_LOCATION`, once granted, results in `ExifExtractor` seeing real GPS tags
+from a fixture JPEG's EXIF — confirmed by code inspection of the `setRequireOriginal`
+gating in `AndroidMediaStoreSource`, not a live device run (this environment has no
+attached device/emulator; see STATUS.md for exactly what was and wasn't verified).
+`:app:assembleDebug` and `:app:testDebugUnitTest`/`:core:crypto:testDebugUnitTest` pass
+unchanged.
+
+---
+
 ## Deliberately not in the MVP
 
 Video playback, albums, favourites, people, free-text search, sharing, multi-instance,

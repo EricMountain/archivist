@@ -20,6 +20,17 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- Plan step 2.19: on API 29+, ContentResolver hands back MediaStore originals
+         with GPS location already redacted — from EXIF and from video location boxes
+         alike — unless the app both holds this and calls
+         MediaStore.setRequireOriginal(uri). Needed for the offset ladder's GPS-delta
+         rung and for real location to reach LocationStripper/Mp4BoxEditor (2.18) at
+         all; denying it is also the per-device alternative to "Strip location from
+         uploads" described in PrivacyScreen — see android.md's "Runtime permissions"
+         and "Stripping location on upload". Doesn't exist before API 29, and isn't
+         needed below it either, since pre-scoped-storage reads were never redacted. -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
     <!-- Plan step 2.10: the upload worker runs as a foreground service (via
          WorkManager's own SystemForegroundService) so Android doesn't kill it
          mid-transfer. POST_NOTIFICATIONS is declared but not requested at runtime

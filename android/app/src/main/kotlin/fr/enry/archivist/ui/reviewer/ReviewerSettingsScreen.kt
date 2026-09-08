@@ -81,7 +81,9 @@ fun ReviewerSettingsScreen(
                 title = "Privacy",
                 body = "Strip location from uploads lives here once you've connected to a real instance — " +
                     "it's a setting shared by every device backing up to your library, so preview mode (no " +
-                    "library, no server) has nothing to show or save.",
+                    "library, no server) has nothing to show or save. The photo/video location permission " +
+                    "prompt you may have seen on the way in here is real, though — see Settings on this " +
+                    "device for what denying it does.",
                 onBack = { destination = null },
                 modifier = modifier,
             )

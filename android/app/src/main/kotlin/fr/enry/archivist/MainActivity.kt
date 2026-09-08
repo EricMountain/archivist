@@ -23,6 +23,7 @@ import fr.enry.archivist.ui.onboarding.ConnectScreen
 import fr.enry.archivist.ui.onboarding.ConnectUiState
 import fr.enry.archivist.ui.onboarding.ConnectViewModel
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
+import fr.enry.archivist.ui.onboarding.PermissionOnboardingScreen
 import fr.enry.archivist.ui.onboarding.SignInScreen
 import fr.enry.archivist.ui.reviewer.ReviewerPreviewScreen
 import fr.enry.archivist.ui.theme.ArchivistTheme
@@ -64,13 +65,19 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                         // (plan step 2.14's Account > sign out / delete account) resets
                         // both local flags so the next recomposition falls through to
                         // SignInScreen, same as a fresh launch.
-                        TimelineScreen(
-                            onSessionEnded = {
-                                unlocked = false
-                                signedIn = false
-                            },
-                            modifier = Modifier.padding(innerPadding),
-                        )
+                        //
+                        // Plan step 2.19: media/notification permissions are asked here,
+                        // after registration and key unlock, not any earlier -- this is
+                        // the first point backup/sync actually needs them.
+                        PermissionOnboardingScreen(includeNotifications = true, modifier = Modifier.padding(innerPadding)) {
+                            TimelineScreen(
+                                onSessionEnded = {
+                                    unlocked = false
+                                    signedIn = false
+                                },
+                                modifier = Modifier.padding(innerPadding),
+                            )
+                        }
 
                     signedIn ->
                         EnrolmentScreen(onUnlocked = { unlocked = true }, modifier = Modifier.padding(innerPadding))
@@ -94,8 +101,16 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
             // Plan step 2.17: structurally parallel to Connected above, not a branch of
             // it — this path touches neither `signedIn` nor `unlocked`, and nothing
             // reachable from ReviewerPreviewScreen can construct a network client at all.
+            //
+            // Plan step 2.19: preview mode needs the media-library permission just as
+            // much as a real session does -- MediaStoreSource can't see anything beyond
+            // this app's own files without it -- and showing the same rationale here is
+            // also what puts it in front of a Play reviewer. No notifications step:
+            // preview mode never uploads, so there's nothing to notify about.
             ConnectUiState.ReviewerPreview ->
-                ReviewerPreviewScreen(onExit = connectViewModel::exitReviewerPreview, modifier = Modifier.padding(innerPadding))
+                PermissionOnboardingScreen(includeNotifications = false, modifier = Modifier.padding(innerPadding)) {
+                    ReviewerPreviewScreen(onExit = connectViewModel::exitReviewerPreview, modifier = Modifier.padding(innerPadding))
+                }
         }
     }
 }

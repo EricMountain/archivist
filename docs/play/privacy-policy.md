@@ -98,11 +98,21 @@ an account" (see above). Archivist only uploads from folders you have selected, 
 preview mode never uploads anything at all. Denying this prevents backup, and the
 preview screen, from working.
 
+**Photo & video location (`ACCESS_MEDIA_LOCATION`)** — a separate, optional permission
+that only governs whether Archivist can read the location a camera already recorded
+inside a photo or video's own metadata. **You can deny this.** Doing so does not stop
+backup: Android hands every app, Archivist included, copies of your photos and videos
+with that location already removed, and there is nothing further for the app to do. If
+you allow it, that location is uploaded encrypted along with everything else, unless
+your library owner has separately turned on "Strip location from uploads" in Settings,
+which removes it from every device's uploads regardless of this permission.
+
 **Notifications** — to show upload progress and let you stop a running backup.
 
-Archivist never requests location permission and never reads your device's GPS. The only
-location data involved is what your camera already wrote into a photo, and that is
-encrypted before upload.
+Archivist never requests permission to read your device's live location
+(`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`) and never reads GPS in real time. The
+only location data involved is what your camera already wrote into a photo or video —
+governed by the separate permission above — and it is encrypted before upload.
 
 ## Data stored on your device
 

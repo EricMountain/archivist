@@ -1,10 +1,13 @@
 package fr.enry.archivist.sync
 
+import android.Manifest
 import android.content.ContentUris
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.FileNotFoundException
 import java.io.InputStream
@@ -84,9 +87,30 @@ class AndroidMediaStoreSource
                 result
             }
 
-        override fun openInputStream(contentUri: String): InputStream =
-            context.contentResolver.openInputStream(Uri.parse(contentUri))
-                ?: throw FileNotFoundException(contentUri)
+        /**
+         * Plan step 2.19: `setRequireOriginal` is what actually bypasses API 29+'s
+         * location redaction — holding `ACCESS_MEDIA_LOCATION` alone does nothing to a
+         * plain [Uri.parse]'d read, which keeps coming back with GPS EXIF/video location
+         * boxes already zeroed by the platform. Only request the original when the
+         * permission is actually granted: calling `setRequireOriginal` without it throws
+         * `UnsupportedOperationException` on the subsequent open, rather than falling
+         * back gracefully — so a device that denied the permission (see `PrivacyScreen`'s
+         * mention of this as the per-device alternative to "Strip location from
+         * uploads") must keep reading the ordinary, already-redacted `Uri`.
+         */
+        override fun openInputStream(contentUri: String): InputStream {
+            val uri = Uri.parse(contentUri)
+            val requested =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    MediaStore.setRequireOriginal(uri)
+                } else {
+                    uri
+                }
+            return context.contentResolver.openInputStream(requested) ?: throw FileNotFoundException(contentUri)
+        }
 
         /**
          * API 30+ (`MediaStore.createDeleteRequest`, added in R): always returns one

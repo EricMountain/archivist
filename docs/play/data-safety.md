@@ -76,6 +76,13 @@ ciphertext.
 Approximate location is declared alongside precise, since a coordinate trivially yields
 one.
 
+This is gated by `ACCESS_MEDIA_LOCATION`, a runtime permission a user can deny per
+device (see `docs/design/android.md`'s "Runtime permissions") — denying it means this
+particular device never reads real GPS at all, so nothing to collect from it. That's a
+per-user, per-device fact the Data Safety form has no field for; it doesn't change the
+app-level "Yes" answer above, which describes what the app does when a user does allow
+it.
+
 ### Photos and videos — collected, but not readable by us
 
 The form has no "end-to-end encrypted" option, so photos must be declared as collected

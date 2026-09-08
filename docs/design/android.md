@@ -95,6 +95,12 @@ implementation — a Photo Picker–only app cannot do unattended sync at all, s
 product would change. The local-tombstone design depends on this too: skipping an
 already-deleted file during a scan presupposes scanning.
 
+`ACCESS_MEDIA_LOCATION` is a separate, ordinary dangerous permission, not believed to be
+covered by this same Photos and Video Permissions declaration (only the broad
+image/video read permissions are) — unconfirmed against a real Play Console submission,
+but nothing in Google's policy text ties it to that process. See "Runtime permissions"
+below for what it's for.
+
 ## Stack
 
 | Concern | Choice | Why this one |
@@ -195,6 +201,79 @@ recomputation regardless of the file's box order.
 is never touched** — only the uploaded copy loses its location — since "strip
 location" read the other way sounds like it edits the file sitting in the phone's own
 gallery.
+
+### Runtime permissions
+
+Requested once, in `PermissionOnboardingScreen`, right after sign-in and key unlock —
+not any earlier, since nothing before that point needs them — and not gated behind a
+persisted "already asked" flag. A denial (of the system dialog, or of the app's own
+rationale screen) must be free to ask again on a later, genuinely fresh app launch
+rather than being remembered as settled forever; the screen recomputes what's still
+missing from live `ContextCompat.checkSelfPermission` state every time it's entered, and
+stores nothing of its own. The same screens run in reviewer preview mode too, minus the
+notification step preview never needs (preview mode never uploads anything) — that's
+both what puts them in front of a Play reviewer and what actually lets `MediaStoreSource`
+see anything there at all: see "Media permissions" above — without one of
+`READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`/`READ_EXTERNAL_STORAGE`, a MediaStore query only
+ever returns files this app itself created, which is none, since it never takes photos.
+Their answers in preview mode carry over exactly as far as the OS permission grant
+itself does — a real grant is a real grant regardless of which flow asked for it, but a
+decline there leaves nothing recorded to block asking again once a real account exists.
+
+Three permissions, requested as three separate steps since Android only ever shows one
+system dialog at a time regardless of how many are asked together:
+
+* **`READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`** (API 33+) or **`READ_EXTERNAL_STORAGE`**
+  (28–32) — core function; declining just means Sync's folder list comes up empty.
+* **`ACCESS_MEDIA_LOCATION`** (API 29+; doesn't exist below it, and isn't needed there
+  either, since pre-scoped-storage reads were never redacted in the first place).
+  Without it, `ContentResolver` hands back MediaStore originals with GPS location
+  already zeroed — in EXIF *and* in video location boxes alike — for every read, by
+  every app that lacks it, regardless of what that app's own code does. That's the
+  platform mechanism the offset ladder's GPS-delta rung and `LocationStripper`/
+  `Mp4BoxEditor` (2.18) both depend on for real location to reach the app at all:
+  `AndroidMediaStoreSource.openInputStream` only calls `MediaStore.setRequireOriginal
+  (uri)` when the permission is actually held at read time, falling back to the
+  ordinary (redacted) `Uri` otherwise — calling `setRequireOriginal` without holding the
+  permission throws `UnsupportedOperationException` on open rather than degrading
+  gracefully, so the fallback has to be deliberate, not just an oversight this crashes
+  loudly enough to catch.
+
+  **Denying it is a legitimate, encouraged choice, not merely a fallback for someone who
+  taps the wrong button.** The onboarding step offers "Don't allow" as its own button
+  alongside the system dialog's, and Settings > Privacy explains it as a stronger,
+  per-device alternative to "Strip location from uploads": that switch is an
+  owner-level policy, synced via `GET`/`PATCH /settings` and applied to every device
+  backing up to the library, whereas denying this permission is a phone-level guarantee
+  the OS enforces below the app entirely — no app-level scrubbing logic to trust — but
+  it covers only this one device, and it means this device can never resolve a photo's
+  timestamp from its GPS fix either, since the app never sees the coordinate in the
+  first place. **The two aren't substitutes for each other**: an owner who wants
+  location removed from *every* device's uploads still needs the switch (a different
+  device could still hold this permission and upload real coordinates); someone who
+  doesn't trust the app with their own coordinates, even transiently, can additionally
+  deny this on just their own phone regardless of what the owner's switch says.
+* **`POST_NOTIFICATIONS`** (API 33+) — for the upload-progress foreground notification
+  and the `notifyWhenUploadNeedsUnlock` alert (see "Upload pipeline" above). Declared in
+  the manifest since plan step 2.10 but, until this step, never actually requested —
+  meaning neither notification could show on API 33+ regardless of the manifest
+  declaration, since a declared-but-unrequested dangerous permission is never granted.
+
+Nothing else needs a runtime prompt. `INTERNET`, `ACCESS_NETWORK_STATE`,
+`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC` are normal/install-time permissions
+Android grants automatically at install, with no dialog. No location permission is
+requested either: `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` govern live device
+location, which this app never reads — only EXIF- and box-embedded GPS already sitting
+in existing files, which `ACCESS_MEDIA_LOCATION` alone governs. Key unlock's
+device-credential confirmation (`KeyguardManager.createConfirmDeviceCredentialIntent`,
+see "Auth and key unlock" below) isn't a permission dialog either — no `uses-permission`
+backs it.
+
+**Not handled yet**: a user who picks "Select photos…" on API 34+ instead of "Allow
+all" gets `READ_MEDIA_VISUAL_USER_SELECTED` — a real grant, just a narrower one than
+unattended folder sync assumes. The app doesn't currently detect this case or offer
+`ACTION_USER_SELECT_IMAGES` to widen it; a folder scan under partial access will just
+find fewer files than the user expects, silently, rather than explaining why.
 
 ### Decrypting for display
 
