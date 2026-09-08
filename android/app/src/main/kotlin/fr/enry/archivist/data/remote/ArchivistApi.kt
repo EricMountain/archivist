@@ -464,6 +464,12 @@ data class PostUploadResponse(
     val skipped: Boolean? = null,
     val created: Boolean? = null,
     val resumed: Boolean? = null,
+    /** Attach-only: whether this rendition just became the asset's primary one.
+     * The server persists `#META.thumbs` to match exactly when this is true, so
+     * it's now both safe and necessary for the client to also PUT to
+     * [thumbUploads] — see [fr.enry.archivist.data.repo.UploadRepository]. Absent
+     * (null) on the `created`/`resumed` shapes, where it's meaningless. */
+    val becomesPrimary: Boolean? = null,
     val encDek: String? = null,
     val encKeyId: String? = null,
     /** Set only when [resumed] is true — the rendition's own `encIv`/`encChunkSize`

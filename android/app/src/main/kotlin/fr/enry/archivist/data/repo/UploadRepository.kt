@@ -100,11 +100,14 @@ private const val STREAMING_CHUNK_SIZE = 1_048_576L
  * - neither: attached to a *different*, already-existing asset (e.g. a RAW+JPEG
  *   stem match). The candidate is entirely wrong (bound to a photoId/DEK this asset
  *   never used) and discarded; only the original rendition is re-encrypted under the
- *   real DEK and PUT. Thumbnails are deliberately **not** re-uploaded here — the
- *   server doesn't record `#META.thumbs` on a plain attach even when this rendition
- *   becomes primary (a known, separate gap; see this step's STATUS.md note), so
- *   PUTting them would silently overwrite a *different*, still-correctly-referenced
- *   thumbnail object with ciphertext under a mismatched IV.
+ *   real DEK and PUT. Thumbnails are only re-encrypted and re-uploaded when the
+ *   response's `becomesPrimary` is true — that's the one case `uploads.ts`'s
+ *   `attachAndRespond` also persists `#META.thumbs` to match, e.g. a JPEG attaching
+ *   after its RAW sibling already created the asset (raw formats this client can't
+ *   decode create an asset with no thumbnails at all otherwise, permanently). When
+ *   `becomesPrimary` is false, these thumbs are encrypted under a *different*,
+ *   still-correctly-referenced rendition's descriptors, and PUTting them would
+ *   silently overwrite what `#META.thumbs` actually points at — so they're skipped.
  *
  * See "Resuming an interrupted upload" and "Why the client gets to propose a photoId"
  * in design.md for the server-side half of this.
@@ -382,10 +385,16 @@ class UploadRepository
                     // off *this same request's body* regardless of create-vs-attach --
                     // so whatever candidateIv/chunkSize this call already sent is
                     // exactly what the server just committed, and must be reused, not
-                    // regenerated.
+                    // regenerated. Thumbnails are only safe to (re-)upload when this
+                    // rendition just became primary -- the server only persists
+                    // #META.thumbs to match in that case (see attachAndRespond in
+                    // uploads.ts); otherwise these thumbs are encrypted under a
+                    // different, still-correctly-referenced rendition's descriptors
+                    // and PUTting them would silently overwrite what #META.thumbs
+                    // actually points at.
                     effectiveChunkSize = chunkSize
                     iv = candidateIv
-                    uploadThumbs = false
+                    uploadThumbs = response.becomesPrimary == true
                 }
             }
 

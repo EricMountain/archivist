@@ -375,6 +375,52 @@ class UploadRepositoryTest {
         }
 
     // ------------------------------------------------------------------
+    // attached to a different, already-existing asset, but this rendition
+    // becomes primary (e.g. a JPEG attaching after its RAW sibling already
+    // created the asset): the server persists #META.thumbs to match, so
+    // thumbnails must be re-encrypted (under the real DEK, reusing each
+    // thumbnail's own already-sent IV) and PUT too.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `attach that becomes primary -- also re-encrypts and PUTs the thumbnails`() =
+        runTest {
+            connectInstance()
+            val queueId = queueRow()
+
+            val realDek = ByteArray(32) { (it + 3).toByte() }
+            val realEncDek = encode(masterKey.wrapDek(realDek))
+            val photoId = "01ARZ3NDEKTSV4RRFFQ69G5FAZ"
+
+            uploadResponseBody =
+                """{"photoId":"$photoId","renditionId":"r3","created":false,"becomesPrimary":true,
+                |"encDek":"$realEncDek","encKeyId":"mk-1",
+                |${originalUploadJson("orig")},${thumbUploadsJson("t")}}
+                """.trimMargin().replace("\n", "")
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            val row = db.uploadQueueDao().getById(queueId)!!
+            assertEquals(UploadState.DONE, row.state)
+
+            assertTrue(recordedBodies.keys.any { it.startsWith("/media/orig") })
+            assertTrue(recordedBodies.keys.any { it.startsWith("/thumb/256") })
+
+            // Re-encrypted under the real DEK, reusing the same IV this same request
+            // already sent for that thumbnail (not a fresh one) -- exactly what
+            // #META.thumbs[256].iv now claims decrypts it, per uploads.ts's
+            // attachAndRespond persisting it from this call's own descriptors.
+            val sentBody = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+            val thumbsSent = sentBody["thumbs"]!!.jsonObject
+            val thumbIv = decode(thumbsSent["256"]!!.jsonObject.string("iv"))
+            val thumbCiphertext = recordedBodies.entries.single { it.key.startsWith("/thumb/256") }.value
+            val thumbPlaintext =
+                WholeObjectCipher.decrypt(realDek, thumbIv, Aad.of(photoId, ObjectRef.Thumbnail(256)), thumbCiphertext)
+            assertArrayEquals(byteArrayOf(0x00, 0x01), thumbPlaintext)
+        }
+
+    // ------------------------------------------------------------------
     // skipped: true (a purge tombstone) -- no PUT at all, a local tombstone instead.
     // ------------------------------------------------------------------
 

@@ -557,11 +557,18 @@ an optional client-minted `photoId` (a ULID) and uses it exactly when this asset
 out to be new; the response's `created` flag says whether that happened, and echoes back
 whichever `encDek`/`encKeyId` is now authoritative (the client's own, if `created`; the
 existing asset's, if not). On attach, the client's candidate is discarded along with
-whatever it pre-encrypted against it — which is fine for thumbnails/EXIF specifically
-because neither is persisted on an attach today regardless (see plan step 2.10's
-STATUS.md note), but it does mean an attaching rendition's original bytes must be
-re-encrypted, after the fact, under the real `photoId`/DEK before they're streamed to
-`originalUpload.url`.
+whatever it pre-encrypted against it, and an attaching rendition's original bytes must
+be re-encrypted, after the fact, under the real `photoId`/DEK before they're streamed
+to `originalUpload.url`. Thumbnails/EXIF are handled the same way *except* when the
+attach also makes this rendition primary (JPEG attaching after its RAW sibling already
+created the asset, say): `attachAndRespond` then persists `#META.thumbs` from this
+call's fresh descriptors, same as a create or resume does, and echoes `becomesPrimary:
+true` so the client knows it's safe (and necessary — the previous primary may have had
+no thumbnails at all, e.g. a raw format the client can't decode) to re-encrypt and PUT
+them too. When the attach does *not* become primary, `#META.thumbs` is left alone and
+the client must not PUT to `thumbUploads` — those thumbs are encrypted under a
+different, still-correctly-referenced rendition's descriptors, and overwriting the
+object they point at would corrupt it.
 
 **Resuming an interrupted upload.** The hash/stem pointers commit before any ciphertext
 is sent, so a live hash-duplicate can point at an asset still `status: processing` —
@@ -571,11 +578,13 @@ retry with — the asset would otherwise be stuck in `processing` forever): it r
 the same deterministic S3 keys, re-records `#META.thumbs` from this call's fresh
 descriptors, and responds `resumed: true` alongside the same `encDek`/`encKeyId`/
 `created: false` shape an attach uses, so the client's handling is identical either way
-except that a `resumed` response is safe to also re-upload thumbnails against (the
-attach case isn't, until `#META.thumbs` is kept in sync with a later-arriving primary
-rendition too — a known, separate gap; see plan step 2.10's STATUS.md note). Only
-`status: ready` still gets the bare `duplicate: true` short-circuit, since there's
-nothing left to finish.
+except that a `resumed` response is always safe to also re-upload thumbnails against
+(an attach only is when `becomesPrimary` says so — see above). Only `status: ready`
+still gets the bare `duplicate: true` short-circuit, since there's nothing left to
+finish; `status: failed` (a declared/actual size mismatch on a previous attempt — see
+"S3 event handling") is treated exactly like `processing` here, not like `ready` —
+nothing else ever moves an asset off `failed`, so a bare `duplicate: true` would strand
+it permanently, the same stuck-forever problem this paragraph exists to avoid.
 
 The conditional put also settles the race when a RAW and a JPEG upload concurrently:
 one creates the asset, the loser re-reads the pointer and attaches. No locking, and the

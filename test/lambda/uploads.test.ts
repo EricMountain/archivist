@@ -187,6 +187,79 @@ describe.skipIf(!RUN)("POST /uploads — client-supplied photoId (plan step 2.10
     expect(meta?.encDek).toBe("dek-original"); // unchanged by the attach
   });
 
+  it("an attach that becomes primary persists #META.thumbs from its own descriptors and reports becomesPrimary: true", async () => {
+    const { userId, ownerId } = await newOwner();
+    const stem = `2026/uploads-test/${newUlid()}`;
+
+    // RAW first: a format this client can't decode, so it creates the asset
+    // with no thumbnails at all (thumbs omitted) -- exactly the case that used
+    // to leave #META.thumbs empty forever once the JPEG below took over as
+    // primary, since attachAndRespond never persisted anything for an attach.
+    const rawCandidate = newUlid();
+    const first = await postUpload(
+      uploadReq(ownerId, userId, baseUploadBody({ path: `${stem}.cr3`, photoId: rawCandidate })),
+    );
+    expect(first.body).toMatchObject({ created: true });
+    const beforeAttach = await getAssetPartition(ownerId, rawCandidate);
+    expect(beforeAttach.meta?.thumbs).toEqual({});
+
+    const second = await postUpload(
+      uploadReq(
+        ownerId,
+        userId,
+        baseUploadBody({
+          path: `${stem}.jpg`,
+          photoId: newUlid(),
+          thumbs: { "256": { bytes: 42, iv: "thumb-iv" } },
+        }),
+      ),
+    );
+    expect(second.body).toMatchObject({ photoId: rawCandidate, created: false, becomesPrimary: true });
+    expect((second.body as { thumbUploads?: Record<string, string> }).thumbUploads?.["256"]).toBeTruthy();
+
+    const { meta } = await getAssetPartition(ownerId, rawCandidate);
+    expect(meta?.thumbs).toMatchObject({ "256": { iv: "thumb-iv", bytes: 42 } });
+  });
+
+  it("an attach that doesn't become primary reports becomesPrimary: false and leaves #META.thumbs untouched", async () => {
+    const { userId, ownerId } = await newOwner();
+    const stem = `2026/uploads-test/${newUlid()}`;
+
+    // JPEG first: becomes (and stays) primary, with its own real thumbnails.
+    const jpegCandidate = newUlid();
+    const first = await postUpload(
+      uploadReq(
+        ownerId,
+        userId,
+        baseUploadBody({
+          path: `${stem}.jpg`,
+          photoId: jpegCandidate,
+          thumbs: { "256": { bytes: 42, iv: "jpeg-thumb-iv" } },
+        }),
+      ),
+    );
+    expect(first.body).toMatchObject({ created: true });
+
+    // RAW attaches after: lower-ranked role, never displaces the JPEG as
+    // primary, so its own (different) thumbnail descriptors must not
+    // overwrite the JPEG's still-correctly-referenced ones.
+    const second = await postUpload(
+      uploadReq(
+        ownerId,
+        userId,
+        baseUploadBody({
+          path: `${stem}.cr3`,
+          photoId: newUlid(),
+          thumbs: { "256": { bytes: 99, iv: "raw-thumb-iv" } },
+        }),
+      ),
+    );
+    expect(second.body).toMatchObject({ photoId: jpegCandidate, created: false, becomesPrimary: false });
+
+    const { meta } = await getAssetPartition(ownerId, jpegCandidate);
+    expect(meta?.thumbs).toMatchObject({ "256": { iv: "jpeg-thumb-iv", bytes: 42 } });
+  });
+
   it("rejects a photoId that isn't a ULID", async () => {
     const { userId, ownerId } = await newOwner();
     const body = baseUploadBody({ photoId: "not-a-ulid" });
@@ -234,6 +307,35 @@ describe.skipIf(!RUN)("POST /uploads — resuming an interrupted upload (plan st
       // transaction and must come back unchanged, not regenerated — a resuming
       // client has to reuse them bit-for-bit or its ciphertext won't match what
       // this item already (permanently) claims decrypts it.
+      encIv: "iv",
+      encChunkSize: 0,
+    });
+    expect((retry.body as { originalUpload?: { url: string } }).originalUpload?.url).toBeTruthy();
+  });
+
+  it("re-uploading the same content after a failed landing re-presigns instead of a bare duplicate", async () => {
+    const { userId, ownerId } = await newOwner();
+    const body = baseUploadBody({ encDek: "dek-original", encKeyId: "mk-original" });
+
+    const first = await postUpload(uploadReq(ownerId, userId, body));
+    const { photoId, renditionId } = first.body as { photoId: string; renditionId: string };
+
+    // Simulates the S3-event Lambda (plan step 1.10) finding a declared/actual
+    // size mismatch: a corrupted or truncated PUT, not a client that never
+    // retried at all. A `failed` asset is exactly as stuck as `processing` --
+    // nothing else ever moves it off `failed` -- so it must resume too, not
+    // fall into the bare `duplicate: true` short-circuit meant only for `ready`.
+    const { setAssetStatus } = await import("../../src/core/repo/media");
+    await setAssetStatus(ownerId, photoId, "failed");
+
+    const retry = await postUpload(uploadReq(ownerId, userId, body));
+    expect(retry.body).toMatchObject({
+      photoId,
+      renditionId,
+      resumed: true,
+      created: false,
+      encDek: "dek-original",
+      encKeyId: "mk-original",
       encIv: "iv",
       encChunkSize: 0,
     });

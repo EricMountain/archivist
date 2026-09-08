@@ -72,7 +72,8 @@ interface UploadBody {
    * When this upload instead attaches to an existing asset, the candidate is discarded
    * in favour of the existing photoId/DEK (echoed back as `encDek`/`encKeyId`), and
    * whatever the client pre-encrypted against its candidate is simply never persisted
-   * — see 2.10's STATUS.md note on why thumbnails/EXIF aren't re-uploaded on attach. */
+   * — except thumbnails when the attach also becomes primary; see `attachAndRespond`'s
+   * `becomesPrimary` handling below. */
   photoId?: string;
 }
 
@@ -231,7 +232,16 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
     // different caller: same plaintext, so identical ciphertext once encrypted
     // under the returned encDek, and thumbs get re-recorded from *this* call's
     // descriptors same as a fresh create would.
-    if (target && target.status === "processing" && hashPtr.renditionId) {
+    //
+    // `status !== "ready"` (not `=== "processing"`): the S3-event Lambda (step
+    // 1.10) also sets `failed` on a declared/actual size mismatch, and a failed
+    // asset is exactly as stuck as a processing one — nothing else ever moves it
+    // off `failed`, so treating it as a bare duplicate here would strand it
+    // permanently (the DDB record exists, the object doesn't, GET /media/raw
+    // 403s forever). Found live: a corrupted/incomplete PUT flips status to
+    // failed, and every subsequent upload attempt with the same content hash
+    // then short-circuited as a duplicate instead of retrying.
+    if (target && target.status !== "ready" && hashPtr.renditionId) {
       return resumeUpload(ownerId, hashPtr.photoId, hashPtr.renditionId, body, target);
     }
     return ok({ photoId: hashPtr.photoId, renditionId: hashPtr.renditionId, duplicate: true });
@@ -449,7 +459,18 @@ async function attachAndRespond(args: AttachAndRespondArgs): Promise<ApiResponse
     ...(args.newGroupSrc ? { newGroupSrc: args.newGroupSrc } : {}),
   });
 
-  const { uploads } = await presignedThumbs(ownerId, existing.photoId, body.thumbs);
+  const { thumbs, uploads } = await presignedThumbs(ownerId, existing.photoId, body.thumbs);
+  // Closes the gap flagged in plan step 1.9/2.10's STATUS.md notes: an attach
+  // that becomes primary used to leave #META.thumbs pointing at the *previous*
+  // primary rendition's thumbnails (or, if that rendition never had any —
+  // e.g. a RAW file the client can't decode — at nothing at all), forever,
+  // since nothing here ever wrote fresh ones. Only safe to persist when this
+  // rendition actually becomes primary: otherwise these thumbs are encrypted
+  // under a different (correct, still-referenced) rendition's descriptors and
+  // must not overwrite what #META.thumbs already points at.
+  if (becomesPrimary && Object.keys(thumbs).length > 0) {
+    await setThumbs(ownerId, existing.photoId, thumbs);
+  }
 
   return ok({
     photoId: existing.photoId,
@@ -459,11 +480,11 @@ async function attachAndRespond(args: AttachAndRespondArgs): Promise<ApiResponse
     // candidate (thumbnails, exifEnc) is bound to the wrong AAD/key and must not be
     // uploaded. encDek/encKeyId are the *existing* asset's, wrapped under the same
     // master key version the client already holds — unwrap and re-encrypt the original
-    // rendition against these before streaming it to originalUpload.url. Note thumbUploads
-    // here is presigned but nothing re-persists #META.thumbs/exifEnc for this rendition
-    // even when it becomesPrimary — see STATUS.md's note on plan step 2.10 for why the
-    // client deliberately skips PUTting to these URLs.
+    // rendition against these before streaming it to originalUpload.url. becomesPrimary
+    // tells the client it's now both safe and necessary to also PUT to thumbUploads —
+    // #META.thumbs was just persisted to match, above.
     created: false,
+    becomesPrimary,
     encDek: existing.encDek,
     encKeyId: existing.encKeyId,
     originalUpload: {
