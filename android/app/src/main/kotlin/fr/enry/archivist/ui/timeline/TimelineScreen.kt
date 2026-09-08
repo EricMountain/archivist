@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -24,7 +26,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,14 +89,14 @@ fun TimelineScreen(
     val items = viewModel.timeline.collectAsLazyPagingItems()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
 
-    // See TimelineViewModel.uploadCompleted's own doc: the timeline has no other way to
-    // learn a queued file finished uploading -- Room's own Flow invalidation never
-    // fires here because the upload pipeline never writes to the `photos` table itself,
-    // only `refresh()` (which re-runs TimelineRemoteMediator's GET /photos) does.
-    val currentItems = rememberUpdatedState(items)
-    LaunchedEffect(viewModel) {
-        viewModel.uploadCompleted.collect { currentItems.value.refresh() }
-    }
+    // Hoisted above the selectedPhotoId branch below (rather than left for
+    // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so it
+    // survives a round trip through DetailScreen: a composable that leaves composition
+    // entirely -- which TimelineGrid does whenever DetailScreen is showing, since the
+    // `return` below skips over it -- has its own `remember`ed state discarded and
+    // recreated from scratch next time, which without this hoist reset scroll position
+    // to the top on every "open a photo, then back out".
+    val gridState = rememberLazyGridState()
 
     // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
     // state, not a nav-library back stack -- this app has none yet (see MainActivity's
@@ -120,7 +121,13 @@ fun TimelineScreen(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = { showSettings = true }) { Text("Settings") }
         }
-        TimelineGrid(items = items, host = host, onPhotoClick = { selectedPhotoId = it }, modifier = Modifier.weight(1f))
+        TimelineGrid(
+            items = items,
+            host = host,
+            gridState = gridState,
+            onPhotoClick = { selectedPhotoId = it },
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -136,6 +143,7 @@ fun TimelineScreen(
 private fun TimelineGrid(
     items: LazyPagingItems<TimelineItem>,
     host: String?,
+    gridState: LazyGridState,
     onPhotoClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -166,7 +174,7 @@ private fun TimelineGrid(
                 )
             }
 
-        else -> TimelineItemGrid(items, host, onPhotoClick, modifier)
+        else -> TimelineItemGrid(items, host, gridState, onPhotoClick, modifier)
     }
 }
 
@@ -174,11 +182,13 @@ private fun TimelineGrid(
 private fun TimelineItemGrid(
     items: LazyPagingItems<TimelineItem>,
     host: String?,
+    gridState: LazyGridState,
     onPhotoClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 96.dp),
+        state = gridState,
         modifier = modifier.fillMaxSize(),
     ) {
         items(

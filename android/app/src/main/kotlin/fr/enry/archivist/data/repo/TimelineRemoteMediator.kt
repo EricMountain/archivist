@@ -96,7 +96,8 @@ class TimelineRemoteMediator(
         archivistApiFactory.create(instance.host, instance.document.region, instance.document.cognito.clientId)
 }
 
-private fun photosUrl(apiBase: String) = "$apiBase/photos"
+/** Shared with [PhotoRepository.refreshLatest] — same endpoint, same URL shape. */
+internal fun photosUrl(apiBase: String) = "$apiBase/photos"
 
 private fun nowIso(): String = Instant.now().truncatedTo(ChronoUnit.MILLIS).toString()
 

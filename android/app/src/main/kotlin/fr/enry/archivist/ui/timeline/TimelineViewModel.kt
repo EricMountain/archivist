@@ -12,16 +12,19 @@ import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.UploadEvents
+import java.io.IOException
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import retrofit2.HttpException
 
 /** One grid cell — either a photo or a date header inserted ahead of the first photo
  * of a new *local* day (`tzOffsetMin`, not UTC — plan step 2.11's own "Done when").
@@ -101,11 +104,26 @@ class TimelineViewModel
                 .toTimelineItems()
                 .cachedIn(viewModelScope)
 
-        /** Fires once per finished upload -- see [UploadEvents]'s own doc for why the
-         * timeline needs this at all (unlike the queue screen, which observes
-         * `upload_queue` directly). [fr.enry.archivist.ui.timeline.TimelineScreen] collects
-         * this to call `LazyPagingItems.refresh()`, since that's what actually re-runs
-         * [fr.enry.archivist.data.repo.TimelineRemoteMediator]'s `GET /photos`, not just a
-         * local Room re-query. */
-        val uploadCompleted: SharedFlow<Unit> = uploadEvents.completed
+        init {
+            // See UploadEvents' own doc for why the timeline needs this at all (unlike
+            // the queue screen, which observes `upload_queue` directly): the upload
+            // pipeline never writes to the `photos` table itself, so nothing else here
+            // would ever notice a finished upload. PhotoRepository.refreshLatest's own
+            // doc covers why this calls that -- a plain Room upsert -- rather than
+            // `LazyPagingItems.refresh()`, which used to visibly reset scroll position
+            // to the top on every upload. IOException/HttpException are swallowed: a
+            // transient failure here just means this particular top-up is stale: the
+            // next append or an explicit refresh resyncs regardless, same as
+            // TimelineRemoteMediator's own offline-first behaviour.
+            uploadEvents.completed
+                .onEach {
+                    try {
+                        photoRepository.refreshLatest()
+                    } catch (e: IOException) {
+                        // offline -- see doc above.
+                    } catch (e: HttpException) {
+                        // server error -- see doc above.
+                    }
+                }.launchIn(viewModelScope)
+        }
     }
