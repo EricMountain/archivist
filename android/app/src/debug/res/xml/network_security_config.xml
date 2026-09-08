@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only (app/src/debug, never merged into release): every androidTest that talks
+  to a local MockWebServer — UploadWorkerInstrumentedTest, UploadPauseInstrumentedTest,
+  CrossDeviceReuploadInstrumentedTest, LoadTestInstrumentedTest — does so over plain
+  HTTP to localhost, which Android blocks by default for any app with targetSdkVersion
+  28+ (this app's targetSdk is 36), with no built-in exception for loopback addresses.
+  Without this, every such call fails immediately with "CLEARTEXT communication to
+  the host not permitted by network security policy", caught by
+  UploadRepository.uploadOne's IOException branch as an ordinary retryable network
+  error, which never changes the row's state away from UPLOADING and so never
+  converges to a terminal state — exactly the "row never reaches DONE or FAILED"
+  symptom the Gradle managed device's CI run hit deterministically. Found via a
+  throwaway diagnostic logging/logcat pass, not guessed; see docs/plans/STATUS.md.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
