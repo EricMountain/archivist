@@ -5,6 +5,13 @@
          Android doesn't kill the worker mid-transfer. -->
     <string name="upload_notification_channel_name">Backup</string>
     <string name="upload_notification_title">Backing up %1$s</string>
+    <!-- Queue depth: how many photos (including the one named in the title above)
+         are still waiting on this device, shown as the notification's content text
+         and again in Settings > Sync. -->
+    <plurals name="upload_queue_depth">
+        <item quantity="one">%1$d photo left to upload</item>
+        <item quantity="other">%1$d photos left to upload</item>
+    </plurals>
 
     <!-- 2026-09-07: low-priority nudge shown when queued uploads can't proceed because
          the master key isn't in memory (e.g. right after sign-in on a fresh install, or

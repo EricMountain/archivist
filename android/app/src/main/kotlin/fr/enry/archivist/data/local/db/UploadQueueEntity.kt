@@ -171,6 +171,12 @@ interface UploadQueueDao {
     @Query("SELECT * FROM upload_queue WHERE state != :state ORDER BY createdAt ASC")
     fun observePending(state: UploadState = UploadState.DONE): Flow<List<UploadQueueEntity>>
 
+    /** Same rows as [observePending] (everything not yet [UploadState.DONE]), as a live
+     * count rather than the full rows — the "queue depth" [fr.enry.archivist.sync.UploadWorker]'s
+     * progress notification and Settings > Sync show don't need anything but the number. */
+    @Query("SELECT COUNT(*) FROM upload_queue WHERE state != :state")
+    fun observeRemainingCount(state: UploadState = UploadState.DONE): Flow<Int>
+
     @Query("SELECT * FROM upload_queue WHERE contentHash = :contentHash LIMIT 1")
     suspend fun getByContentHash(contentHash: String): UploadQueueEntity?
 

@@ -199,12 +199,15 @@ class UploadWorker
          * files can run long in aggregate too, and there's no reliable way to know a
          * file is "large" before [UploadRepository] has already read it. Shared between
          * [foregroundInfo] and [postProgressNotification] — same content either way,
-         * only how it's delivered to the system differs. */
+         * only how it's delivered to the system differs. Content text is the queue
+         * depth ([UploadQueueDao.observeRemainingCount]) — how many photos, this one
+         * included, are still waiting — same number Settings > Sync shows. */
         private suspend fun buildProgressNotification(queueId: Long): Notification {
             val context = applicationContext
             createNotificationChannelIfNeeded(context)
 
             val displayName = uploadQueueDao.getById(queueId)?.displayName ?: context.getString(R.string.app_name)
+            val remaining = uploadQueueDao.observeRemainingCount().first()
             val openApp =
                 PendingIntent.getActivity(
                     context,
@@ -214,6 +217,7 @@ class UploadWorker
                 )
             return NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
                 .setContentTitle(context.getString(R.string.upload_notification_title, displayName))
+                .setContentText(context.resources.getQuantityString(R.plurals.upload_queue_depth, remaining, remaining))
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setOngoing(true)
                 .setContentIntent(openApp)

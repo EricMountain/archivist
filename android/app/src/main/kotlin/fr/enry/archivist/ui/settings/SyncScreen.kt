@@ -14,9 +14,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import fr.enry.archivist.R
 
 /**
  * Plan step 2.14's Settings > Sync section — network policy and charging requirement on
@@ -30,9 +32,21 @@ fun SyncScreen(
     viewModel: SyncViewModel = hiltViewModel(),
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val queueDepth by viewModel.queueDepth.collectAsStateWithLifecycle()
 
     Column(modifier.fillMaxSize()) {
         TextButton(onClick = onBack) { Text("← Back") }
+        Text(
+            text =
+                if (queueDepth == 0) {
+                    "All photos uploaded"
+                } else {
+                    pluralStringResource(R.plurals.upload_queue_depth, queueDepth, queueDepth)
+                },
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        HorizontalDivider()
         SettingsSwitchRow(
             title = "Upload on any network",
             subtitle = "Otherwise uploads wait for Wi-Fi",
