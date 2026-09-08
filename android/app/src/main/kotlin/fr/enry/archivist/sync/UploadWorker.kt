@@ -40,6 +40,13 @@ import kotlinx.coroutines.sync.withPermit
 private const val KEY_QUEUE_ID = "queueId"
 private const val NOTIFICATION_CHANNEL_ID = "uploads"
 
+/** Common tag on every [UploadWorker] request, existing solely so
+ * [WorkManagerUploadScheduler.cancelAll] can stop every enqueued-or-running upload in
+ * one call — [UploadWorker.uniqueWorkName] already gives each row its own unique work
+ * name for [UploadScheduler.cancel]'s per-row case, but WorkManager has no
+ * "cancel every unique work name matching a prefix", only cancel-by-tag. */
+private const val UPLOAD_WORK_TAG = "upload"
+
 /** One notification for the whole batch, deliberately shared across every concurrently
  * running [UploadWorker] rather than one id per file (tried, and reverted — see
  * `docs/plans/STATUS.md`'s 2026-09-08 notes on this file for the two failed shapes:
@@ -72,6 +79,12 @@ interface UploadScheduler {
      * else ever removes it) -- [fr.enry.archivist.ui.queue.QueueViewModel] deletes the
      * row itself right after calling this. */
     fun cancel(queueId: Long)
+
+    /** The Settings > Sync "Pause uploads" toggle's other half — cancels every
+     * enqueued-or-running upload job without touching `upload_queue` itself, unlike
+     * [cancel]: resuming needs [fr.enry.archivist.data.local.db.UploadQueueDao.getActiveIds]
+     * to still find these rows so it can re-[enqueueAll] them. */
+    fun cancelAll()
 }
 
 class WorkManagerUploadScheduler
@@ -80,10 +93,19 @@ class WorkManagerUploadScheduler
         @ApplicationContext private val context: Context,
         private val syncSettingsStore: SyncSettingsStore,
     ) : UploadScheduler {
-        override suspend fun enqueueAll(queueIds: List<Long>) =
-            UploadWorker.enqueueAll(context, queueIds, syncSettingsStore.settings.first())
+        /** The single seam every enqueue path goes through (a fresh scan, app
+         * startup's re-enqueue, a per-row retry) — so `uploadsPaused` gates all of
+         * them at once by simply declining to schedule anything, rather than each
+         * caller having to check the setting itself. */
+        override suspend fun enqueueAll(queueIds: List<Long>) {
+            val settings = syncSettingsStore.settings.first()
+            if (settings.uploadsPaused) return
+            UploadWorker.enqueueAll(context, queueIds, settings)
+        }
 
         override fun cancel(queueId: Long) = UploadWorker.cancel(context, queueId)
+
+        override fun cancelAll() = UploadWorker.cancelAll(context)
     }
 
 /**
@@ -294,6 +316,7 @@ class UploadWorker
                 settings: SyncSettings,
             ) = OneTimeWorkRequestBuilder<UploadWorker>()
                 .setInputData(workDataOf(KEY_QUEUE_ID to queueId))
+                .addTag(UPLOAD_WORK_TAG)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(if (settings.allowMeteredNetwork) NetworkType.CONNECTED else NetworkType.UNMETERED)
@@ -326,6 +349,10 @@ class UploadWorker
                 queueId: Long,
             ) {
                 WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName(queueId))
+            }
+
+            fun cancelAll(context: Context) {
+                WorkManager.getInstance(context).cancelAllWorkByTag(UPLOAD_WORK_TAG)
             }
         }
     }

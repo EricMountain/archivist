@@ -29,6 +29,7 @@ interface DeviceStateMonitor {
  * "waiting for Wi-Fi", which implies a metered connection is actually present. */
 enum class QueueIdleReason {
     NONE,
+    PAUSED,
     NO_NETWORK,
     WAITING_FOR_WIFI,
     WAITING_TO_CHARGE,
@@ -40,6 +41,11 @@ fun queueIdleReason(
     state: DeviceState,
 ): QueueIdleReason =
     when {
+        // Checked first, ahead of every device condition below -- those are things
+        // the queue is waiting out on its own; this is a manual stop the user chose,
+        // so it says so rather than reporting whatever device condition happens to
+        // also be true underneath it.
+        settings.uploadsPaused -> QueueIdleReason.PAUSED
         !state.isConnected -> QueueIdleReason.NO_NETWORK
         state.isMetered && !settings.allowMeteredNetwork -> QueueIdleReason.WAITING_FOR_WIFI
         settings.requiresCharging && !state.isCharging -> QueueIdleReason.WAITING_TO_CHARGE

@@ -31,6 +31,20 @@ data class SyncSettings(
      * silent by default; turning it off trades that visibility away for one less
      * notification, with no effect on reliability either way. */
     val showUploadProgressNotification: Boolean = true,
+    /** 2026-09-08: per the user's explicit request for a manual pause from the
+     * Settings screen — independent of every constraint above, which only ever pause
+     * uploads on a *device condition* (no Wi-Fi, not charging). Read by
+     * [fr.enry.archivist.sync.WorkManagerUploadScheduler.enqueueAll], which is the
+     * single seam every enqueue path (a fresh scan, app startup's re-enqueue of
+     * [fr.enry.archivist.data.local.db.UploadQueueDao.getActiveIds], a per-row retry)
+     * already goes through — so nothing new starts while this is on. Toggling it off
+     * is what actually resumes anything already queued; toggling it on cancels
+     * whatever's enqueued or running via
+     * [fr.enry.archivist.sync.UploadScheduler.cancelAll] without touching the queue
+     * rows themselves, so resuming finds exactly what was left. Defaults off — an
+     * upload queue that silently never starts would otherwise look identical to one
+     * that's just idle. */
+    val uploadsPaused: Boolean = false,
 )
 
 /**
@@ -58,6 +72,7 @@ class SyncSettingsStore
                     notifyWhenUploadNeedsUnlock = prefs[NOTIFY_WHEN_LOCKED_KEY] ?: true,
                     uploadAsForegroundService = prefs[FOREGROUND_SERVICE_KEY] ?: true,
                     showUploadProgressNotification = prefs[SHOW_UPLOAD_NOTIFICATION_KEY] ?: true,
+                    uploadsPaused = prefs[UPLOADS_PAUSED_KEY] ?: false,
                 )
             }
 
@@ -81,11 +96,16 @@ class SyncSettingsStore
             dataStore.edit { it[FOREGROUND_SERVICE_KEY] = foreground }
         }
 
+        suspend fun setUploadsPaused(paused: Boolean) {
+            dataStore.edit { it[UPLOADS_PAUSED_KEY] = paused }
+        }
+
         private companion object {
             val ALLOW_METERED_KEY = booleanPreferencesKey("allow_metered_network")
             val REQUIRES_CHARGING_KEY = booleanPreferencesKey("requires_charging")
             val NOTIFY_WHEN_LOCKED_KEY = booleanPreferencesKey("notify_when_upload_needs_unlock")
             val FOREGROUND_SERVICE_KEY = booleanPreferencesKey("upload_as_foreground_service")
             val SHOW_UPLOAD_NOTIFICATION_KEY = booleanPreferencesKey("show_upload_progress_notification")
+            val UPLOADS_PAUSED_KEY = booleanPreferencesKey("uploads_paused")
         }
     }

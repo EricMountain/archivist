@@ -7,6 +7,7 @@ import fr.enry.archivist.sync.UploadScheduler
 class FakeUploadScheduler : UploadScheduler {
     val enqueuedCalls = mutableListOf<List<Long>>()
     val cancelledIds = mutableListOf<Long>()
+    var cancelAllCallCount = 0
 
     override suspend fun enqueueAll(queueIds: List<Long>) {
         enqueuedCalls.add(queueIds)
@@ -14,5 +15,9 @@ class FakeUploadScheduler : UploadScheduler {
 
     override fun cancel(queueId: Long) {
         cancelledIds.add(queueId)
+    }
+
+    override fun cancelAll() {
+        cancelAllCallCount++
     }
 }

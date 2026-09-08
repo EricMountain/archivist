@@ -107,4 +107,26 @@ class SyncSettingsStoreTest {
             assertFalse(store.settings.first().uploadAsForegroundService)
             assertTrue(store.settings.first().showUploadProgressNotification)
         }
+
+    @Test
+    fun `uploads paused defaults off`() =
+        runTest {
+            assertFalse(newStore().settings.first().uploadsPaused)
+        }
+
+    @Test
+    fun `uploads paused round-trips independently of the other settings`() =
+        runTest {
+            val store = newStore()
+            store.setUploadsPaused(true)
+            store.setAllowMeteredNetwork(true)
+
+            val settings = store.settings.first()
+            assertTrue(settings.uploadsPaused)
+            assertTrue(settings.allowMeteredNetwork)
+
+            store.setUploadsPaused(false)
+            assertFalse(store.settings.first().uploadsPaused)
+            assertTrue(store.settings.first().allowMeteredNetwork)
+        }
 }

@@ -105,6 +105,7 @@ private fun stateLabel(state: UploadState): String =
 private fun idleReasonLabel(reason: QueueIdleReason): String? =
     when (reason) {
         QueueIdleReason.NONE -> null
+        QueueIdleReason.PAUSED -> "Uploads paused"
         QueueIdleReason.NO_NETWORK -> "Waiting for a network connection"
         QueueIdleReason.WAITING_FOR_WIFI -> "Waiting for Wi-Fi"
         QueueIdleReason.WAITING_TO_CHARGE -> "Waiting to charge"

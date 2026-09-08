@@ -24,6 +24,11 @@ import fr.enry.archivist.R
  * Plan step 2.14's Settings > Sync section — network policy and charging requirement on
  * top, [FoldersScreen] (plan step 2.7, previously built but unreachable — see its own
  * doc) underneath. One screen, since the plan groups them under a single "Sync" bullet.
+ *
+ * **"Pause uploads" (2026-09-08, per the user's explicit request)** is deliberately the
+ * first row, ahead of the network/charging constraints it otherwise reads a lot like —
+ * unlike those, it's not a device condition uploads wait out on their own, it's a
+ * manual stop [SyncViewModel.setUploadsPaused] actively cancels and resumes.
  */
 @Composable
 fun SyncScreen(
@@ -45,6 +50,13 @@ fun SyncScreen(
                 },
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        HorizontalDivider()
+        SettingsSwitchRow(
+            title = "Pause uploads",
+            subtitle = "Stops queued and in-progress uploads until turned back off",
+            checked = settings.uploadsPaused,
+            onCheckedChange = viewModel::setUploadsPaused,
         )
         HorizontalDivider()
         SettingsSwitchRow(

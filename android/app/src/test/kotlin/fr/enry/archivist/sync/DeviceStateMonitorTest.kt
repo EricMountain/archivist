@@ -8,6 +8,16 @@ class DeviceStateMonitorTest {
     private val connectedUnmetered = DeviceState(isConnected = true, isMetered = false, isCharging = false, isBatteryLow = false)
 
     @Test
+    fun `paused takes priority over every other reason`() {
+        val state = connectedUnmetered.copy(isConnected = false, isMetered = true, isBatteryLow = true)
+
+        assertEquals(
+            QueueIdleReason.PAUSED,
+            queueIdleReason(SyncSettings(uploadsPaused = true, requiresCharging = true), state),
+        )
+    }
+
+    @Test
     fun `no network takes priority over every other reason`() {
         val state = connectedUnmetered.copy(isConnected = false, isMetered = true, isBatteryLow = true)
 
