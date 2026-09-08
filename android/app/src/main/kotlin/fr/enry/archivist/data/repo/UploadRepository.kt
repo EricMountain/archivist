@@ -36,6 +36,7 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -307,6 +308,20 @@ class UploadRepository
                     masterKey = masterKey,
                     strippedFile = strippedFile,
                 )
+            } catch (e: CancellationException) {
+                // Found live while diagnosing the "Pause uploads" toggle: this is what
+                // WorkManager cancelling a mid-flight worker (Settings > Sync's pause,
+                // or the app/OS killing the job) actually throws here, and the broad
+                // `catch (e: Exception)` below used to swallow it -- recording a bogus
+                // attempt/lastError for a deliberate stop, and (worse) suppressing the
+                // cancellation itself, which every coroutines guide calls out as the
+                // one exception a catch block must never absorb: doing so can leave the
+                // coroutine's structured-concurrency bookkeeping thinking work is still
+                // in flight after its Job already finished. Rethrown, not recorded --
+                // WorkManager's own state tracking is what "Pause uploads" actually
+                // relies on ([UploadWorker], `WorkManagerUploadScheduler.cancelAll`),
+                // and it's correct independently of what this function does here.
+                throw e
             } catch (e: IOException) {
                 recordAttempt(row, e.message ?: "network error")
             } catch (e: Exception) {

@@ -6,7 +6,9 @@ import fr.enry.archivist.data.remote.PatchSettingsRequest
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.SerializationException
 import retrofit2.HttpException
 
 /**
@@ -32,9 +34,21 @@ class OwnerSettingsRepository
             val api = archivistApiFactory.create(instance.host, instance.document.region, instance.document.cognito.clientId)
             return try {
                 Result.success(api.getSettings("${instance.document.apiBase}/settings").stripLocationOnUpload)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: IOException) {
                 Result.failure(e)
             } catch (e: HttpException) {
+                Result.failure(e)
+            } catch (e: SerializationException) {
+                // Found while diagnosing an unrelated report: an unexpected/malformed
+                // `GET /settings` response used to propagate uncaught out of this
+                // function entirely (`UploadRepository.uploadOne`'s caller never even
+                // sees a Result to apply its own `.getOrDefault(false)` to), silently
+                // wedging every upload attempt on this owner's account in an endless
+                // retry loop over a value that was only ever meant to have a safe
+                // default. Folded into the same failure path so the caller's existing
+                // fallback actually gets a chance to run.
                 Result.failure(e)
             }
         }
@@ -48,6 +62,8 @@ class OwnerSettingsRepository
                     api.patchSettings("${instance.document.apiBase}/settings", PatchSettingsRequest(value))
                 if (!response.isSuccessful) return Result.failure(HttpException(response))
                 Result.success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: IOException) {
                 Result.failure(e)
             } catch (e: HttpException) {

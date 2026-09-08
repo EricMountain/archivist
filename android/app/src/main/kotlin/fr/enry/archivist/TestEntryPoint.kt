@@ -6,6 +6,7 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
+import fr.enry.archivist.data.local.SyncSettingsStore
 import fr.enry.archivist.data.local.db.FolderSelectionDao
 import fr.enry.archivist.data.local.db.LocalTombstoneDao
 import fr.enry.archivist.data.local.db.PhotoDao
@@ -14,6 +15,7 @@ import fr.enry.archivist.data.repo.EnrolmentRepository
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.sync.Scanner
+import fr.enry.archivist.sync.UploadScheduler
 
 /**
  * Reaches the real app's Hilt-provided singletons from instrumented test code, without
@@ -60,6 +62,15 @@ interface TestEntryPoint {
     fun scanner(): Scanner
 
     fun enrolmentRepository(): EnrolmentRepository
+
+    /** Added to debug the "Pause uploads" toggle live — lets an instrumented test
+     * drive the exact same seam (`WorkManagerUploadScheduler`/`SyncSettingsStore`) the
+     * real Settings > Sync screen does, rather than reaching for `UploadWorker`'s raw
+     * static `enqueue`/`cancel` functions the way the pre-existing tests in this file
+     * do. */
+    fun uploadScheduler(): UploadScheduler
+
+    fun syncSettingsStore(): SyncSettingsStore
 
     companion object {
         fun from(context: android.content.Context): TestEntryPoint =
