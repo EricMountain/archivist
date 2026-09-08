@@ -1,5 +1,6 @@
 package fr.enry.archivist.sync
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -85,10 +86,21 @@ class WorkManagerUploadScheduler
  * for [UploadOutcome.NeedsUnlock] — the master key is no longer cleared just for being
  * backgrounded (see `ArchivistApplication`'s own doc), so in practice this only fires
  * right after a fresh sign-in/enrolment hasn't happened yet, not on every ordinary
- * background cycle. **Known gap, not new to this change**: `POST_NOTIFICATIONS` is
- * declared in the manifest but never requested at runtime (see its own comment there),
- * so on API 33+ neither this nor the existing foreground notification actually shows
- * until the user grants it via system settings, or a future step adds the prompt.
+ * background cycle. The two notifications are independently controllable: separate
+ * channels (a user can silence either from system settings without the other), and
+ * separate `SyncSettings` toggles (`notifyWhenUploadNeedsUnlock`,
+ * `showUploadProgressNotification`) — since `POST_NOTIFICATIONS` itself is one
+ * all-or-nothing OS permission with no way to split at that layer (see plan step 2.19's
+ * `PermissionOnboardingScreen`, which is what actually requests it).
+ *
+ * **`uploadAsForegroundService` (2026-09-08) picks which of two ways this worker keeps
+ * itself alive during a large transfer.** Foreground (the default): more reliable,
+ * since Android is much less willing to defer or kill a foreground job under memory
+ * pressure, but its notification is mandatory — an OS requirement, not something this
+ * app chooses. Background: an ordinary `CoroutineWorker`, at real (if smaller) risk of
+ * being deferred or killed mid-upload, but its progress notification becomes genuinely
+ * optional (`showUploadProgressNotification`), since nothing about a plain background
+ * job requires one.
  */
 @HiltWorker
 class UploadWorker
@@ -104,19 +116,32 @@ class UploadWorker
             val queueId = inputData.getLong(KEY_QUEUE_ID, -1L)
             if (queueId < 0) return Result.failure()
 
-            setForeground(foregroundInfo(queueId))
+            // Settings.uploadAsForegroundService picks the mechanism; only the
+            // background path needs its own cleanup below -- WorkManager dismisses a
+            // foreground notification itself once setForeground's window ends, but a
+            // plain NotificationManagerCompat.notify() here has no such owner.
+            val settings = syncSettingsStore.settings.first()
+            if (settings.uploadAsForegroundService) {
+                setForeground(foregroundInfo(queueId))
+            } else if (settings.showUploadProgressNotification) {
+                postProgressNotification(queueId)
+            }
 
-            return when (val outcome = uploadRepository.uploadOne(queueId)) {
-                UploadOutcome.Success -> {
-                    cancelNeedsUnlockNotification()
-                    Result.success()
+            try {
+                return when (val outcome = uploadRepository.uploadOne(queueId)) {
+                    UploadOutcome.Success -> {
+                        cancelNeedsUnlockNotification()
+                        Result.success()
+                    }
+                    UploadOutcome.Retry -> Result.retry()
+                    UploadOutcome.NeedsUnlock -> {
+                        maybeNotifyNeedsUnlock()
+                        Result.retry()
+                    }
+                    is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
                 }
-                UploadOutcome.Retry -> Result.retry()
-                UploadOutcome.NeedsUnlock -> {
-                    maybeNotifyNeedsUnlock()
-                    Result.retry()
-                }
-                is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
+            } finally {
+                if (!settings.uploadAsForegroundService) cancelProgressNotification()
             }
         }
 
@@ -172,8 +197,10 @@ class UploadWorker
          * foreground notification for large files, or Android kills it" (the plan's
          * own words). Shown for every file, not just large ones: a queue of many small
          * files can run long in aggregate too, and there's no reliable way to know a
-         * file is "large" before [UploadRepository] has already read it. */
-        private suspend fun foregroundInfo(queueId: Long): ForegroundInfo {
+         * file is "large" before [UploadRepository] has already read it. Shared between
+         * [foregroundInfo] and [postProgressNotification] — same content either way,
+         * only how it's delivered to the system differs. */
+        private suspend fun buildProgressNotification(queueId: Long): Notification {
             val context = applicationContext
             createNotificationChannelIfNeeded(context)
 
@@ -185,19 +212,32 @@ class UploadWorker
                     Intent(context, MainActivity::class.java),
                     PendingIntent.FLAG_IMMUTABLE,
                 )
-            val notification =
-                NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                    .setContentTitle(context.getString(R.string.upload_notification_title, displayName))
-                    .setSmallIcon(android.R.drawable.stat_sys_upload)
-                    .setOngoing(true)
-                    .setContentIntent(openApp)
-                    .build()
+            return NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                .setContentTitle(context.getString(R.string.upload_notification_title, displayName))
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setOngoing(true)
+                .setContentIntent(openApp)
+                .build()
+        }
 
+        private suspend fun foregroundInfo(queueId: Long): ForegroundInfo {
+            val notification = buildProgressNotification(queueId)
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             } else {
                 ForegroundInfo(NOTIFICATION_ID, notification)
             }
+        }
+
+        /** The background-mode equivalent of [foregroundInfo] — an ordinary, non-foreground
+         * notification, so it has no automatic lifecycle of its own; [cancelProgressNotification]
+         * is what removes it once this attempt finishes, success or not. */
+        private suspend fun postProgressNotification(queueId: Long) {
+            NotificationManagerCompat.from(applicationContext).notify(NOTIFICATION_ID, buildProgressNotification(queueId))
+        }
+
+        private fun cancelProgressNotification() {
+            NotificationManagerCompat.from(applicationContext).cancel(NOTIFICATION_ID)
         }
 
         private fun createNotificationChannelIfNeeded(context: Context) {

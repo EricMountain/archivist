@@ -17,6 +17,20 @@ data class SyncSettings(
      * alternative is a queue that silently retries-and-fails with no visible signal at
      * all. */
     val notifyWhenUploadNeedsUnlock: Boolean = true,
+    /** 2026-09-08: whether [fr.enry.archivist.sync.UploadWorker] runs as a foreground
+     * service. Defaults on — more reliable for a large file, since Android is far more
+     * willing to defer or kill an ordinary background job under memory pressure than a
+     * foreground one. A foreground service must carry a visible notification; that's
+     * an OS requirement, not a choice this setting makes, so [showUploadProgressNotification]
+     * has no effect while this is on. */
+    val uploadAsForegroundService: Boolean = true,
+    /** 2026-09-08: whether [fr.enry.archivist.sync.UploadWorker] shows a progress
+     * notification while running as an ordinary background job — meaningless, and
+     * ignored, while [uploadAsForegroundService] is on, since a foreground service's
+     * notification isn't optional. Defaults on so a background upload doesn't go
+     * silent by default; turning it off trades that visibility away for one less
+     * notification, with no effect on reliability either way. */
+    val showUploadProgressNotification: Boolean = true,
 )
 
 /**
@@ -42,6 +56,8 @@ class SyncSettingsStore
                     allowMeteredNetwork = prefs[ALLOW_METERED_KEY] ?: false,
                     requiresCharging = prefs[REQUIRES_CHARGING_KEY] ?: false,
                     notifyWhenUploadNeedsUnlock = prefs[NOTIFY_WHEN_LOCKED_KEY] ?: true,
+                    uploadAsForegroundService = prefs[FOREGROUND_SERVICE_KEY] ?: true,
+                    showUploadProgressNotification = prefs[SHOW_UPLOAD_NOTIFICATION_KEY] ?: true,
                 )
             }
 
@@ -57,9 +73,19 @@ class SyncSettingsStore
             dataStore.edit { it[NOTIFY_WHEN_LOCKED_KEY] = notify }
         }
 
+        suspend fun setShowUploadProgressNotification(show: Boolean) {
+            dataStore.edit { it[SHOW_UPLOAD_NOTIFICATION_KEY] = show }
+        }
+
+        suspend fun setUploadAsForegroundService(foreground: Boolean) {
+            dataStore.edit { it[FOREGROUND_SERVICE_KEY] = foreground }
+        }
+
         private companion object {
             val ALLOW_METERED_KEY = booleanPreferencesKey("allow_metered_network")
             val REQUIRES_CHARGING_KEY = booleanPreferencesKey("requires_charging")
             val NOTIFY_WHEN_LOCKED_KEY = booleanPreferencesKey("notify_when_upload_needs_unlock")
+            val FOREGROUND_SERVICE_KEY = booleanPreferencesKey("upload_as_foreground_service")
+            val SHOW_UPLOAD_NOTIFICATION_KEY = booleanPreferencesKey("show_upload_progress_notification")
         }
     }

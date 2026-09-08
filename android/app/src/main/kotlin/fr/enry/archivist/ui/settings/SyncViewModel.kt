@@ -36,4 +36,12 @@ class SyncViewModel
         fun setNotifyWhenUploadNeedsUnlock(notify: Boolean) {
             viewModelScope.launch { store.setNotifyWhenUploadNeedsUnlock(notify) }
         }
+
+        fun setShowUploadProgressNotification(show: Boolean) {
+            viewModelScope.launch { store.setShowUploadProgressNotification(show) }
+        }
+
+        fun setUploadAsForegroundService(foreground: Boolean) {
+            viewModelScope.launch { store.setUploadAsForegroundService(foreground) }
+        }
     }

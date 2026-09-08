@@ -153,7 +153,10 @@ private fun FolderRow(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column {
+        // weight(1f) is load-bearing -- see SyncScreen.kt's SettingsSwitchRow for why an
+        // unweighted Column here renders underneath the Switch once a long folder name
+        // wraps.
+        Column(Modifier.weight(1f).padding(end = 16.dp)) {
             Text(folder.displayName, style = MaterialTheme.typography.bodyLarge)
             Text(
                 if (folder.itemCount == 1) "1 item" else "${folder.itemCount} items",

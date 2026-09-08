@@ -215,7 +215,10 @@ private fun FolderRow(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column {
+        // weight(1f) is load-bearing -- see SyncScreen.kt's SettingsSwitchRow for why an
+        // unweighted Column here renders underneath the Switch once a long folder name
+        // wraps.
+        Column(Modifier.weight(1f).padding(end = 16.dp)) {
             Text(folder.displayName, style = MaterialTheme.typography.bodyLarge)
             Text(
                 if (folder.itemCount == 1) "1 item" else "${folder.itemCount} items",
@@ -237,7 +240,9 @@ private fun SwitchRow(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column {
+        // weight(1f) is load-bearing -- see SyncScreen.kt's SettingsSwitchRow for why an
+        // unweighted Column here renders underneath the Switch once a subtitle wraps.
+        Column(Modifier.weight(1f).padding(end = 16.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }

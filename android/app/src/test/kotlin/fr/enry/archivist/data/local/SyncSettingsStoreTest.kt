@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -66,5 +67,44 @@ class SyncSettingsStoreTest {
             val settings = store.settings.first()
             assertEquals(true, settings.allowMeteredNetwork)
             assertFalse(settings.requiresCharging)
+        }
+
+    @Test
+    fun `upload progress notification defaults on`() =
+        runTest {
+            assertTrue(newStore().settings.first().showUploadProgressNotification)
+        }
+
+    @Test
+    fun `upload progress notification setting round-trips independently of the needs-unlock one`() =
+        runTest {
+            val store = newStore()
+            store.setShowUploadProgressNotification(false)
+
+            val settings = store.settings.first()
+            assertFalse(settings.showUploadProgressNotification)
+            assertTrue(settings.notifyWhenUploadNeedsUnlock)
+        }
+
+    @Test
+    fun `foreground service defaults on`() =
+        runTest {
+            assertTrue(newStore().settings.first().uploadAsForegroundService)
+        }
+
+    @Test
+    fun `foreground service setting round-trips independently of the notification setting`() =
+        runTest {
+            val store = newStore()
+            store.setUploadAsForegroundService(false)
+            store.setShowUploadProgressNotification(false)
+
+            val settings = store.settings.first()
+            assertFalse(settings.uploadAsForegroundService)
+            assertFalse(settings.showUploadProgressNotification)
+
+            store.setShowUploadProgressNotification(true)
+            assertFalse(store.settings.first().uploadAsForegroundService)
+            assertTrue(store.settings.first().showUploadProgressNotification)
         }
 }

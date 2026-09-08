@@ -212,7 +212,10 @@ private fun NotificationsStep(
         title = "Notifications",
         body =
             "Archivist shows a notification while it's uploading in the background, and " +
-                "can let you know if it's ever waiting on you to unlock your key.",
+                "can let you know if it's ever waiting on you to unlock your key. " +
+                "Android only asks once for permission to show notifications at all — " +
+                "you can turn either of these two off independently afterwards, in " +
+                "Settings > Sync.",
         confirmLabel = "Allow",
         onConfirm = { launcher.launch(Manifest.permission.POST_NOTIFICATIONS) },
         dismissLabel = "Not now",

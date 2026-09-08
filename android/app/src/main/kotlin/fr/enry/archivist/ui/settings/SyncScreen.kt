@@ -51,6 +51,26 @@ fun SyncScreen(
             checked = settings.notifyWhenUploadNeedsUnlock,
             onCheckedChange = viewModel::setNotifyWhenUploadNeedsUnlock,
         )
+        SettingsSwitchRow(
+            title = "Run uploads as a foreground service",
+            subtitle = "More reliable for large files — Android is much less likely to defer or kill " +
+                "a foreground job under memory pressure. Requires a persistent notification while " +
+                "an upload is running; that's an OS requirement, not optional.",
+            checked = settings.uploadAsForegroundService,
+            onCheckedChange = viewModel::setUploadAsForegroundService,
+        )
+        SettingsSwitchRow(
+            title = "Show upload progress notification",
+            subtitle =
+                if (settings.uploadAsForegroundService) {
+                    "Always shown while running as a foreground service, above"
+                } else {
+                    "Optional while running in the background — off just means one less notification"
+                },
+            checked = settings.uploadAsForegroundService || settings.showUploadProgressNotification,
+            enabled = !settings.uploadAsForegroundService,
+            onCheckedChange = viewModel::setShowUploadProgressNotification,
+        )
         HorizontalDivider()
         // Weighted, not fillMaxSize -- FoldersScreen's own FolderList wraps a
         // LazyColumn, which needs a bounded height from its parent (this Column
@@ -65,15 +85,21 @@ private fun SettingsSwitchRow(
     subtitle: String?,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column {
+        // weight(1f) is load-bearing, not decoration -- without it this Column measures
+        // at its unconstrained natural width before the Switch is placed, so a subtitle
+        // long enough to wrap onto a second line renders underneath the Switch instead
+        // of stopping short of it. Same root cause as the reviewer preview banner's own
+        // fix (see its doc), mirrored onto the other child this time.
+        Column(Modifier.weight(1f).padding(end = 16.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
     }
 }

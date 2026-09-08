@@ -130,7 +130,13 @@ private fun PrivacySwitchRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text("Strip location from uploads", style = MaterialTheme.typography.bodyLarge)
+        // weight(1f) is load-bearing -- see SyncScreen.kt's SettingsSwitchRow for why an
+        // unweighted Text here would render underneath the Switch if it ever wrapped.
+        Text(
+            "Strip location from uploads",
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f).padding(end = 16.dp),
+        )
         Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
     }
 }

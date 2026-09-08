@@ -345,10 +345,18 @@ WorkManager constraints rather than custom logic:
 | Any network | `NetworkType.CONNECTED` |
 | Pause below 20% battery | `setRequiresBatteryNotLow(true)` |
 | Only while charging | `setRequiresCharging(true)` |
+| Run as a foreground service (default) | `setForeground(...)`, mandatory notification |
+| Run as a background job instead | plain `CoroutineWorker`, notification optional |
 
-Large uploads run as a long-running worker with a foreground notification, otherwise
-Android will kill them. Encryption is CPU-heavy enough to be noticeable on battery, so
-"only while charging" should be genuinely offered rather than buried.
+Large uploads run as a long-running worker, foreground by default so Android is far
+less willing to defer or kill it under memory pressure — the trade-off being a
+notification, which a foreground service is required to carry. **`uploadAsForegroundService`**
+(Settings > Sync) lets an owner choose the background job instead, at real risk to a
+large upload's reliability, in exchange for **`showUploadProgressNotification`**
+becoming a genuine choice rather than something Android forces regardless of the app's
+own preference. Both default on — this is opt-out of the more reliable mode, not
+opt-in to a lesser-known one. Encryption is CPU-heavy enough to be noticeable on
+battery, so "only while charging" should be genuinely offered rather than buried.
 
 ## Screens
 
