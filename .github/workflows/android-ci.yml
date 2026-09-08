@@ -51,6 +51,13 @@ jobs:
       # cache server, which a self-hosted-per-user project has nowhere to run.
       - uses: gradle/actions/setup-gradle@v4
 
+      # The runner's preinstalled Android SDK has no licenses pre-accepted for the
+      # system image the Gradle managed device (pixel2api30, see testOptions in
+      # app/build.gradle.kts) downloads on first use, so :app:pixel2api30Setup fails
+      # with LicenceNotAcceptedException without this.
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
       - name: Unit tests
         run: ./gradlew --no-daemon :core:crypto:testDebugUnitTest :app:testDebugUnitTest
 
