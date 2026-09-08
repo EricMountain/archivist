@@ -133,9 +133,13 @@ private fun MediaLibraryStep(
         title = "Photos & videos",
         body =
             "Backing up the folders you choose next means reading your photos and videos " +
-                "without asking about each one — that's what this permission is for.",
-        confirmLabel = "Continue",
+                "without asking about each one — that's what this permission is for. " +
+                "Without it, backup and syncing your library won't work, but the rest of " +
+                "the app still will.",
+        confirmLabel = "Allow",
         onConfirm = { launcher.launch(permissions) },
+        dismissLabel = "Not now",
+        onDismiss = onDone,
         modifier = modifier,
     )
 }
@@ -165,7 +169,7 @@ private fun PartialMediaAccessStep(
                 "the selection, or continue and add more later from Settings > Sync.",
         confirmLabel = "Add more",
         onConfirm = { launcher.launch(permissions) },
-        dismissLabel = "Continue",
+        dismissLabel = "Not now",
         onDismiss = onDone,
         modifier = modifier,
     )
@@ -190,7 +194,7 @@ private fun MediaLocationStep(
                 "in Settings > Privacy, which controls what leaves this phone once a " +
                 "photo already carries a location, not what this device can read in the " +
                 "first place.",
-        confirmLabel = "Allow access",
+        confirmLabel = "Allow",
         onConfirm = { launcher.launch(Manifest.permission.ACCESS_MEDIA_LOCATION) },
         dismissLabel = "Don't allow",
         onDismiss = onDone,
@@ -209,7 +213,7 @@ private fun NotificationsStep(
         body =
             "Archivist shows a notification while it's uploading in the background, and " +
                 "can let you know if it's ever waiting on you to unlock your key.",
-        confirmLabel = "Continue",
+        confirmLabel = "Allow",
         onConfirm = { launcher.launch(Manifest.permission.POST_NOTIFICATIONS) },
         dismissLabel = "Not now",
         onDismiss = onDone,
