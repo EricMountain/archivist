@@ -1,6 +1,7 @@
 package fr.enry.archivist.ui.detail
 
 import android.app.Activity
+import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -14,11 +15,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -26,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +45,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -123,6 +131,15 @@ fun DetailScreen(
         }
     }
 
+    // Landscape gets the summary as a fixed-width side column so the pager can claim
+    // the whole height; portrait keeps it as a fixed-height row underneath so the pager
+    // claims the whole width. Fixed-*size*, not just "the non-pager side" -- MetadataPanel
+    // itself scrolls internally (see its own verticalScroll) rather than growing/
+    // shrinking with how much of the detail has loaded, which is what used to make the
+    // pager (and therefore the photo) visibly resize and reposition between the
+    // date-only loading state and the fully loaded one on every swipe.
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = onBack) { Text("← Back") }
@@ -140,31 +157,64 @@ fun DetailScreen(
             )
         }
 
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            key = { photos[it].photoId },
-        ) { page ->
-            ZoomableThumb(photo = photos[page], host = host)
-        }
+        if (isLandscape) {
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    key = { photos[it].photoId },
+                ) { page ->
+                    ZoomableThumb(photo = photos[page], host = host)
+                }
 
-        currentPhoto?.let { photo ->
-            MetadataPanel(
-                state = details[photo.photoId],
-                photo = photo,
-                onViewOriginal = { rendition, encDek -> viewModel.viewOriginal(photo.photoId, encDek, rendition) },
-                originals = originals,
-            )
+                currentPhoto?.let { photo ->
+                    MetadataPanel(
+                        state = details[photo.photoId],
+                        photo = photo,
+                        onViewOriginal = { rendition, encDek -> viewModel.viewOriginal(photo.photoId, encDek, rendition) },
+                        originals = originals,
+                        modifier = Modifier.width(SummaryPanelSize).fillMaxHeight(),
+                    )
+                }
+            }
+        } else {
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                key = { photos[it].photoId },
+            ) { page ->
+                ZoomableThumb(photo = photos[page], host = host)
+            }
+
+            currentPhoto?.let { photo ->
+                MetadataPanel(
+                    state = details[photo.photoId],
+                    photo = photo,
+                    onViewOriginal = { rendition, encDek -> viewModel.viewOriginal(photo.photoId, encDek, rendition) },
+                    originals = originals,
+                    modifier = Modifier.fillMaxWidth().height(SummaryPanelSize),
+                )
+            }
         }
     }
 
     val currentDetail = currentPhoto?.let { photo -> (details[photo.photoId] as? PhotoDetailUiState.Loaded)?.detail }
     val activeOriginal = currentDetail?.renditions?.firstNotNullOfOrNull { r -> originals[r.renditionId] }
     if (activeOriginal != null) {
-        OriginalOverlay(
-            state = activeOriginal,
-            onDismiss = { currentDetail.renditions.forEach { viewModel.dismissOriginal(it.renditionId) } },
-        )
+        // Keyed on orientation: a Dialog opens its own separate Android Window (see the
+        // class doc below for why), and that window's own size isn't remeasured when the
+        // hosting Activity's configuration changes without recreating it -- confirmed
+        // live, rotating with an original open left the dialog window at its old
+        // (portrait) bounds, offset and too small on the new landscape screen, with
+        // DetailScreen visible behind through the gap. Keying forces Compose to dispose
+        // and recreate the Dialog (a fresh window, sized for the current orientation)
+        // instead of trying to resize the existing one.
+        key(isLandscape) {
+            OriginalOverlay(
+                state = activeOriginal,
+                onDismiss = { currentDetail.renditions.forEach { viewModel.dismissOriginal(it.renditionId) } },
+            )
+        }
     }
 
     if (showDeleteDialog && currentPhoto != null) {
@@ -265,9 +315,14 @@ private fun MetadataPanel(
     photo: PhotoEntity,
     onViewOriginal: (RenditionSummary, String) -> Unit,
     originals: Map<String, OriginalUiState>,
+    modifier: Modifier = Modifier,
 ) {
+    // verticalScroll rather than growing the container: the panel's own size is fixed
+    // by the caller (see the "Landscape gets the summary..." note in DetailScreen) so
+    // the pager next to/above it never resizes; scrolling is what absorbs a photo with
+    // more renditions than the fixed size has room for, instead of overflowing it.
     Column(
-        Modifier.fillMaxWidth().padding(16.dp),
+        modifier.padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         when (state) {
@@ -346,14 +401,19 @@ private fun OriginalOverlay(
                         remember(state.bytes) { BitmapFactory.decodeByteArray(state.bytes, 0, state.bytes.size) }
                     var scale by remember { mutableFloatStateOf(1f) }
                     var offset by remember { mutableStateOf(Offset.Zero) }
-                    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                        // A Dialog's own window already excludes the status bar by
-                        // default (unlike the plain-Box overlay this replaced, which
-                        // needed its own statusBarsPadding() to keep Close from
-                        // rendering under the clock/battery icons -- confirmed live
-                        // that this is no longer needed here: the button already
-                        // clears the status bar with no extra modifier).
-                        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Close") }
+                    // A Box, not a Column with Close stacked above the image: a Column
+                    // gives each unweighted child the parent's full incoming height, so
+                    // the image (fillMaxSize) got the *whole* screen height stacked below
+                    // the Close row instead of the remainder -- its layout bounds ran
+                    // past the bottom of the screen by the Close row's height, and since
+                    // ContentScale.Fit centers within those (too-tall, too-low) bounds,
+                    // the visible image ended up offset and clipped. Confirmed live,
+                    // exactly matching the reported bug -- barely visible in portrait
+                    // (the Close row is a small fraction of a tall screen) but obvious in
+                    // landscape, where it's a much bigger fraction of the short screen.
+                    // A Box with the image filling it and Close layered on top as an
+                    // overlay gives the image the true full-screen bounds either way.
+                    Box(Modifier.fillMaxSize()) {
                         if (bitmap != null) {
                             // Same pinch-zoom as ZoomableThumb (see detectPinchZoom's
                             // doc) -- this is the actual "zoom the original" behavior
@@ -387,14 +447,28 @@ private fun OriginalOverlay(
                             // real, expected outcome for those, not a bug. design.md
                             // doesn't specify an in-app RAW viewer, so this is as far
                             // as this step goes for that case.
-                            Text("This file's format can't be previewed in-app.")
+                            Text("This file's format can't be previewed in-app.", modifier = Modifier.align(Alignment.Center))
                         }
+                        // A Dialog's own window already excludes the status bar by
+                        // default (unlike the plain-Box overlay this replaced, which
+                        // needed its own statusBarsPadding() to keep Close from
+                        // rendering under the clock/battery icons -- confirmed live
+                        // that this is no longer needed here: the button already
+                        // clears the status bar with no extra modifier).
+                        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd)) { Text("Close") }
                     }
                 }
             }
         }
     }
 }
+
+/** [MetadataPanel]'s fixed footprint: its height in portrait (stacked below the pager),
+ * its width in landscape (beside the pager). One constant for both, since either way
+ * it's the dimension along which the panel and the pager compete for space -- fixed so
+ * loading more detail (or a fatter rendition list) never resizes the pager, only makes
+ * the panel itself scroll. */
+internal val SummaryPanelSize = 200.dp
 
 internal fun RenditionSummary.label(): String = if (role == "raw") "RAW" else extensionLabels[ext.lowercase()] ?: ext.uppercase()
 

@@ -59,10 +59,20 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.Archivist">
 
+        <!-- This app has no navigation library: which screen is showing (signed-in?
+             unlocked? which photo is open in DetailScreen?) lives entirely in plain
+             `remember` state, not a back stack — see TimelineScreen's and
+             MainActivity's own comments on that pattern. Plain `remember` only
+             survives a configuration change (e.g. a rotation) if the Activity itself
+             isn't destroyed and recreated; without this declared, rotating the device
+             mid-session dropped every one of those flags back to its initial value,
+             which from inside DetailScreen was visible as rotating bouncing you back
+             out to the timeline grid. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.Archivist">
+            android:theme="@style/Theme.Archivist"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
