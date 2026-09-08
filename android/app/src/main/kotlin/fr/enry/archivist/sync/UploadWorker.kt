@@ -185,7 +185,22 @@ class UploadWorker
                         is UploadOutcome.PermanentFailure -> Result.failure(workDataOf("error" to outcome.message))
                     }
                 } finally {
-                    if (!settings.uploadAsForegroundService) cancelProgressNotification()
+                    // Not an unconditional cancelProgressNotification(): with one
+                    // WorkManager work item per file, doing that here made the shared
+                    // notification blink out and back for every single file once this
+                    // was the only worker still running -- cancel()+notify() is a
+                    // visible remove-then-recreate to the OS, unlike updating the same
+                    // id in place. Only tear it down once the batch is actually done;
+                    // getActiveIds() (not observeRemainingCount(), which still counts
+                    // UploadState.FAILED rows a user hasn't dismissed -- see
+                    // QueueViewModel's own "active" check) is what decides that.
+                    if (!settings.uploadAsForegroundService) {
+                        if (uploadQueueDao.getActiveIds().isEmpty()) {
+                            cancelProgressNotification()
+                        } else {
+                            postProgressNotification()
+                        }
+                    }
                 }
             }
 
@@ -280,7 +295,9 @@ class UploadWorker
 
         /** The background-mode equivalent of [foregroundInfo] — an ordinary, non-foreground
          * notification, so it has no automatic lifecycle of its own; [cancelProgressNotification]
-         * is what removes it once this attempt finishes, success or not. */
+         * is what removes it, but only once [UploadQueueDao.getActiveIds] says the whole
+         * batch is done, not after each individual attempt (see the [doWork] `finally`
+         * block's comment for why). */
         private suspend fun postProgressNotification() {
             NotificationManagerCompat.from(applicationContext).notify(NOTIFICATION_ID, buildProgressNotification())
         }
