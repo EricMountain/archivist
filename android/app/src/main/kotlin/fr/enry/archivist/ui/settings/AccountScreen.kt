@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
@@ -37,6 +38,8 @@ fun AccountScreen(
     modifier: Modifier = Modifier,
     viewModel: AccountViewModel = hiltViewModel(),
 ) {
+    BackHandler(onBack = onBack)
+
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var confirmingSignOut by remember { mutableStateOf(false) }
     var confirmingDelete by remember { mutableStateOf(false) }

@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.trash
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +51,8 @@ fun TrashScreen(
     modifier: Modifier = Modifier,
     viewModel: TrashViewModel = hiltViewModel(),
 ) {
+    BackHandler(onBack = onBack)
+
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
 

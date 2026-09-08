@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +33,8 @@ fun AboutScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    BackHandler(onBack = onBack)
+
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val versionName =

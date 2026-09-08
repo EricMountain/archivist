@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,8 @@ fun KeysScreen(
     modifier: Modifier = Modifier,
     viewModel: KeysViewModel = hiltViewModel(),
 ) {
+    BackHandler(onBack = onBack)
+
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val regenState by viewModel.regenState.collectAsStateWithLifecycle()
     var confirmingRemove by remember { mutableStateOf<KeyWrapDto?>(null) }

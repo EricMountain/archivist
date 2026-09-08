@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
@@ -19,6 +20,8 @@ fun StorageScreen(
     modifier: Modifier = Modifier,
     viewModel: StorageViewModel = hiltViewModel(),
 ) {
+    BackHandler(onBack = onBack)
+
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(modifier.padding(16.dp)) {

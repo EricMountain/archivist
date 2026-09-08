@@ -3,6 +3,7 @@ package fr.enry.archivist.ui.detail
 import android.app.Activity
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -75,6 +76,14 @@ fun DetailScreen(
     modifier: Modifier = Modifier,
     viewModel: DetailViewModel = hiltViewModel(),
 ) {
+    // The system back gesture/button has nothing else to consume here (see
+    // MainActivity's own doc: no nav library, no back stack) -- without this it falls
+    // through to the Activity default and exits the app instead of returning to the
+    // grid. OriginalOverlay's own Dialog owns back while it's showing (a platform
+    // Dialog window claims the back key ahead of the Activity), so this doesn't
+    // interfere with dismissing that.
+    BackHandler(onBack = onBack)
+
     val photos by viewModel.photos.collectAsStateWithLifecycle()
     val details by viewModel.details.collectAsStateWithLifecycle()
     val originals by viewModel.originals.collectAsStateWithLifecycle()

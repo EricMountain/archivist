@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.queue
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +37,8 @@ fun QueueScreen(
     modifier: Modifier = Modifier,
     viewModel: QueueViewModel = hiltViewModel(),
 ) {
+    BackHandler(onBack = onBack)
+
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(modifier.fillMaxSize()) {

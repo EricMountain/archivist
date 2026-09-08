@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.reviewer
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -114,6 +115,8 @@ private fun ReviewerSettingsMenu(
     onSelect: (ReviewerSettingsDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    BackHandler(onBack = onBack)
+
     Column(modifier) {
         TextButton(onClick = onBack) { Text("← Back") }
         Text(
@@ -166,6 +169,8 @@ private fun ReviewerSyncSection(
     modifier: Modifier = Modifier,
     viewModel: ReviewerSettingsViewModel = hiltViewModel(),
 ) {
+    BackHandler(onBack = onBack)
+
     val folders by viewModel.folders.collectAsStateWithLifecycle()
     var allowMeteredNetwork by remember { mutableStateOf(false) }
     var requiresCharging by remember { mutableStateOf(false) }
@@ -260,6 +265,8 @@ private fun InertSection(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    BackHandler(onBack = onBack)
+
     Column(modifier.padding(16.dp)) {
         TextButton(onClick = onBack) { Text("← Back") }
         Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 8.dp))

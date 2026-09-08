@@ -1,5 +1,6 @@
 package fr.enry.archivist.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,6 +37,8 @@ fun SyncScreen(
     modifier: Modifier = Modifier,
     viewModel: SyncViewModel = hiltViewModel(),
 ) {
+    BackHandler(onBack = onBack)
+
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val queueDepth by viewModel.queueDepth.collectAsStateWithLifecycle()
 
