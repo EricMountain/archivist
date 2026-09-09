@@ -13,6 +13,7 @@ import fr.enry.archivist.data.local.db.AppDatabase
 import fr.enry.archivist.data.local.db.AssetStatus
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.TimelineCursorEntity
+import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.remote.ArchivistApi
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.TimelineEntryDto
@@ -23,11 +24,11 @@ import kotlinx.coroutines.flow.first
 import retrofit2.HttpException
 
 /**
- * Plan step 2.11: "network fills Room, Room feeds the pager" (android.md). The `Int`
- * paging key [PagingState] itself works with is Room's own row-offset key (from the
- * generated `PhotoDao.pagingSource()`) — unrelated to `GET /photos`'s opaque cursor
- * string, which this class tracks separately via [TimelineCursorEntity], the same
- * decoupling the "network + database" `RemoteMediator` recipe always uses.
+ * Plan step 2.11: "network fills Room, Room feeds the pager" (android.md). The
+ * [TimelineKey] [PagingState] itself works with is [TimelinePagingSource]'s own item-
+ * identity key (`takenAt#photoId`) — unrelated to `GET /photos`'s opaque cursor string,
+ * which this class tracks separately via [TimelineCursorEntity], the same decoupling the
+ * "network + database" `RemoteMediator` recipe always uses.
  *
  * `REFRESH` always re-fetches page one and clears everything else — the standard
  * recipe, and safe here because it only touches the cache, never anything server-side.
@@ -37,23 +38,24 @@ import retrofit2.HttpException
  * `PagingSource` above keeps serving it directly from Room regardless of whether this
  * mediator's own fetch just failed.
  *
- * [initialize] matters more than it looks: any write to `photos` — including this very
+ * [initialize] matters more than it looks, and independently of [TimelinePagingSource]'s
+ * own item-keyed fix for the same symptom: any write to `photos` — including this very
  * class's own `APPEND` upsert below, or [PhotoRepository.refreshLatest]'s — invalidates
- * Room's `pagingSourceFactory`-generated `PagingSource` and starts a new `Pager`
+ * the `pagingSourceFactory`-generated `PagingSource` and starts a new `Pager`
  * generation. `RemoteMediator`'s own default `initialize()` is `LAUNCH_INITIAL_REFRESH`,
  * which fires a fresh mediator `REFRESH` for *every* such generation — i.e. this
- * mediator would re-enter itself after its own append, `clear()` everything just
- * upserted (and every older page loaded before it), and refetch only page one. That
- * self-triggered clear-and-reload is what made ordinary downward scrolling hit a wall
- * and jump back to the top at a fixed, reproducible point (right after the first extra
- * page loads) rather than anything actually being wrong with the scroll gesture itself.
+ * mediator would re-enter itself after its own append and `clear()` everything just
+ * upserted (and every older page loaded before it), deleting the very row the user was
+ * anchored on out from under an otherwise-correct keyed re-anchor: `clear()` leaves
+ * nothing for [TimelinePagingSource.load]'s `pageFromKey` to find at that key at all,
+ * which would show up as the grid going momentarily empty rather than merely jumping.
  */
 @OptIn(ExperimentalPagingApi::class)
 class TimelineRemoteMediator(
     private val instanceStore: InstanceStore,
     private val archivistApiFactory: ArchivistApiFactory,
     private val db: AppDatabase,
-) : RemoteMediator<Int, PhotoEntity>() {
+) : RemoteMediator<TimelineKey, PhotoEntity>() {
     private val photoDao = db.photoDao()
     private val timelineCursorDao = db.timelineCursorDao()
 
@@ -66,7 +68,7 @@ class TimelineRemoteMediator(
 
     override suspend fun load(
         loadType: LoadType,
-        state: PagingState<Int, PhotoEntity>,
+        state: PagingState<TimelineKey, PhotoEntity>,
     ): MediatorResult {
         return try {
             val cursor =

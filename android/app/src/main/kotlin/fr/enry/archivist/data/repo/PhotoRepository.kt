@@ -18,10 +18,9 @@ import kotlinx.coroutines.flow.first
 private const val TIMELINE_PAGE_SIZE = 60
 
 /**
- * Plan step 2.11: the `Pager` wiring behind the timeline grid. `PhotoDao.pagingSource()`
- * is Room's own generated `PagingSource` — the `Int` key it works with, and
- * [TimelineRemoteMediator]'s own `GET /photos` cursor, are two separate things; see
- * that class's doc.
+ * Plan step 2.11: the `Pager` wiring behind the timeline grid. [TimelinePagingSource]'s
+ * own `TimelineKey` and [TimelineRemoteMediator]'s `GET /photos` cursor are two separate
+ * things — see that class's doc.
  */
 @Singleton
 class PhotoRepository
@@ -36,7 +35,7 @@ class PhotoRepository
             Pager(
                 config = PagingConfig(pageSize = TIMELINE_PAGE_SIZE, enablePlaceholders = false),
                 remoteMediator = TimelineRemoteMediator(instanceStore, archivistApiFactory, db),
-                pagingSourceFactory = { db.photoDao().pagingSource() },
+                pagingSourceFactory = { TimelinePagingSource(db, db.photoDao()) },
             ).flow
 
         /** Plan step 2.12: the plain (non-`Paging`) mirror of [timeline]'s own ordering,

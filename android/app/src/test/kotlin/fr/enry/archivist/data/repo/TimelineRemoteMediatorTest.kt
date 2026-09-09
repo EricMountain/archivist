@@ -13,6 +13,7 @@ import fr.enry.archivist.data.local.db.AppDatabase
 import fr.enry.archivist.data.local.db.AssetStatus
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.ThumbEntry
+import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.buildTestDatabase
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.CognitoAuthClient
@@ -42,7 +43,7 @@ class TimelineRemoteMediatorTest {
     private lateinit var tempDir: File
     private lateinit var db: AppDatabase
     private lateinit var instanceStore: InstanceStore
-    private lateinit var mediator: RemoteMediator<Int, PhotoEntity>
+    private lateinit var mediator: RemoteMediator<TimelineKey, PhotoEntity>
 
     private val json = Json { ignoreUnknownKeys = true }
     private val host = "photos.example.com"
@@ -105,7 +106,7 @@ class TimelineRemoteMediatorTest {
         )
     }
 
-    private fun emptyState() = PagingState<Int, PhotoEntity>(pages = emptyList(), anchorPosition = null, config = config, leadingPlaceholderCount = 0)
+    private fun emptyState() = PagingState<TimelineKey, PhotoEntity>(pages = emptyList(), anchorPosition = null, config = config, leadingPlaceholderCount = 0)
 
     private fun photoJson(
         photoId: String,

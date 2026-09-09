@@ -1,6 +1,5 @@
 package fr.enry.archivist.data.local.db
 
-import androidx.paging.PagingSource
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -56,6 +55,13 @@ data class PhotoEntity(
     val encDek: String,
     val encKeyId: String,
 )
+
+/** [TimelinePagingSource]'s own paging key — the anchor item's own `takenAt#photoId`
+ * identity (same tiebreak as [PhotoDao.observeTimeline]) rather than a row offset, so a
+ * generation restart re-anchors on the item itself and survives rows being inserted
+ * anywhere else in the table mid-scroll. See that class's doc for why a row offset
+ * doesn't. */
+data class TimelineKey(val takenAt: String, val photoId: String)
 
 @Dao
 interface PhotoDao {
@@ -119,12 +125,50 @@ interface PhotoDao {
     @Query("SELECT * FROM photos ORDER BY takenAt DESC, photoId DESC")
     fun observeTimeline(): Flow<List<PhotoEntity>>
 
-    /** Room-generated `PagingSource` (via `androidx.room:room-paging`) — the local half
-     * of plan step 2.11's `Pager`. Same ordering/tiebreak as [observeTimeline]; the
-     * `Int` paging key is a plain row offset, unrelated to the server's own opaque
-     * cursor string, which [TimelineCursorDao] tracks separately — see its own doc. */
-    @Query("SELECT * FROM photos ORDER BY takenAt DESC, photoId DESC")
-    fun pagingSource(): PagingSource<Int, PhotoEntity>
+    /** [TimelinePagingSource]'s three keyset queries — the local half of plan step
+     * 2.11's `Pager`. Same ordering/tiebreak as [observeTimeline], unrelated to the
+     * server's own opaque cursor string, which [TimelineCursorDao] tracks separately —
+     * see that class's doc. `pageFromKey` is inclusive of the anchor itself (a refresh
+     * re-centers on it, so it must reappear in the reloaded page); `pageAfter`/
+     * `pageBefore` are exclusive, taking the last/first item of the adjacent page as
+     * their own key so nothing repeats. `pageBefore`'s inner query walks *forward* in
+     * time (`ASC`) to pick the nearest `limit` newer rows, then the outer query
+     * re-sorts that small set back into the table's normal `DESC` order — an ordinary
+     * `LIMIT` on the `DESC` query itself would instead keep the `limit` *oldest* of the
+     * newer rows, which is `photoId`s closer to the anchor than the top of the range,
+     * not the ones nearest it. */
+    @Query("SELECT * FROM photos WHERE takenAt < :takenAt OR (takenAt = :takenAt AND photoId <= :photoId) ORDER BY takenAt DESC, photoId DESC LIMIT :limit")
+    suspend fun pageFromKey(
+        takenAt: String,
+        photoId: String,
+        limit: Int,
+    ): List<PhotoEntity>
+
+    @Query("SELECT * FROM photos ORDER BY takenAt DESC, photoId DESC LIMIT :limit")
+    suspend fun pageFromStart(limit: Int): List<PhotoEntity>
+
+    @Query("SELECT * FROM photos WHERE takenAt < :afterTakenAt OR (takenAt = :afterTakenAt AND photoId < :afterPhotoId) ORDER BY takenAt DESC, photoId DESC LIMIT :limit")
+    suspend fun pageAfter(
+        afterTakenAt: String,
+        afterPhotoId: String,
+        limit: Int,
+    ): List<PhotoEntity>
+
+    @Query(
+        """
+        SELECT * FROM (
+            SELECT * FROM photos
+            WHERE takenAt > :beforeTakenAt OR (takenAt = :beforeTakenAt AND photoId > :beforePhotoId)
+            ORDER BY takenAt ASC, photoId ASC
+            LIMIT :limit
+        ) ORDER BY takenAt DESC, photoId DESC
+        """,
+    )
+    suspend fun pageBefore(
+        beforeTakenAt: String,
+        beforePhotoId: String,
+        limit: Int,
+    ): List<PhotoEntity>
 
     @Query("SELECT * FROM photos WHERE photoId = :photoId")
     suspend fun getByPhotoId(photoId: String): PhotoEntity?
