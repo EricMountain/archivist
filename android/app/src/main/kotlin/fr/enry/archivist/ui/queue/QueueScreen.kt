@@ -83,8 +83,14 @@ private fun QueueRow(
         Column(Modifier.weight(1f)) {
             Text(item.displayName, style = MaterialTheme.typography.bodyMedium)
             Text(stateLabel(item.state), style = MaterialTheme.typography.bodySmall)
-            if (item.state == UploadState.FAILED && item.lastError != null) {
-                Text(item.lastError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            // Shown regardless of state, not just UploadState.FAILED -- a retriable
+            // failure (network blip, server 500, an undecodable file) never moves the
+            // row out of whatever stage it failed in (see UploadRepository.recordAttempt),
+            // so without this a row stuck retrying looks identical to one making real
+            // progress, which is exactly what hid the video-thumbnailing bug.
+            item.lastError?.let { error ->
+                val text = if (item.state == UploadState.FAILED) error else "Retrying (attempt ${item.attempts}): $error"
+                Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
         if (item.state == UploadState.FAILED) {

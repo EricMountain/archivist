@@ -40,7 +40,7 @@ class ThumbnailerInstrumentedTest {
             val media = MediaStoreFixtures.insertJpeg(context, "thumbnailer_instrumented_${System.nanoTime()}.jpg", width = 3000, height = 2000)
             inserted += media
 
-            val thumbnails = thumbnailer.generate(media.contentUri)
+            val thumbnails = thumbnailer.generate(media.contentUri, "image/jpeg")
 
             assertEquals(Thumbnailer.SIZES.size, thumbnails.size)
             for (thumb in thumbnails) {
@@ -61,7 +61,7 @@ class ThumbnailerInstrumentedTest {
             val media = MediaStoreFixtures.insertJpeg(context, "thumbnailer_instrumented_small_${System.nanoTime()}.jpg", width = 64, height = 48)
             inserted += media
 
-            val thumbnails = thumbnailer.generate(media.contentUri)
+            val thumbnails = thumbnailer.generate(media.contentUri, "image/jpeg")
 
             for (thumb in thumbnails) {
                 assertEquals(64, thumb.width)

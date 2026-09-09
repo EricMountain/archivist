@@ -34,8 +34,10 @@ import fr.enry.archivist.data.repo.UploadOutcome
 import fr.enry.archivist.data.repo.UploadRepository
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 private const val KEY_QUEUE_ID = "queueId"
 private const val NOTIFICATION_CHANNEL_ID = "uploads"
@@ -194,11 +196,22 @@ class UploadWorker
                     // getActiveIds() (not observeRemainingCount(), which still counts
                     // UploadState.FAILED rows a user hasn't dismissed -- see
                     // QueueViewModel's own "active" check) is what decides that.
-                    if (!settings.uploadAsForegroundService) {
-                        if (uploadQueueDao.getActiveIds().isEmpty()) {
-                            cancelProgressNotification()
-                        } else {
-                            postProgressNotification()
+                    //
+                    // withContext(NonCancellable): this whole block runs in a `finally`
+                    // that a cancelled work item (a single row's own "Cancel" button, or
+                    // the OS reclaiming the job) reaches with its coroutine Job already
+                    // cancelled -- without NonCancellable, getActiveIds()'s first
+                    // suspension point throws CancellationException immediately (every
+                    // coroutines guide's standard "suspending in a finally after
+                    // cancellation" pitfall), skipping this notification cleanup
+                    // entirely rather than running it.
+                    withContext(NonCancellable) {
+                        if (!settings.uploadAsForegroundService) {
+                            if (uploadQueueDao.getActiveIds().isEmpty()) {
+                                cancelProgressNotification()
+                            } else {
+                                postProgressNotification()
+                            }
                         }
                     }
                 }
@@ -370,6 +383,16 @@ class UploadWorker
 
             fun cancelAll(context: Context) {
                 WorkManager.getInstance(context).cancelAllWorkByTag(UPLOAD_WORK_TAG)
+                // A foreground notification is torn down by WorkManager itself once
+                // its service stops, but the background-mode one (posted/cancelled by
+                // plain NotificationManagerCompat calls -- see postProgressNotification's
+                // doc) has no such owner and nothing else ever reacts to "uploads
+                // paused" -- doWork()'s own finally block only clears it once the whole
+                // *queue* drains to done/failed, which never happens while paused with
+                // rows still sitting in it. Found live: pausing left the "uploading"
+                // notification showing indefinitely.
+                NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
+                NotificationManagerCompat.from(context).cancel(NEEDS_UNLOCK_NOTIFICATION_ID)
             }
         }
     }

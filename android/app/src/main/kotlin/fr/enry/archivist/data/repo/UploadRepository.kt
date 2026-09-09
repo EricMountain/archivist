@@ -219,7 +219,7 @@ class UploadRepository
                         ),
                     )
 
-                val thumbnails = thumbnailer.generate(row.localUri)
+                val thumbnails = thumbnailer.generate(row.localUri, mime)
                 // A source no wider/taller than the largest rung comes back at its own
                 // real size (Thumbnailer never upscales) — a reasonable stand-in for
                 // the original's own dimensions when EXIF had none. When the source

@@ -249,6 +249,15 @@ worth grepping for (`grep -rn '/\*' --include=*.kt | grep -v '/\*\*'`, restricte
 lines already inside a comment) if a future KSP failure names a real, correctly-imported
 class as unresolved.
 
+**Confirmed again, plan step 2.9's video-thumbnail addition:** `Thumbnailer.kt`'s
+interface doc wrote `` `video/*` `` (a MIME-glob shorthand, not a path this time) and hit
+the identical `kspDebugKotlin` symptom (`'AndroidThumbnailer' could not be resolved`)
+even though nothing about `AndroidThumbnailer`'s actual code had changed yet at the point
+the doc comment was added. Same fix, same bisection method (strip to a bare class, add
+doc paragraphs back one at a time). Any MIME-glob or path-glob phrase — `video/*`,
+`image/*`, `*.jpg` — is exactly as dangerous here as a CloudFront path; grep for the
+literal two-character sequence `/*`, not just `/media/*`-shaped strings specifically.
+
 ## CI and release (Gradle Play Publisher)
 
 **Applying `com.github.triplet.play` (GPP) breaks `assembleRelease`/`bundleRelease` for

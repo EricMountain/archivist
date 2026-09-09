@@ -67,4 +67,25 @@ class ThumbnailerTest {
     fun `sample size never goes below 1`() {
         assertEquals(1, sampleSizeFor(width = 300, height = 200, longestEdge = 2048))
     }
+
+    @Test
+    fun `poster frame time is one second into a video at least two seconds long`() {
+        assertEquals(1_000_000L, posterFrameTimeUs(durationMs = 10_000))
+    }
+
+    @Test
+    fun `poster frame time never exceeds one second in`() {
+        assertEquals(1_000_000L, posterFrameTimeUs(durationMs = 60_000))
+    }
+
+    @Test
+    fun `poster frame time stays inside a clip shorter than two seconds`() {
+        assertEquals(400_000L, posterFrameTimeUs(durationMs = 800))
+    }
+
+    @Test
+    fun `poster frame time is zero when duration is unknown`() {
+        assertEquals(0L, posterFrameTimeUs(durationMs = null))
+        assertEquals(0L, posterFrameTimeUs(durationMs = 0))
+    }
 }
