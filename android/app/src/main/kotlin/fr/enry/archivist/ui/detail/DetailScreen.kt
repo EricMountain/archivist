@@ -274,7 +274,7 @@ private fun ZoomableThumb(
             Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    detectPinchZoom { zoomChange, panChange ->
+                    detectPinchZoom(canPanWithOneFinger = { scale > 1f }) { zoomChange, panChange ->
                         val newScale = (scale * zoomChange).coerceIn(1f, 6f)
                         scale = newScale
                         offset = if (newScale <= 1f) Offset.Zero else offset + panChange
@@ -290,27 +290,33 @@ private fun ZoomableThumb(
 }
 
 /**
- * Two-pointer-only pinch-zoom gesture, shared by [ZoomableThumb] and the zoomed original
- * in [OriginalOverlay]. [onTransform] gets the raw per-frame zoom/pan deltas; each caller
+ * Pinch-zoom gesture, shared by [ZoomableThumb] and the zoomed original in
+ * [OriginalOverlay]. [onTransform] gets the raw per-frame zoom/pan deltas; each caller
  * owns its own scale/offset state and clamping, since the two callers clamp/reset
  * differently (or might, in the future) even though the detection logic itself doesn't.
  *
- * **Deliberately not `detectTransformGestures`** — that function starts consuming pan
- * deltas from a *single* pointer (it treats a one-finger drag as pan, not just
- * two-finger pinch), which would swallow whatever a single-finger drag over the same
- * area is supposed to do instead (swipe [HorizontalPager] to the next photo, for
- * [ZoomableThumb]). Confirmed live, not from documentation: with
- * `detectTransformGestures`, a real one-finger swipe across the image did nothing at
- * all — the pager below it never saw the gesture. This loop only claims events (and
- * only then calls `consume()`, which is what actually blocks anything else from also
- * seeing them) once a *second* pointer joins, so an ordinary one-finger swipe passes
- * through exactly as if this modifier weren't here at all.
+ * A second pointer always drives pan+zoom together. A *single* pointer only pans when
+ * [canPanWithOneFinger] says so (each caller passes `{ scale > 1f }`) — gated, not
+ * unconditional, because at `scale == 1f` a one-finger drag over [ZoomableThumb] needs
+ * to fall through untouched to [HorizontalPager]'s own swipe-to-next-photo gesture.
+ * Once zoomed in there's nothing left for the pager to do with that drag, so claiming it
+ * for panning is what lets a zoomed photo actually be panned around with one finger
+ * instead of forcing a zoom-out/zoom-back-in dance to reach a different part of it.
+ *
+ * **Deliberately not `detectTransformGestures`** — that function treats every
+ * single-finger drag as pan unconditionally, with no way to gate it on zoom level, which
+ * is exactly the [canPanWithOneFinger] check this needs. Confirmed live, not from
+ * documentation: with `detectTransformGestures`, a real one-finger swipe across an
+ * unzoomed thumbnail did nothing at all — the pager below it never saw the gesture.
  */
-private suspend fun PointerInputScope.detectPinchZoom(onTransform: (zoomChange: Float, panChange: Offset) -> Unit) {
+private suspend fun PointerInputScope.detectPinchZoom(
+    canPanWithOneFinger: () -> Boolean,
+    onTransform: (zoomChange: Float, panChange: Offset) -> Unit,
+) {
     awaitEachGesture {
         var event = awaitPointerEvent()
         while (event.changes.any { it.pressed }) {
-            if (event.changes.size >= 2) {
+            if (event.changes.size >= 2 || (event.changes.size == 1 && canPanWithOneFinger())) {
                 onTransform(event.calculateZoom(), event.calculatePan())
                 event.changes.forEach { it.consume() }
             }
@@ -454,7 +460,7 @@ private fun OriginalOverlay(
                                     Modifier
                                         .fillMaxSize()
                                         .pointerInput(Unit) {
-                                            detectPinchZoom { zoomChange, panChange ->
+                                            detectPinchZoom(canPanWithOneFinger = { scale > 1f }) { zoomChange, panChange ->
                                                 val newScale = (scale * zoomChange).coerceIn(1f, 6f)
                                                 scale = newScale
                                                 offset = if (newScale <= 1f) Offset.Zero else offset + panChange
