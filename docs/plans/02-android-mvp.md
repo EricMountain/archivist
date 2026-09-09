@@ -4,7 +4,9 @@ Read `docs/design/android.md` for the stack and the reasoning; this is the build
 
 **MVP means:** connect to an instance, sign in, enrol a key, back up selected folders,
 browse the timeline, view a photo, delete. Not: albums, search UI beyond facet browse,
-video playback, sharing, or multi-instance.
+sharing, or multi-instance. (Video playback of a downloaded original was originally
+excluded too — see 2.12's addendum below — but was added on request after the rest of
+the MVP shipped.)
 
 **Depends on** plan 01 being deployed to a `dev` instance, and step 1.16's conformance
 vectors existing.
@@ -328,6 +330,18 @@ thumbnails, and revoking key access produces the locked state rather than broken
 
 **Done when.** Detail opens from the grid, zooms, and shows an approximate-date marker
 for a photo lacking EXIF.
+
+**Addendum: video playback of a downloaded original.** Originally out of scope for the
+MVP (see the top of this file), added afterward on request. `OriginalOverlay` in
+`ui/detail/DetailScreen.kt` branches on the rendition's `mime`: `video/*` renders
+`ui/detail/VideoPlayer.kt` (a Media3 `ExoPlayer` wrapped in `PlayerView` via
+`AndroidView`) instead of the `BitmapFactory` path. The already-decrypted plaintext
+(`OriginalUiState.Ready.bytes`, unchanged — this reuses the existing "read the whole
+rendition into memory" download path, see `PhotoDetailRepository.downloadOriginal`'s own
+doc for why that's fine for this app's asset sizes) is written once to a file under
+`cacheDir` since ExoPlayer needs a `Uri`, not a byte array; the file is deleted when the
+player is released. No pinch-zoom for video — `PlayerView` owns its own touch surface
+(playback controls/scrubbing).
 
 ---
 
@@ -675,6 +689,7 @@ unchanged.
 
 ## Deliberately not in the MVP
 
-Video playback, albums, favourites, people, free-text search, sharing, multi-instance,
-web client, RAW handling on device. Each is a real feature; none is needed to prove the
-architecture works end to end.
+Albums, favourites, people, free-text search, sharing, multi-instance, web client, RAW
+handling on device. Each is a real feature; none is needed to prove the architecture
+works end to end. (Video playback of a downloaded original used to be on this list —
+see 2.12's addendum.)

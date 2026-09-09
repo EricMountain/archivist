@@ -61,7 +61,11 @@ sealed interface PhotoDetailUiState {
 sealed interface OriginalUiState {
     data object Loading : OriginalUiState
 
-    data class Ready(val bytes: ByteArray) : OriginalUiState
+    /** [mime]/[ext] come from the [RenditionSummary] this was downloaded for -- carried
+     * alongside the bytes (rather than looked up again from the rendition list at
+     * render time) so [fr.enry.archivist.ui.detail.OriginalOverlay] can tell a video
+     * rendition from an image one without needing the rendition itself in scope. */
+    data class Ready(val bytes: ByteArray, val mime: String, val ext: String) : OriginalUiState
 
     data class Error(val message: String) : OriginalUiState
 }
@@ -130,7 +134,8 @@ class DetailViewModel
             viewModelScope.launch {
                 val state =
                     try {
-                        OriginalUiState.Ready(photoDetailRepository.downloadOriginal(photoId, encDek, rendition))
+                        val bytes = photoDetailRepository.downloadOriginal(photoId, encDek, rendition)
+                        OriginalUiState.Ready(bytes, mime = rendition.mime, ext = rendition.ext)
                     } catch (e: IOException) {
                         OriginalUiState.Error(e.message ?: "couldn't download the original")
                     } catch (e: HttpException) {

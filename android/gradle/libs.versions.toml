@@ -31,6 +31,7 @@ androidxTestRunner = "1.6.2"
 work = "2.10.0"
 hiltWork = "1.2.0"
 paging = "3.5.1"
+media3 = "1.11.0"
 # Pinned to 3.3.0, not the latest (3.6.0): 3.4.0+ is compiled against a newer Kotlin
 # stdlib (2.3.10+) than this repo's pinned Kotlin 2.2.10 compiler can read
 # ("compiled with an incompatible version of Kotlin" at compile time) -- 3.3.0 is the
@@ -94,6 +95,11 @@ androidx-paging-testing = { group = "androidx.paging", name = "paging-testing", 
 # coil-compose transitively pulls in coil-android, which is where
 # SingletonImageLoader.Factory (ArchivistApplication's hook) lives.
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
+# Video playback of a downloaded-and-decrypted original (ui/detail/VideoPlayer.kt) --
+# media3-ui is PlayerView, wrapped via AndroidView since there's no Compose-native
+# ExoPlayer surface in this version.
+androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

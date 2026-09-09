@@ -429,8 +429,11 @@ private fun OriginalOverlay(
                         TextButton(onClick = onDismiss) { Text("Close") }
                     }
                 is OriginalUiState.Ready -> {
+                    val isVideo = state.mime.startsWith("video/")
                     val bitmap =
-                        remember(state.bytes) { BitmapFactory.decodeByteArray(state.bytes, 0, state.bytes.size) }
+                        remember(state.bytes, isVideo) {
+                            if (isVideo) null else BitmapFactory.decodeByteArray(state.bytes, 0, state.bytes.size)
+                        }
                     var scale by remember { mutableFloatStateOf(1f) }
                     var offset by remember { mutableStateOf(Offset.Zero) }
                     // A Box, not a Column with Close stacked above the image: a Column
@@ -446,7 +449,12 @@ private fun OriginalOverlay(
                     // A Box with the image filling it and Close layered on top as an
                     // overlay gives the image the true full-screen bounds either way.
                     Box(Modifier.fillMaxSize()) {
-                        if (bitmap != null) {
+                        if (isVideo) {
+                            // No pinch-zoom here -- PlayerView owns its own touch
+                            // surface (playback controls, scrubbing), and there's no
+                            // "zoomed video" concept the way there is for a still image.
+                            VideoPlayer(bytes = state.bytes, ext = state.ext, modifier = Modifier.fillMaxSize())
+                        } else if (bitmap != null) {
                             // Same pinch-zoom as ZoomableThumb (see detectPinchZoom's
                             // doc) -- this is the actual "zoom the original" behavior
                             // the previous, pass-through-broken overlay never really
