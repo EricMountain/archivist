@@ -134,4 +134,10 @@ interface PhotoDao {
 
     @Query("DELETE FROM photos")
     suspend fun clear()
+
+    /** [fr.enry.archivist.data.repo.TimelineRemoteMediator.initialize] uses this to tell
+     * a genuine cold start (needs a network refresh) apart from a new `PagingSource`
+     * generation caused by this table's own writes (doesn't) — see that function's doc. */
+    @Query("SELECT NOT EXISTS(SELECT 1 FROM photos)")
+    suspend fun isEmpty(): Boolean
 }

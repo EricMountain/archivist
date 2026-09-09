@@ -6,6 +6,7 @@ import androidx.paging.LoadType
 import androidx.paging.PagingConfig
 import androidx.paging.PagingState
 import androidx.paging.RemoteMediator
+import androidx.paging.RemoteMediator.InitializeAction
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.local.db.AppDatabase
@@ -209,5 +210,26 @@ class TimelineRemoteMediatorTest {
         runTest {
             val result = mediator.load(LoadType.REFRESH, emptyState())
             assertTrue(result is RemoteMediator.MediatorResult.Error)
+        }
+
+    @Test
+    fun `initialize launches a refresh when the cache is empty`() =
+        runTest {
+            assertEquals(InitializeAction.LAUNCH_INITIAL_REFRESH, mediator.initialize())
+        }
+
+    @Test
+    fun `initialize skips a refresh once photos are cached, avoiding a self-triggered clear`() =
+        runTest {
+            db.photoDao().upsertAll(
+                listOf(
+                    PhotoEntity(
+                        "p1", "2024-01-01T00:00:00.000Z", 0, "image/jpeg", 1, 1,
+                        AssetStatus.READY, emptyMap(), "dek", "mk-1",
+                    ),
+                ),
+            )
+
+            assertEquals(InitializeAction.SKIP_INITIAL_REFRESH, mediator.initialize())
         }
 }

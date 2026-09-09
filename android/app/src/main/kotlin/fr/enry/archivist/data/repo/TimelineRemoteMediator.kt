@@ -4,6 +4,7 @@ import androidx.paging.ExperimentalPagingApi
 import androidx.paging.LoadType
 import androidx.paging.PagingState
 import androidx.paging.RemoteMediator
+import androidx.paging.RemoteMediator.InitializeAction
 import androidx.room.Transactor
 import androidx.room.useWriterConnection
 import fr.enry.archivist.data.local.InstanceStore
@@ -35,6 +36,17 @@ import retrofit2.HttpException
  * whatever was already cached from a previous session stays exactly as it was, and the
  * `PagingSource` above keeps serving it directly from Room regardless of whether this
  * mediator's own fetch just failed.
+ *
+ * [initialize] matters more than it looks: any write to `photos` — including this very
+ * class's own `APPEND` upsert below, or [PhotoRepository.refreshLatest]'s — invalidates
+ * Room's `pagingSourceFactory`-generated `PagingSource` and starts a new `Pager`
+ * generation. `RemoteMediator`'s own default `initialize()` is `LAUNCH_INITIAL_REFRESH`,
+ * which fires a fresh mediator `REFRESH` for *every* such generation — i.e. this
+ * mediator would re-enter itself after its own append, `clear()` everything just
+ * upserted (and every older page loaded before it), and refetch only page one. That
+ * self-triggered clear-and-reload is what made ordinary downward scrolling hit a wall
+ * and jump back to the top at a fixed, reproducible point (right after the first extra
+ * page loads) rather than anything actually being wrong with the scroll gesture itself.
  */
 @OptIn(ExperimentalPagingApi::class)
 class TimelineRemoteMediator(
@@ -44,6 +56,13 @@ class TimelineRemoteMediator(
 ) : RemoteMediator<Int, PhotoEntity>() {
     private val photoDao = db.photoDao()
     private val timelineCursorDao = db.timelineCursorDao()
+
+    /** Only a genuinely empty cache (true cold start) needs the automatic `REFRESH`
+     * `LAUNCH_INITIAL_REFRESH` would trigger — see the class doc above. Every other new
+     * generation was caused by a write this mediator (or [PhotoRepository.refreshLatest])
+     * already made, so the existing rows just need to keep being served as-is. */
+    override suspend fun initialize(): InitializeAction =
+        if (photoDao.isEmpty()) InitializeAction.LAUNCH_INITIAL_REFRESH else InitializeAction.SKIP_INITIAL_REFRESH
 
     override suspend fun load(
         loadType: LoadType,
