@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test
 
 class TimelinePagingSourceTest {
     private lateinit var db: AppDatabase
+    private lateinit var jumpCoordinator: TimelineJumpCoordinator
     private lateinit var source: TimelinePagingSource
 
     private val config = PagingConfig(pageSize = 2, enablePlaceholders = false)
@@ -24,7 +25,8 @@ class TimelinePagingSourceTest {
     @BeforeEach
     fun setUp() {
         db = buildTestDatabase()
-        source = TimelinePagingSource(db, db.photoDao())
+        jumpCoordinator = TimelineJumpCoordinator()
+        source = TimelinePagingSource(db, db.photoDao(), jumpCoordinator)
     }
 
     @AfterEach
@@ -129,6 +131,75 @@ class TimelinePagingSourceTest {
 
             assertEquals(TimelineKey("2024-01-03T00:00:00.000Z", "p3"), source.getRefreshKey(state))
         }
+
+    @Test
+    fun `getRefreshKey returns null right after a jump, ignoring a stale anchor`() =
+        runTest {
+            // p1 is the anchor from *before* the jump -- no longer in the table at all
+            // once TimelineRemoteMediator has cleared+reseeded it around the jump
+            // target, exactly as it would post-jump.
+            seed(p3, p4)
+            jumpCoordinator.markJustReset()
+            val state =
+                PagingState(
+                    pages = listOf(PagingSource.LoadResult.Page<TimelineKey, PhotoEntity>(data = listOf(p1), prevKey = null, nextKey = null)),
+                    anchorPosition = 0,
+                    config = config,
+                    leadingPlaceholderCount = 0,
+                )
+
+            assertNull(source.getRefreshKey(state))
+        }
+
+    @Test
+    fun `getRefreshKey falls back to the anchor once the just-reset flag has been consumed`() =
+        runTest {
+            jumpCoordinator.markJustReset()
+            source.getRefreshKey(emptyRefreshState()) // consumes the flag
+
+            val state =
+                PagingState(
+                    pages = listOf(PagingSource.LoadResult.Page<TimelineKey, PhotoEntity>(data = listOf(p3), prevKey = null, nextKey = null)),
+                    anchorPosition = 0,
+                    config = config,
+                    leadingPlaceholderCount = 0,
+                )
+
+            assertEquals(TimelineKey("2024-01-03T00:00:00.000Z", "p3"), source.getRefreshKey(state))
+        }
+
+    /** The scenario the class doc calls out by name: jumping *forward*, but not all the
+     * way to the newest end, from an anchor the old (pre-jump) generation left behind.
+     * Trusting that stale anchor's `takenAt < :anchor` condition against the *new*
+     * (post-jump) window -- whose rows are all *newer* than the stale anchor here --
+     * would silently exclude everything and load nothing at all, rather than the top of
+     * the jumped-to window. */
+    @Test
+    fun `a forward jump not reaching the newest end still lands on the new window, not the stale anchor`() =
+        runTest {
+            // The jump target sits between p2 and p4 -- TimelineRemoteMediator would
+            // have reseeded exactly this window (p3, p2 here, newest of the window
+            // first) around it. The anchor left behind is p1 -- older than everything
+            // in the new window, which is what makes the naive anchor-based key wrong.
+            seed(p3, p2)
+            jumpCoordinator.markJustReset()
+            val staleState =
+                PagingState(
+                    pages = listOf(PagingSource.LoadResult.Page<TimelineKey, PhotoEntity>(data = listOf(p1), prevKey = null, nextKey = null)),
+                    anchorPosition = 0,
+                    config = config,
+                    leadingPlaceholderCount = 0,
+                )
+
+            val refreshKey = source.getRefreshKey(staleState)
+            assertNull(refreshKey)
+
+            val result = source.load(PagingSource.LoadParams.Refresh(key = refreshKey, loadSize = 2, placeholdersEnabled = false))
+            assertEquals(listOf("p3", "p2"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
+        }
+
+    private fun emptyRefreshState() =
+        PagingState<TimelineKey, PhotoEntity>(pages = emptyList(), anchorPosition = null, config = config, leadingPlaceholderCount = 0)
 
     /** The actual regression this class exists to fix: a `RemoteMediator`-triggered
      * generation restart re-anchors on the item the user was actually viewing even

@@ -93,13 +93,25 @@ interface ArchivistApi {
 
     /** Plan step 2.11's `RemoteMediator` calls this once per page — see
      * [fr.enry.archivist.data.repo.TimelineRemoteMediator]. [cursor] is the opaque
-     * string `dto.ts`'s `GET /photos` returns, never constructed client-side. */
+     * string `dto.ts`'s `GET /photos` returns, never constructed client-side. [from]/
+     * [to] are the server's inclusive range bound (`routes/photos.ts`'s `getPhotos` —
+     * must be supplied together or not at all) — used only for a fast-scroll jump to an
+     * arbitrary timestamp, never alongside [cursor]. */
     @GET
     suspend fun getPhotos(
         @Url url: String,
         @Query("cursor") cursor: String? = null,
         @Query("limit") limit: Int? = null,
+        @Query("from") from: String? = null,
+        @Query("to") to: String? = null,
     ): PhotosPageResponse
+
+    /** `GET /photos/bounds` in api.md, design.md pattern 14 — the fast-scroll range for
+     * the timeline scrollbar. Both fields absent when the owner has no live photos. */
+    @GET
+    suspend fun getPhotosBounds(
+        @Url url: String,
+    ): PhotosBoundsResponse
 
     /** Plan step 2.12: single-asset detail — `GET /photos/{photoId}` in `api.md`. Unlike
      * [getPhotos], `routes/photos.ts`'s `getPhoto` returns the raw `#META`/`R#` items
@@ -328,6 +340,10 @@ data class TimelineEntryDto(
 
 @Serializable
 data class PhotosPageResponse(val items: List<TimelineEntryDto>, val cursor: String? = null)
+
+/** `GET /photos/bounds` — see [ArchivistApi.getPhotosBounds]. */
+@Serializable
+data class PhotosBoundsResponse(val oldest: String? = null, val newest: String? = null)
 
 /** The subset of `MetaItem` (`src/core/items.ts`) plan step 2.12 needs — see
  * [ArchivistApi.getPhoto]'s doc for why this doesn't declare the item's full field set.

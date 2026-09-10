@@ -31,6 +31,7 @@ import fr.enry.archivist.data.local.db.TimelineKey
 class TimelinePagingSource(
     db: AppDatabase,
     private val photoDao: PhotoDao,
+    private val jumpCoordinator: TimelineJumpCoordinator,
 ) : PagingSource<TimelineKey, PhotoEntity>() {
     private val observer =
         object : InvalidationTracker.Observer("photos") {
@@ -45,11 +46,25 @@ class TimelinePagingSource(
     /** [PagingState.closestItemToPosition] is the standard pattern for an item-keyed
      * source (mirrors Android's own "network + item key" `PagingSource` recipe, just
      * applied to a local table): the anchor's own identity, not its position, survives
-     * the restart this triggers. */
-    override fun getRefreshKey(state: PagingState<TimelineKey, PhotoEntity>): TimelineKey? =
-        state.anchorPosition?.let { anchor ->
+     * the restart this triggers.
+     *
+     * The one exception is a fast-scroll jump: [TimelineJumpCoordinator.consumeJustReset]
+     * comes back `true` only for the generation immediately after
+     * [TimelineRemoteMediator] clears+reseeds the table around a jump target, at which
+     * point the *previous* generation's anchor refers to a row that has nothing to do
+     * with where the user just asked to go. Trusting it anyway would silently mis-land
+     * a jump that doesn't reach all the way to the newest end: e.g. jumping from an
+     * anchor in 2019 forward to 2021 (not "now") would resolve to `takenAt < 2019`,
+     * which — restricted to the new [EPOCH_ISO]`..2021` window — excludes everything
+     * between 2019 and 2021 and lands back near 2019. Returning `null` instead forces
+     * [PhotoDao.pageFromStart], which is unconditionally correct here: the table now
+     * contains exactly the jumped-to window, so its own top *is* the jump target. */
+    override fun getRefreshKey(state: PagingState<TimelineKey, PhotoEntity>): TimelineKey? {
+        if (jumpCoordinator.consumeJustReset()) return null
+        return state.anchorPosition?.let { anchor ->
             state.closestItemToPosition(anchor)?.let { TimelineKey(it.takenAt, it.photoId) }
         }
+    }
 
     override suspend fun load(params: LoadParams<TimelineKey>): LoadResult<TimelineKey, PhotoEntity> =
         try {

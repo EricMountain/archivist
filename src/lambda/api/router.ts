@@ -11,6 +11,7 @@ import {
   deleteRendition,
   getPhoto,
   getPhotos,
+  getPhotosBounds,
   getTrash,
   patchRendition,
   postRestore,
@@ -48,6 +49,7 @@ export const routes: Record<string, RouteEntry> = {
   "POST /uploads": { handler: postUpload, authMode: "owner" },
 
   "GET /photos": { handler: getPhotos, authMode: "owner" },
+  "GET /photos/bounds": { handler: getPhotosBounds, authMode: "owner" },
   "GET /photos/{photoId}": { handler: getPhoto, authMode: "owner" },
   "PATCH /photos/{photoId}/renditions/{renditionId}": {
     handler: patchRendition,

@@ -42,10 +42,12 @@ import androidx.paging.compose.itemKey
 import coil3.compose.AsyncImage
 import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.ui.detail.DetailScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.settings.SettingsScreen
+import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -88,6 +90,7 @@ fun TimelineScreen(
 
     val items = viewModel.timeline.collectAsLazyPagingItems()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
+    val bounds by viewModel.bounds.collectAsStateWithLifecycle()
 
     // Hoisted above the selectedPhotoId branch below (rather than left for
     // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so it
@@ -97,6 +100,26 @@ fun TimelineScreen(
     // recreated from scratch next time, which without this hoist reset scroll position
     // to the top on every "open a photo, then back out".
     val gridState = rememberLazyGridState()
+
+    // A fast-scroll jump (TimelineScrollbar) stages its target on TimelineViewModel,
+    // then this triggers the actual REFRESH -- LazyPagingItems.refresh() is a Compose-
+    // layer call, so ViewModel.onJumpRequested can't do it itself. Once the jumped-to
+    // window has actually loaded, gridState is told to land on its top explicitly:
+    // unlike PhotoRepository.refreshLatest's plain upsert (which never disturbs scroll
+    // position on purpose, see that function's own doc), a genuine REFRESH doesn't reset
+    // scroll position on its own, and an intentional jump needs it to.
+    var pendingJumpScroll by remember { mutableStateOf(false) }
+    val onJump: (Instant) -> Unit = { target ->
+        viewModel.onJumpRequested(target)
+        pendingJumpScroll = true
+        items.refresh()
+    }
+    LaunchedEffect(pendingJumpScroll, items.loadState.refresh, items.itemCount) {
+        if (pendingJumpScroll && items.loadState.refresh is LoadState.NotLoading && items.itemCount > 0) {
+            gridState.scrollToItem(0)
+            pendingJumpScroll = false
+        }
+    }
 
     // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
     // state, not a nav-library back stack -- this app has none yet (see MainActivity's
@@ -125,7 +148,9 @@ fun TimelineScreen(
             items = items,
             host = host,
             gridState = gridState,
+            bounds = bounds,
             onPhotoClick = { selectedPhotoId = it },
+            onJump = onJump,
             modifier = Modifier.weight(1f),
         )
     }
@@ -144,7 +169,9 @@ private fun TimelineGrid(
     items: LazyPagingItems<TimelineItem>,
     host: String?,
     gridState: LazyGridState,
+    bounds: TimelineBounds?,
     onPhotoClick: (String) -> Unit,
+    onJump: (Instant) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val refreshState = items.loadState.refresh
@@ -174,7 +201,17 @@ private fun TimelineGrid(
                 )
             }
 
-        else -> TimelineItemGrid(items, host, gridState, onPhotoClick, modifier)
+        else ->
+            Box(modifier.fillMaxSize()) {
+                TimelineItemGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
+                TimelineScrollbar(
+                    gridState = gridState,
+                    items = items,
+                    bounds = bounds,
+                    onJump = onJump,
+                    modifier = Modifier.align(Alignment.TopEnd),
+                )
+            }
     }
 }
 
@@ -189,7 +226,7 @@ private fun TimelineItemGrid(
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 96.dp),
         state = gridState,
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier,
     ) {
         items(
             count = items.itemCount,

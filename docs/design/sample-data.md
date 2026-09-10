@@ -706,6 +706,36 @@ July 2026 only (pattern 3) is the same query with a range condition:
 Because the sort key is `<takenAt>#<photoId>`, `:to` needs no `#` suffix — every real
 key at that instant sorts after the bare timestamp.
 
+### Timeline bounds (pattern 14)
+
+The fast-scroll range: two `Limit: 1` queries against the same rows, one ascending, one
+descending — no `BETWEEN`, no cursor.
+
+```js
+{
+  IndexName: "timeline_gsi",
+  KeyConditionExpression: "timelinePk = :o",
+  ExpressionAttributeValues: { ":o": "O#01J7X…" },
+  ScanIndexForward: true,
+  Limit: 1
+}
+// → A4, timelineSk "2011-03-02T19:44:10.000Z#01K5A2QF7NKD3VYB8MQXTG5HW9" → oldest 2011-03-02T19:44:10.000Z
+```
+
+```js
+{
+  IndexName: "timeline_gsi",
+  KeyConditionExpression: "timelinePk = :o",
+  ExpressionAttributeValues: { ":o": "O#01J7X…" },
+  ScanIndexForward: false,
+  Limit: 1
+}
+// → A10, timelineSk "2026-08-02T16:05:33.000Z#01K5A2QYN4WRB8VXK3TDMQ7HFC" → newest 2026-08-02T16:05:33.000Z
+```
+
+The trash partition (A9) is a different `timelinePk` and never enters into this —
+the fast-scroll range only ever covers what's actually visible in the timeline.
+
 ### Facets (patterns 4, 5, 7, 8)
 
 All four are one query shape with a different partition key.

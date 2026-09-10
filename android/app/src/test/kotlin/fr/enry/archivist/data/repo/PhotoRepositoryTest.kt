@@ -36,6 +36,7 @@ class PhotoRepositoryTest {
     private lateinit var tempDir: File
     private lateinit var db: AppDatabase
     private lateinit var instanceStore: InstanceStore
+    private lateinit var jumpCoordinator: TimelineJumpCoordinator
     private lateinit var repository: PhotoRepository
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -59,7 +60,8 @@ class PhotoRepositoryTest {
                 cognitoAuthClient = CognitoAuthClient(FakeCognitoAuthApi(), json),
             )
 
-        repository = PhotoRepository(db, instanceStore, archivistApiFactory)
+        jumpCoordinator = TimelineJumpCoordinator()
+        repository = PhotoRepository(db, instanceStore, archivistApiFactory, jumpCoordinator)
     }
 
     @AfterEach
@@ -131,5 +133,43 @@ class PhotoRepositoryTest {
     fun `refreshLatest with no connected instance is a no-op, not a crash`() =
         runTest {
             repository.refreshLatest()
+        }
+
+    @Test
+    fun `requestJump stages the target on the shared jump coordinator`() =
+        runTest {
+            repository.requestJump(java.time.Instant.parse("2021-06-15T00:00:00.000Z"))
+
+            assertEquals("2021-06-15T00:00:00.000Z", jumpCoordinator.consumePendingTarget())
+        }
+
+    @Test
+    fun `fetchTimelineBounds parses the oldest and newest instants`() =
+        runTest {
+            connectInstance()
+            server.enqueue(
+                MockResponse().setResponseCode(200)
+                    .setBody("""{"oldest":"2011-03-02T19:44:10.000Z","newest":"2026-08-02T16:05:33.000Z"}"""),
+            )
+
+            val bounds = repository.fetchTimelineBounds()
+
+            assertEquals(java.time.Instant.parse("2011-03-02T19:44:10.000Z"), bounds?.oldest)
+            assertEquals(java.time.Instant.parse("2026-08-02T16:05:33.000Z"), bounds?.newest)
+        }
+
+    @Test
+    fun `fetchTimelineBounds returns null for an owner with no photos`() =
+        runTest {
+            connectInstance()
+            server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+            assertEquals(null, repository.fetchTimelineBounds())
+        }
+
+    @Test
+    fun `fetchTimelineBounds with no connected instance returns null, not a crash`() =
+        runTest {
+            assertEquals(null, repository.fetchTimelineBounds())
         }
 }

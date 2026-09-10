@@ -43,6 +43,7 @@ class TimelineRemoteMediatorTest {
     private lateinit var tempDir: File
     private lateinit var db: AppDatabase
     private lateinit var instanceStore: InstanceStore
+    private lateinit var jumpCoordinator: TimelineJumpCoordinator
     private lateinit var mediator: RemoteMediator<TimelineKey, PhotoEntity>
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -83,7 +84,8 @@ class TimelineRemoteMediatorTest {
                 cognitoAuthClient = CognitoAuthClient(FakeCognitoAuthApi(), json),
             )
 
-        mediator = TimelineRemoteMediator(instanceStore, archivistApiFactory, db)
+        jumpCoordinator = TimelineJumpCoordinator()
+        mediator = TimelineRemoteMediator(instanceStore, archivistApiFactory, db, jumpCoordinator)
     }
 
     @AfterEach
@@ -158,6 +160,47 @@ class TimelineRemoteMediatorTest {
             mediator.load(LoadType.REFRESH, emptyState())
 
             assertNull(db.photoDao().getByPhotoId("stale"))
+        }
+
+    @Test
+    fun `refresh with a pending jump target sends it as the to bound and marks just-reset`() =
+        runTest {
+            connectInstance()
+            jumpCoordinator.requestJump("2021-06-15T00:00:00.000Z")
+            photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
+
+            mediator.load(LoadType.REFRESH, emptyState())
+
+            assertEquals("2021-06-15T00:00:00.000Z", lastRequest?.requestUrl?.queryParameter("to"))
+            assertEquals(EPOCH_ISO, lastRequest?.requestUrl?.queryParameter("from"))
+            assertTrue(jumpCoordinator.consumeJustReset())
+        }
+
+    @Test
+    fun `refresh with no pending jump target sends neither from nor to, and doesn't mark just-reset`() =
+        runTest {
+            connectInstance()
+            photosResponseBody = """{"items":[]}"""
+
+            mediator.load(LoadType.REFRESH, emptyState())
+
+            assertNull(lastRequest?.requestUrl?.queryParameter("to"))
+            assertNull(lastRequest?.requestUrl?.queryParameter("from"))
+            assertTrue(!jumpCoordinator.consumeJustReset())
+        }
+
+    @Test
+    fun `a pending jump target is consumed even if that refresh is the only one`() =
+        runTest {
+            connectInstance()
+            jumpCoordinator.requestJump("2021-06-15T00:00:00.000Z")
+            photosResponseBody = """{"items":[]}"""
+
+            mediator.load(LoadType.REFRESH, emptyState())
+
+            // Consumed by the load above -- a second REFRESH (e.g. a later
+            // pull-to-refresh) must not still think a jump is pending.
+            assertNull(jumpCoordinator.consumePendingTarget())
         }
 
     @Test

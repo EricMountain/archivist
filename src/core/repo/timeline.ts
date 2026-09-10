@@ -73,6 +73,44 @@ export function trashPage(
   return queryTimelinePartition(trashGsi1Pk(ownerId), opts);
 }
 
+/** Pattern 14: the oldest and newest `takenAt` in the live timeline — the fast-scroll
+ * range a client needs to map a scrollbar drag onto an absolute point in time, without
+ * pulling a full count or per-day histogram. Two single-item queries rather than
+ * `queryTimelinePartition`, whose cursor/limit-clamp plumbing doesn't fit a bare
+ * `LIMIT 1` lookup. Both fields absent when the owner has no live photos at all. */
+export async function timelineBounds(ownerId: string): Promise<{ oldest?: string; newest?: string }> {
+  const pk = timelineGsi1Pk(ownerId);
+  const [oldest, newest] = await Promise.all([
+    ddb().send(
+      new QueryCommand({
+        TableName: tableName(),
+        IndexName: "timeline_gsi",
+        KeyConditionExpression: "timelinePk = :pk",
+        ExpressionAttributeValues: { ":pk": pk },
+        ScanIndexForward: true,
+        Limit: 1,
+      }),
+    ),
+    ddb().send(
+      new QueryCommand({
+        TableName: tableName(),
+        IndexName: "timeline_gsi",
+        KeyConditionExpression: "timelinePk = :pk",
+        ExpressionAttributeValues: { ":pk": pk },
+        ScanIndexForward: false,
+        Limit: 1,
+      }),
+    ),
+  ]);
+
+  const oldestEntry = (oldest.Items?.[0] as TimelineEntry | undefined)?.timelineSk;
+  const newestEntry = (newest.Items?.[0] as TimelineEntry | undefined)?.timelineSk;
+  return {
+    oldest: oldestEntry?.split("#")[0],
+    newest: newestEntry?.split("#")[0],
+  };
+}
+
 /** Pattern 12: assets whose retention has expired — the purge sweep's input. */
 export async function purgeCandidates(
   ownerId: string,

@@ -108,6 +108,7 @@ locals {
     "PUT /keys/hash-secret",
     "POST /uploads",
     "GET /photos",
+    "GET /photos/bounds",
     "GET /photos/{photoId}",
     "PATCH /photos/{photoId}/renditions/{renditionId}",
     "DELETE /photos/{photoId}",

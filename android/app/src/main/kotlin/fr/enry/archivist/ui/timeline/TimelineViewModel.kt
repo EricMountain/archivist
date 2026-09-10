@@ -11,6 +11,7 @@ import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
+import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.UploadEvents
 import java.io.IOException
 import java.time.Instant
@@ -18,12 +19,15 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import retrofit2.HttpException
 
 /** One grid cell — either a photo or a date header inserted ahead of the first photo
@@ -81,7 +85,7 @@ internal fun Flow<PagingData<PhotoEntity>>.toTimelineItems(): Flow<PagingData<Ti
 class TimelineViewModel
     @Inject
     constructor(
-        photoRepository: PhotoRepository,
+        private val photoRepository: PhotoRepository,
         masterKeyHolder: MasterKeyHolder,
         instanceStore: InstanceStore,
         uploadEvents: UploadEvents,
@@ -104,7 +108,33 @@ class TimelineViewModel
                 .toTimelineItems()
                 .cachedIn(viewModelScope)
 
+        /** The fast-scroll range — `null` until the first successful fetch, or if it
+         * keeps failing; [TimelineScrollbar] falls back to hiding/disabling fast-scroll
+         * in that case rather than blocking the grid on it. */
+        private val _bounds = MutableStateFlow<TimelineBounds?>(null)
+        val bounds: StateFlow<TimelineBounds?> = _bounds.asStateFlow()
+
+        /** A fast-scroll drag was released — see [PhotoRepository.requestJump]'s own
+         * doc for how this reaches the `Pager`. Staging the target here isn't enough on
+         * its own: the caller (the composable holding the `LazyPagingItems`) still has
+         * to call `items.refresh()` to actually trigger the `REFRESH` the mediator
+         * picks it up on. */
+        fun onJumpRequested(target: Instant) = photoRepository.requestJump(target)
+
+        private fun refreshBounds() {
+            viewModelScope.launch {
+                try {
+                    photoRepository.fetchTimelineBounds()?.let { _bounds.value = it }
+                } catch (e: IOException) {
+                    // offline -- keep whatever range (possibly none) is already shown.
+                } catch (e: HttpException) {
+                    // server error -- same as above.
+                }
+            }
+        }
+
         init {
+            refreshBounds()
             // See UploadEvents' own doc for why the timeline needs this at all (unlike
             // the queue screen, which observes `upload_queue` directly): the upload
             // pipeline never writes to the `photos` table itself, so nothing else here
@@ -124,6 +154,9 @@ class TimelineViewModel
                     } catch (e: HttpException) {
                         // server error -- see doc above.
                     }
+                    // The newest end of the range may just have moved -- best-effort,
+                    // same swallow-and-retry-next-time reasoning as refreshBounds itself.
+                    refreshBounds()
                 }.launchIn(viewModelScope)
         }
     }

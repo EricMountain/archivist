@@ -82,6 +82,7 @@ wherever the two describe bytes.**
 | 11 | List the trash, most recently deleted first | `timeline_gsi`, `O#<owner>#TRASH` |
 | 12 | Find assets whose retention has expired | `timeline_gsi`, trash partition, SK `<` cutoff |
 | 13 | List every owner in the deployment (for the purge sweep) | `REGISTRY#OWNERS`, `Query` on PK |
+| 14 | Oldest and newest `takenAt`, by owner (fast-scroll range) | `timeline_gsi`, `Limit 1`, `ScanIndexForward` true/false |
 
 Queries 4 and 5 collapse into one index: "contains a dog" and "shot on a Canon R5"
 are both *facets* — a `(type, value)` pair attached to a photo. One index, one code

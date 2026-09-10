@@ -55,6 +55,7 @@ class TimelineRemoteMediator(
     private val instanceStore: InstanceStore,
     private val archivistApiFactory: ArchivistApiFactory,
     private val db: AppDatabase,
+    private val jumpCoordinator: TimelineJumpCoordinator,
 ) : RemoteMediator<TimelineKey, PhotoEntity>() {
     private val photoDao = db.photoDao()
     private val timelineCursorDao = db.timelineCursorDao()
@@ -71,6 +72,12 @@ class TimelineRemoteMediator(
         state: PagingState<TimelineKey, PhotoEntity>,
     ): MediatorResult {
         return try {
+            // Only REFRESH ever consults a pending jump target: it's the one branch
+            // that already clears+reseeds the table wholesale, so seeding that fetch
+            // with a `to` bound instead of none is the only change a jump needs here --
+            // see PhotoRepository.requestJump's own doc.
+            val jumpTargetIso = if (loadType == LoadType.REFRESH) jumpCoordinator.consumePendingTarget() else null
+
             val cursor =
                 when (loadType) {
                     LoadType.REFRESH -> null
@@ -84,7 +91,23 @@ class TimelineRemoteMediator(
             val instance = instanceStore.current.first() ?: return MediatorResult.Error(IllegalStateException("no connected instance"))
             val api = apiFor(instance)
             val response =
-                api.getPhotos(photosUrl(instance.document.apiBase), cursor = cursor, limit = state.config.pageSize)
+                api.getPhotos(
+                    photosUrl(instance.document.apiBase),
+                    cursor = cursor,
+                    limit = state.config.pageSize,
+                    from = jumpTargetIso?.let { EPOCH_ISO },
+                    to = jumpTargetIso,
+                )
+
+            // TimelinePagingSource.getRefreshKey's own re-anchor logic assumes the
+            // *previous* generation's scroll position is still meaningful -- true for
+            // every REFRESH except a jump-seeded one, where the table is about to be
+            // cleared and reseeded around an arbitrary new target having nothing to do
+            // with where the user was previously scrolled. Set *before* the write
+            // below, not after: Room's InvalidationTracker can fire as part of the
+            // transaction commit itself, and the next generation's getRefreshKey has to
+            // see this flag already set whenever that happens, not lose a race with it.
+            if (jumpTargetIso != null) jumpCoordinator.markJustReset()
 
             // Not androidx.room.withTransaction: that extension still routes through the
             // legacy SupportSQLiteOpenHelper-based transaction API, which a
@@ -119,6 +142,13 @@ class TimelineRemoteMediator(
 
 /** Shared with [PhotoRepository.refreshLatest] — same endpoint, same URL shape. */
 internal fun photosUrl(apiBase: String) = "$apiBase/photos"
+
+/** [PhotoRepository.fetchTimelineBounds]'s URL — `GET /photos/bounds` in api.md. */
+internal fun photosBoundsUrl(apiBase: String) = "$apiBase/photos/bounds"
+
+/** A jump's `from` bound: old enough that no real photo predates it, so `to` alone
+ * effectively bounds the query — the server requires both or neither (`routes/photos.ts`). */
+internal const val EPOCH_ISO = "1970-01-01T00:00:00.000Z"
 
 private fun nowIso(): String = Instant.now().truncatedTo(ChronoUnit.MILLIS).toString()
 

@@ -77,6 +77,7 @@ authorization model in one sentence.
 | `PUT /keys/hash-secret` | Stores the owner's wrapped `hashSecret`, used to HMAC `contentHash` for dedup. | Owner |
 | `POST /uploads` | The stem/hash handshake: validates client-asserted metadata, checks for an existing live/trashed/purged match by content hash, creates or attaches to an asset, and returns **presigned S3 PUT URLs** for the ciphertext and thumbnails. | Owner |
 | `GET /photos` | Timeline page, paginated. | Owner |
+| `GET /photos/bounds` | Oldest/newest `takenAt` in the live timeline — the fast-scroll range for the Android client's timeline scrollbar. | Owner |
 | `GET /photos/{photoId}` | Single asset detail. | Owner |
 | `PATCH /photos/{photoId}/renditions/{renditionId}` | Rendition mutation (currently: rename via path). | Owner |
 | `DELETE /photos/{photoId}` | Trashes an asset (soft delete, tombstone). | Owner |

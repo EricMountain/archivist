@@ -3,7 +3,7 @@
 import { ApiError } from "@archivist/core/errors";
 import { toIsoUtc } from "@archivist/core/time";
 import { getAssetPartition } from "@archivist/core/repo/media";
-import { timelinePage, trashPage } from "@archivist/core/repo/timeline";
+import { timelineBounds, timelinePage, trashPage } from "@archivist/core/repo/timeline";
 import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
 import { getHashPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
@@ -35,6 +35,14 @@ export const getPhotos: RouteHandler = async (req: ApiRequest) => {
   });
 
   return ok({ items: page.items.map(timelineEntryDto), cursor: page.cursor });
+};
+
+/** The fast-scroll range: oldest/newest `takenAt` in the owner's live timeline —
+ * `GET /photos/bounds` (api.md), pattern 14 in design.md. */
+export const getPhotosBounds: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const bounds = await timelineBounds(ownerId);
+  return ok(bounds);
 };
 
 export const getPhoto: RouteHandler = async (req: ApiRequest) => {

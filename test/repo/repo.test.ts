@@ -17,7 +17,7 @@ import { toIsoUtc } from "../../src/core/time";
 import { getAssetPartition } from "../../src/core/repo/media";
 import { attachRendition, createAsset } from "../../src/core/repo/ingest";
 import { facetPage } from "../../src/core/repo/facets";
-import { timelinePage } from "../../src/core/repo/timeline";
+import { timelineBounds, timelinePage } from "../../src/core/repo/timeline";
 import { restoreAsset, trashAsset } from "../../src/core/repo/trash";
 import type { FacetItem, MetaItem, RenditionItem } from "../../src/core/items";
 
@@ -179,6 +179,31 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
     // Newest (Jan 5) first.
     expect(seen[0]).toBe(created[4]);
     expect(seen[4]).toBe(created[0]);
+  });
+
+  it("finds the oldest and newest takenAt in the timeline", async () => {
+    const owner = `01BOUNDS${newUlid().slice(0, 18)}`;
+    const takenAts = [
+      toIsoUtc(new Date(Date.UTC(2019, 5, 1))),
+      toIsoUtc(new Date(Date.UTC(2026, 0, 1))),
+      toIsoUtc(new Date(Date.UTC(2022, 11, 25))),
+    ];
+    for (const takenAt of takenAts) {
+      const meta = baseMeta({ ownerId: owner, takenAt });
+      const rend = baseRendition();
+      await createAsset({ stem: meta.stem, path: rend.path, hmac: rend.contentHash, meta, rendition: rend });
+    }
+
+    const bounds = await timelineBounds(owner);
+    expect(bounds.oldest).toBe(takenAts[0]);
+    expect(bounds.newest).toBe(takenAts[1]);
+  });
+
+  it("returns no bounds for an owner with an empty timeline", async () => {
+    const owner = `01EMPTYBOUNDS${newUlid().slice(0, 12)}`;
+    const bounds = await timelineBounds(owner);
+    expect(bounds.oldest).toBeUndefined();
+    expect(bounds.newest).toBeUndefined();
   });
 
   it("queries facet_gsi for a label", async () => {
