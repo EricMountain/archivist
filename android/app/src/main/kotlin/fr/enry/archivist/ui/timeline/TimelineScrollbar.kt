@@ -5,10 +5,12 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -30,58 +32,52 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.paging.compose.LazyPagingItems
 import fr.enry.archivist.data.repo.TimelineBounds
 import java.time.Instant
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import kotlin.math.abs
-import kotlin.math.ln
+import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Replaces the platform's default `LazyVerticalGrid` scroll indicator, which
- * `docs/plans/STATUS.md`'s 2026-09-10 entry traces to
- * `LazyGridLayoutInfo.calculateContentSize()` (Compose Foundation 1.10.0): it estimates
- * total content size from the *currently visible* lines' average main-axis size,
- * extrapolated across every line — a poor estimate once a grid mixes full-width date
- * headers with square photo cells, since that average shifts depending on how many
- * headers happen to be on screen right now. That's confirmed from Foundation's own
- * decompiled source, not guesswork, and there's no public API to suppress it — this
- * composable just draws over the same screen region with something driven by real
- * timestamps instead.
+ * The timeline's scrollbar, and the fast-scroll rail it turns into on a long press.
  *
- * Two states, same visual thumb:
- * - **Idle**: position tracks the first visible photo's `takenAt` as a fraction of
- *   [TimelineBounds.oldest]..[TimelineBounds.newest] — this alone is what makes the
- *   thumb move proportionally to elapsed time instead of sitting at a fixed fraction.
- * - **Fast-scroll**: a long-press-and-drag on the hit-target strip enters drag mode
- *   (haptic, thumb expands, a loupe with the selected date appears), tracks the drag
- *   with [applyFastScrollGain]'s velocity-gated dual gain, and on release calls [onJump]
- *   with the selected instant. The caller (`TimelineScreen`) is responsible for actually
- *   triggering the `REFRESH` (`LazyPagingItems.refresh()`) and scrolling to the top of
- *   the newly-loaded window — this composable only reports the target.
+ * Replaces the platform's own `LazyVerticalGrid` scroll indicator, whose position comes
+ * from `LazyGridLayoutInfo.calculateContentSize()` — an estimate extrapolated from the
+ * average height of whichever rows happen to be on screen, which a grid mixing
+ * full-width date headers with square photo cells never gives a stable answer to.
+ *
+ * Idle: a thin thumb whose position is the first visible photo's `takenAt` as a fraction
+ * of [TimelineBounds.oldest]..[TimelineBounds.newest] — time, not item count, so it means
+ * the same thing whether the library is dense or sparse at that point.
+ *
+ * Held: the rail expands into a labelled synthesis of the whole library ([timelineTicks])
+ * so the target date is visible *before* the finger gets there, and the thumb tracks the
+ * finger **absolutely** — the y it is touched at is the point in time it selects. The
+ * first version accumulated per-frame deltas through a velocity-dependent gain instead,
+ * which meant a full-height drag moved the selection a fraction of the range and the
+ * thumb visibly lagged the finger; direct mapping is what "follow my finger" actually
+ * requires, and magnifying around the touch point is a separate concern layered on top
+ * later, not a substitute for getting this right.
  */
 @Composable
 fun TimelineScrollbar(
     gridState: LazyGridState,
     items: LazyPagingItems<TimelineItem>,
     bounds: TimelineBounds?,
-    onJump: (Instant) -> Unit,
+    onJump: (Instant?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Nothing meaningful to show without a real time range -- rather than fall back to
-    // the old (broken) index-based guess, this just lets the platform's own indicator
-    // show through until the range loads, same as before this feature existed.
     if (bounds == null) return
 
     val haptics = LocalHapticFeedback.current
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
-    var isFastScrolling by remember { mutableStateOf(false) }
-    var dragFraction by remember { mutableFloatStateOf(0f) }
+    var heldFraction by remember { mutableStateOf<Float?>(null) }
 
     val idleFraction by remember(items, bounds) {
         derivedStateOf {
@@ -90,51 +86,127 @@ fun TimelineScrollbar(
         }
     }
 
-    val thumbFraction = if (isFastScrolling) dragFraction else (idleFraction ?: 0f)
+    val held = heldFraction
+    val thumbFraction = held ?: idleFraction ?: 0f
 
-    Box(
-        modifier
-            .fillMaxHeight()
-            .width(FAST_SCROLL_HIT_TARGET_WIDTH)
-            .onSizeChanged { trackHeightPx = it.height.toFloat() }
-            .pointerInput(bounds) {
-                detectFastScrollGesture(
-                    trackHeightPx = { trackHeightPx },
-                    startFraction = { idleFraction ?: 0f },
-                    onStart = { fraction ->
-                        isFastScrolling = true
-                        dragFraction = fraction
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    },
-                    onDrag = { fraction -> dragFraction = fraction },
-                    onEnd = { committed ->
-                        if (committed) onJump(instantAtFraction(dragFraction, bounds))
-                        isFastScrolling = false
-                    },
-                )
-            },
-    ) {
+    // The rail's own width, so its background and labels aren't measured against the
+    // narrow touch strip (which clipped the background and wrapped the date pill onto
+    // four lines). Only the strip inside it takes pointer input — the rest of this is
+    // transparent and non-interactive, so photos underneath stay tappable.
+    Box(modifier.fillMaxHeight().width(RAIL_WIDTH)) {
+        if (held != null) {
+            TimelineRail(bounds = bounds, trackHeightPx = trackHeightPx)
+        }
+
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .fillMaxHeight()
+                .width(HIT_TARGET_WIDTH)
+                .onSizeChanged { trackHeightPx = it.height.toFloat() }
+                .pointerInput(bounds) {
+                    detectFastScrollGesture(
+                        onStart = { y ->
+                            heldFraction = fractionAt(y, trackHeightPx)
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        },
+                        onDrag = { y -> heldFraction = fractionAt(y, trackHeightPx) },
+                        onEnd = {
+                            heldFraction?.let { onJump(jumpTargetFor(it, bounds)) }
+                            heldFraction = null
+                        },
+                    )
+                },
+        )
+
         ScrollbarThumb(
             fraction = thumbFraction,
             trackHeightPx = trackHeightPx,
-            expanded = isFastScrolling,
+            expanded = held != null,
             modifier = Modifier.align(Alignment.TopEnd),
         )
 
-        if (isFastScrolling) {
-            FastScrollLoupe(
-                selectedInstant = instantAtFraction(dragFraction, bounds),
-                fraction = dragFraction,
+        if (held != null) {
+            SelectedDateLabel(
+                instant = instantAtFraction(held, bounds),
+                fraction = held,
                 trackHeightPx = trackHeightPx,
-                modifier = Modifier.align(Alignment.TopEnd),
+                modifier = Modifier.align(Alignment.TopStart),
             )
         }
     }
 }
 
-private val FAST_SCROLL_HIT_TARGET_WIDTH = 48.dp
-private val IDLE_THUMB_SIZE_DP = 4.dp to 32.dp
-private val EXPANDED_THUMB_SIZE_DP = 10.dp to 48.dp
+private val HIT_TARGET_WIDTH = 48.dp
+private val RAIL_WIDTH = 96.dp
+private val IDLE_THUMB = 4.dp to 40.dp
+private val HELD_THUMB = 10.dp to 40.dp
+
+/** The whole library laid out along the track, so the drag has something to aim at. */
+@Composable
+private fun TimelineRail(
+    bounds: TimelineBounds,
+    trackHeightPx: Float,
+) {
+    val density = LocalDensity.current
+    val ticks = remember(bounds) { timelineTicks(bounds) }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
+    ) {
+        for (tick in ticks) {
+            val y = with(density) { (tick.fraction * trackHeightPx).toDp() }
+            Text(
+                text = tick.label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (tick.major) FontWeight.SemiBold else FontWeight.Normal,
+                color =
+                    MaterialTheme.colorScheme.onSurface.copy(
+                        alpha = if (tick.major) 0.85f else 0.45f,
+                    ),
+                modifier =
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .offset(x = 8.dp, y = y - 8.dp),
+            )
+        }
+    }
+}
+
+/** The precise date under the finger, offset clear of it so it isn't covered. */
+@Composable
+private fun SelectedDateLabel(
+    instant: Instant,
+    fraction: Float,
+    trackHeightPx: Float,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val y = with(density) { (fraction * trackHeightPx).toDp() }
+    Box(
+        modifier
+            // Unbounded, or the pill is measured against the rail's width and the date
+            // wraps one character per line.
+            .wrapContentSize(align = Alignment.TopEnd, unbounded = true)
+            .offset(x = (-12).dp, y = y - 18.dp),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.primary,
+            shadowElevation = 4.dp,
+        ) {
+            Text(
+                text = SELECTED_DATE_FORMATTER.format(instant.atZone(ZoneId.systemDefault())),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onPrimary,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
 
 @Composable
 private fun ScrollbarThumb(
@@ -143,9 +215,9 @@ private fun ScrollbarThumb(
     expanded: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val (widthDp, heightDp) = if (expanded) EXPANDED_THUMB_SIZE_DP else IDLE_THUMB_SIZE_DP
+    val (widthDp, heightDp) = if (expanded) HELD_THUMB else IDLE_THUMB
     val heightPx = with(LocalDensity.current) { heightDp.toPx() }
-    val y = (fraction * (trackHeightPx - heightPx)).coerceAtLeast(0f)
+    val y = (fraction * trackHeightPx - heightPx / 2f).coerceIn(0f, (trackHeightPx - heightPx).coerceAtLeast(0f))
     Box(
         modifier
             .padding(end = 4.dp)
@@ -155,85 +227,32 @@ private fun ScrollbarThumb(
     )
 }
 
-/** Offsets (seconds from the centered instant) the loupe's ruler shows — a small, fixed
- * set of calendar-meaningful distances rather than a continuous axis, since a tick every
- * few pixels would be unreadable text at this size. [logTickOffsetPx] spaces them: close
- * ones (a day) spread out for precision, far ones (a year) compress — the "magnified
- * area around the finger" the feature was asked for. */
-private val LOUPE_TICK_OFFSETS_SECONDS = listOf(-365L * 86400, -30L * 86400, -7L * 86400, -86400L, 0L, 86400L, 7L * 86400, 30L * 86400, 365L * 86400)
-private val LOUPE_TICK_SCALE_PX_PER_LOG_UNIT = 22f
-
-@Composable
-private fun FastScrollLoupe(
-    selectedInstant: Instant,
-    fraction: Float,
-    trackHeightPx: Float,
-    modifier: Modifier = Modifier,
-) {
-    val density = LocalDensity.current
-    val yPx = fraction * trackHeightPx
-    val y = with(density) { yPx.toDp() }
-    Box(modifier.offset(x = (-96).dp, y = y)) {
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = MaterialTheme.colorScheme.primaryContainer,
-            shadowElevation = 4.dp,
-        ) {
-            Box(Modifier.padding(vertical = 8.dp)) {
-                for (offsetSeconds in LOUPE_TICK_OFFSETS_SECONDS) {
-                    val tickInstant = selectedInstant.plusSeconds(offsetSeconds)
-                    val offsetPx = logTickOffsetPx(offsetSeconds, LOUPE_TICK_SCALE_PX_PER_LOG_UNIT)
-                    val offsetDp = with(density) { offsetPx.toDp() }
-                    Text(
-                        text = LOUPE_DATE_FORMATTER.format(tickInstant.atZone(ZoneOffset.UTC)),
-                        style = if (offsetSeconds == 0L) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelSmall,
-                        color =
-                            if (offsetSeconds == 0L) {
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
-                            },
-                        modifier =
-                            Modifier
-                                .align(Alignment.CenterStart)
-                                .offset(x = 12.dp, y = offsetDp)
-                                .padding(end = 12.dp),
-                    )
-                }
-            }
-        }
-    }
-}
-
-private val LOUPE_DATE_FORMATTER = DateTimeFormatter.ofPattern("d MMM yyyy")
+private val SELECTED_DATE_FORMATTER = DateTimeFormatter.ofPattern("d MMM yyyy")
 
 private const val LONG_PRESS_MS = 250L
-internal const val FAST_SCROLL_VELOCITY_THRESHOLD_PX_PER_S = 2000f
-internal const val FAST_SCROLL_FINE_GAIN = 0.15f
 
 /**
- * Long-press (no more than the platform's own touch slop of movement for
- * [LONG_PRESS_MS]) on the hit-target strip enters fast-scroll; until then nothing is
- * consumed, so an ordinary fast swipe that happens to start within the strip is
- * untouched — [LazyGridState]'s own `scrollable` modifier sees the same unconsumed
- * events and scrolls normally, and this detector simply times out having claimed
- * nothing. Once confirmed, every subsequent pointer event *is* consumed, which is what
- * stops the grid from also reacting to the same drag.
+ * Long-press on the rail, then drag. Nothing is consumed until the press is confirmed,
+ * so an ordinary swipe that happens to start on the rail scrolls the grid normally —
+ * [LazyGridState]'s own `scrollable` modifier sees the same unconsumed events, and this
+ * detector just times out having claimed nothing. Everything after confirmation *is*
+ * consumed, which is what stops the grid reacting to the same drag.
+ *
+ * Positions are handed on raw and absolute; the caller maps y to a fraction of the
+ * track. There is deliberately no delta accumulation and no gain here.
  */
 private suspend fun PointerInputScope.detectFastScrollGesture(
-    trackHeightPx: () -> Float,
-    startFraction: () -> Float,
-    onStart: (fraction: Float) -> Unit,
-    onDrag: (fraction: Float) -> Unit,
-    onEnd: (committed: Boolean) -> Unit,
+    onStart: (y: Float) -> Unit,
+    onDrag: (y: Float) -> Unit,
+    onEnd: () -> Unit,
 ) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         val downPosition = down.position
 
-        // Times out (returns null) only if the pointer is still down, still within
-        // touch slop, for the full duration -- see the class doc above for why an
-        // early return (still-Unit-typed) means "not a long press" instead.
+        // Times out (returns null) only if the pointer stayed down, within touch slop,
+        // for the full duration — that is the long press. Any early return means the
+        // gesture resolved as something else and this must not claim it.
         val abortedEarly =
             withTimeoutOrNull(LONG_PRESS_MS) {
                 while (true) {
@@ -245,35 +264,24 @@ private suspend fun PointerInputScope.detectFastScrollGesture(
             } != null
         if (abortedEarly) return@awaitEachGesture
 
-        var fraction = startFraction()
-        onStart(fraction)
-        var lastPosition = downPosition
-        var lastUptimeMs = down.uptimeMillis
+        onStart(downPosition.y)
         while (true) {
             val event = awaitPointerEvent()
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
             if (!change.pressed) {
                 change.consume()
-                onEnd(true)
                 break
             }
-            val dtSeconds = ((change.uptimeMillis - lastUptimeMs).coerceAtLeast(1)) / 1000f
-            val deltaPx = change.position.y - lastPosition.y
-            val velocityPxPerSec = deltaPx / dtSeconds
-            fraction = applyFastScrollGain(fraction, deltaPx, trackHeightPx(), velocityPxPerSec)
-            onDrag(fraction)
-            lastPosition = change.position
-            lastUptimeMs = change.uptimeMillis
+            onDrag(change.position.y)
             change.consume()
         }
+        onEnd()
     }
 }
 
 /** The idle thumb's own row: nearest photo at or after [startIndex] (skipping a
  * [TimelineItem.Header], which has no `takenAt` of its own), read via
- * [LazyPagingItems.peek] so this never triggers a placeholder load just to draw a
- * scrollbar position. `null` when nothing nearby is loaded yet (e.g. right after a
- * jump, before the new page has composed). */
+ * [LazyPagingItems.peek] so drawing a scrollbar never triggers a page load. */
 internal fun nearestPhotoTakenAt(
     items: LazyPagingItems<TimelineItem>,
     startIndex: Int,
@@ -285,20 +293,22 @@ internal fun nearestPhotoTakenAt(
     return null
 }
 
-/** Fraction along the full track -> the [Instant] it represents. `0f` is
+internal fun fractionAt(
+    y: Float,
+    trackHeightPx: Float,
+): Float = if (trackHeightPx <= 0f) 0f else (y / trackHeightPx).coerceIn(0f, 1f)
+
+/** Fraction along the track -> the [Instant] it represents. `0f` is
  * [TimelineBounds.newest] (top of the newest-first grid), `1f` is
- * [TimelineBounds.oldest] (bottom) — matches [TimelineScreen]'s own top-to-bottom,
- * newest-to-oldest order. */
+ * [TimelineBounds.oldest]. */
 internal fun instantAtFraction(
     fraction: Float,
     bounds: TimelineBounds,
 ): Instant {
     val clamped = fraction.coerceIn(0f, 1f)
     val totalMillis = bounds.newest.toEpochMilli() - bounds.oldest.toEpochMilli()
-    // Double, not Float, for this multiplication: a multi-year range in milliseconds
-    // (order 1e11-1e12) already exceeds a Float's ~7-significant-digit precision, which
-    // silently rounded fraction=1f short of bounds.oldest by a visible amount --
-    // confirmed live, not hypothetically (see TimelineScrollbarTest).
+    // Double, not Float: a multi-year range in milliseconds (order 1e11) already exceeds
+    // a Float's ~7 significant digits, which rounded fraction=1f visibly short of oldest.
     return bounds.newest.minusMillis((totalMillis * clamped.toDouble()).toLong())
 }
 
@@ -313,35 +323,83 @@ internal fun fractionAtInstant(
 }
 
 /**
- * Velocity-gated dual gain — the "fast = coarse, slow = precise" behavior the fast-scroll
- * gesture is for, without a stateful recursive lens model: a fast drag (at or above
- * [FAST_SCROLL_VELOCITY_THRESHOLD_PX_PER_S]) moves the selected fraction 1:1 with the
- * finger, covering the whole library in one swipe; a slow drag moves it at
- * [FAST_SCROLL_FINE_GAIN] instead, so small, deliberate finger movements resolve to
- * small time deltas even when the library spans years. [trackHeightPx] of `0` (not yet
- * measured) is a no-op rather than a divide-by-zero.
+ * Null — meaning "back to the present", an unbounded refresh — for a release at the very
+ * top of the track, rather than a bounded window at `newest`. Two reasons: the server's
+ * `to` bound is exclusive of photos at exactly that instant (`timelineSk` is
+ * `<takenAt>#<photoId>`, so a bare timestamp sorts before every real key at it, per
+ * sample-data.md), which would drop the newest photo; and it makes the top of the rail
+ * the reliable way back to a normal, present-anchored timeline after a jump.
  */
-internal fun applyFastScrollGain(
-    currentFraction: Float,
-    deltaPx: Float,
-    trackHeightPx: Float,
-    velocityPxPerSec: Float,
-): Float {
-    if (trackHeightPx <= 0f) return currentFraction
-    val gain = if (abs(velocityPxPerSec) >= FAST_SCROLL_VELOCITY_THRESHOLD_PX_PER_S) 1f else FAST_SCROLL_FINE_GAIN
-    val deltaFraction = (deltaPx / trackHeightPx) * gain
-    return (currentFraction + deltaFraction).coerceIn(0f, 1f)
+internal fun jumpTargetFor(
+    fraction: Float,
+    bounds: TimelineBounds,
+): Instant? = if (fraction <= TOP_OF_RAIL_FRACTION) null else instantAtFraction(fraction, bounds)
+
+private const val TOP_OF_RAIL_FRACTION = 0.01f
+
+/** One label on the fast-scroll rail. [fraction] is its position along the track. */
+internal data class TimelineTick(
+    val fraction: Float,
+    val label: String,
+    val major: Boolean,
+)
+
+/**
+ * The whole library as a handful of labelled points — years for a long library, months
+ * for a short one — so a drag can be aimed rather than guessed at. Granularity adapts to
+ * the span because both extremes are useless: month labels across fifteen years are an
+ * unreadable smear, and year labels across eight months are a single tick.
+ *
+ * Positions are linear in *time*, matching [instantAtFraction] exactly — a rail whose
+ * labels didn't agree with where a drag actually lands would be worse than none.
+ */
+internal fun timelineTicks(
+    bounds: TimelineBounds,
+    zone: ZoneId = ZoneId.systemDefault(),
+    maxTicks: Int = 14,
+): List<TimelineTick> {
+    val oldest = bounds.oldest.atZone(zone)
+    val newest = bounds.newest.atZone(zone)
+    if (!oldest.isBefore(newest)) return emptyList()
+
+    val months = ChronoUnit.MONTHS.between(oldest.withDayOfMonth(1), newest.withDayOfMonth(1)).toInt() + 1
+    val stepMonths = TICK_STEPS_MONTHS.firstOrNull { months / it <= maxTicks } ?: TICK_STEPS_MONTHS.last()
+    val yearOnly = stepMonths >= 12
+
+    // Labels land on round dates (a January, or a quarter start) rather than wherever
+    // the library happens to begin — the point is a legible scale, not an exact
+    // reproduction of the range's endpoints.
+    val alignTo = if (yearOnly) 12 else stepMonths
+    var cursor = oldest.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)
+    while ((cursor.monthValue - 1) % alignTo != 0) cursor = cursor.plusMonths(1)
+    while (cursor.isBefore(oldest)) cursor = cursor.plusMonths(stepMonths.toLong())
+
+    val ticks = mutableListOf<TimelineTick>()
+    while (!cursor.isAfter(newest)) {
+        ticks +=
+            TimelineTick(
+                fraction = fractionAtInstant(cursor.toInstant(), bounds),
+                label = if (yearOnly) cursor.year.toString() else MONTH_TICK_FORMATTER.format(cursor),
+                major = if (yearOnly) cursor.year % 5 == 0 else cursor.monthValue == 1,
+            )
+        cursor = cursor.plusMonths(stepMonths.toLong())
+    }
+
+    // A library spanning less than one step boundary would otherwise draw an empty rail,
+    // which reads as broken rather than as "there's not much here".
+    if (ticks.size < 2) {
+        return listOf(
+            TimelineTick(0f, MONTH_TICK_FORMATTER.format(newest), major = true),
+            TimelineTick(1f, MONTH_TICK_FORMATTER.format(oldest), major = true),
+        )
+    }
+    // Top-down, i.e. newest first and fraction ascending — the order the rail is read in,
+    // and the same order as the grid beside it. Generation walks the other way because
+    // it has to start from a round boundary at the old end.
+    return ticks.asReversed()
 }
 
-/** Log-scale screen offset for a loupe tick this many seconds from the centered instant
- * — nearby ticks spread out, distant ones compress, the "magnified area around the
- * finger" the feature was asked for. Used by [FastScrollLoupe]'s ruler; pulled out as a
- * pure function so the spacing math has JVM-only test coverage independent of Compose. */
-internal fun logTickOffsetPx(
-    secondsFromCenter: Long,
-    scalePxPerLogUnit: Float,
-): Float {
-    if (secondsFromCenter == 0L) return 0f
-    val sign = if (secondsFromCenter > 0) 1f else -1f
-    return sign * scalePxPerLogUnit * ln(1f + abs(secondsFromCenter).toFloat() / 60f)
-}
+/** Month steps to try, coarsening until the whole range fits in `maxTicks` labels. */
+private val TICK_STEPS_MONTHS = listOf(1, 2, 3, 6, 12, 24, 60, 120)
+
+private val MONTH_TICK_FORMATTER = DateTimeFormatter.ofPattern("MMM yyyy")

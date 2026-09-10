@@ -181,6 +181,32 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
     expect(seen[4]).toBe(created[0]);
   });
 
+  it("returns a range oldest-first when ascending, so a client can load the page just newer than its cache", async () => {
+    const owner = `01ASCEND${newUlid().slice(0, 18)}`;
+    const takenAts = [
+      toIsoUtc(new Date(Date.UTC(2024, 0, 1))),
+      toIsoUtc(new Date(Date.UTC(2024, 0, 2))),
+      toIsoUtc(new Date(Date.UTC(2024, 0, 3))),
+      toIsoUtc(new Date(Date.UTC(2024, 0, 4))),
+    ];
+    const ids: string[] = [];
+    for (const takenAt of takenAts) {
+      const meta = baseMeta({ ownerId: owner, takenAt });
+      const rend = baseRendition();
+      await createAsset({ stem: meta.stem, path: rend.path, hmac: rend.contentHash, meta, rendition: rend });
+      ids.push(meta.photoId);
+    }
+
+    // Anchor on Jan 2 — the two rows immediately newer are Jan 3 then Jan 4, and the
+    // anchor itself comes back first because `from` is inclusive.
+    const page = await timelinePage(owner, { from: takenAts[1], to: "9999-12-31T23:59:59.999Z", ascending: true, limit: 3 });
+    expect(page.items.map((i) => photoIdFromMediaPk(i.pk))).toEqual([ids[1], ids[2], ids[3]]);
+
+    // The default (newest-first) form of the same range would start at the far end.
+    const descending = await timelinePage(owner, { from: takenAts[1], to: "9999-12-31T23:59:59.999Z", limit: 3 });
+    expect(photoIdFromMediaPk(descending.items[0]!.pk)).toBe(ids[3]);
+  });
+
   it("finds the oldest and newest takenAt in the timeline", async () => {
     const owner = `01BOUNDS${newUlid().slice(0, 18)}`;
     const takenAts = [

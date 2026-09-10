@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -101,24 +102,12 @@ fun TimelineScreen(
     // to the top on every "open a photo, then back out".
     val gridState = rememberLazyGridState()
 
-    // A fast-scroll jump (TimelineScrollbar) stages its target on TimelineViewModel,
-    // then this triggers the actual REFRESH -- LazyPagingItems.refresh() is a Compose-
-    // layer call, so ViewModel.onJumpRequested can't do it itself. Once the jumped-to
-    // window has actually loaded, gridState is told to land on its top explicitly:
-    // unlike PhotoRepository.refreshLatest's plain upsert (which never disturbs scroll
-    // position on purpose, see that function's own doc), a genuine REFRESH doesn't reset
-    // scroll position on its own, and an intentional jump needs it to.
-    var pendingJumpScroll by remember { mutableStateOf(false) }
-    val onJump: (Instant) -> Unit = { target ->
-        viewModel.onJumpRequested(target)
-        pendingJumpScroll = true
-        items.refresh()
-    }
-    LaunchedEffect(pendingJumpScroll, items.loadState.refresh, items.itemCount) {
-        if (pendingJumpScroll && items.loadState.refresh is LoadState.NotLoading && items.itemCount > 0) {
-            gridState.scrollToItem(0)
-            pendingJumpScroll = false
-        }
+    // The grid lands on the top of a jumped-to window only once TimelineViewModel says
+    // the new window is actually committed to Room. Deliberately a one-shot event rather
+    // than a LaunchedEffect keyed on load state: keying on items.itemCount re-ran this on
+    // every page that loaded afterwards, yanking the grid back to the top mid-scroll.
+    LaunchedEffect(Unit) {
+        viewModel.jumpCompleted.collect { gridState.scrollToItem(0) }
     }
 
     // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
@@ -150,7 +139,7 @@ fun TimelineScreen(
             gridState = gridState,
             bounds = bounds,
             onPhotoClick = { selectedPhotoId = it },
-            onJump = onJump,
+            onJump = viewModel::onJumpRequested,
             modifier = Modifier.weight(1f),
         )
     }
@@ -171,7 +160,7 @@ private fun TimelineGrid(
     gridState: LazyGridState,
     bounds: TimelineBounds?,
     onPhotoClick: (String) -> Unit,
-    onJump: (Instant) -> Unit,
+    onJump: (Instant?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val refreshState = items.loadState.refresh
@@ -203,6 +192,15 @@ private fun TimelineGrid(
 
         else ->
             Box(modifier.fillMaxSize()) {
+                // The host view draws its own fading scroll indicator over any scrollable
+                // content, which has nothing to do with (and doesn't agree with) the
+                // time-based one below — Compose exposes no way to opt a single lazy
+                // layout out of it, so it's turned off at the View that actually draws it.
+                val view = LocalView.current
+                LaunchedEffect(view) {
+                    view.isVerticalScrollBarEnabled = false
+                    view.isHorizontalScrollBarEnabled = false
+                }
                 TimelineItemGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
                 TimelineScrollbar(
                     gridState = gridState,

@@ -16,6 +16,7 @@ import fr.enry.archivist.data.local.db.TimelineCursorEntity
 import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.remote.ArchivistApi
 import fr.enry.archivist.data.remote.ArchivistApiFactory
+import fr.enry.archivist.data.remote.PhotosPageResponse
 import fr.enry.archivist.data.remote.TimelineEntryDto
 import java.io.IOException
 import java.time.Instant
@@ -30,13 +31,20 @@ import retrofit2.HttpException
  * which this class tracks separately via [TimelineCursorEntity], the same decoupling the
  * "network + database" `RemoteMediator` recipe always uses.
  *
- * `REFRESH` always re-fetches page one and clears everything else — the standard
+ * `REFRESH` re-fetches from the newest photo and clears everything else — the standard
  * recipe, and safe here because it only touches the cache, never anything server-side.
- * Offline-first falls out of the architecture rather than needing its own code: a
- * `REFRESH` attempted with no network throws before this ever touches Room, so
+ * [reseedAt] is the same operation anchored at an arbitrary instant instead, for a
+ * fast-scroll jump. Offline-first falls out of the architecture rather than needing its
+ * own code: a fetch attempted with no network throws before this ever touches Room, so
  * whatever was already cached from a previous session stays exactly as it was, and the
  * `PagingSource` above keeps serving it directly from Room regardless of whether this
  * mediator's own fetch just failed.
+ *
+ * All three load types fetch: `APPEND` walks older via the stored server cursor,
+ * `PREPEND` walks newer via an ascending range query (see [loadNewerThanCache]). The
+ * latter exists only because jumps do — with the cache always anchored at the newest
+ * photo there is nothing newer to load, which is why it was a no-op until fast-scroll
+ * made "cache anchored mid-library" a reachable state.
  *
  * [initialize] matters more than it looks, and independently of [TimelinePagingSource]'s
  * own item-keyed fix for the same symptom: any write to `photos` — including this very
@@ -71,55 +79,125 @@ class TimelineRemoteMediator(
         loadType: LoadType,
         state: PagingState<TimelineKey, PhotoEntity>,
     ): MediatorResult {
+        return when (loadType) {
+            LoadType.REFRESH -> reseedAt(null)
+            LoadType.PREPEND -> loadNewerThanCache(state.config.pageSize)
+            LoadType.APPEND -> loadOlder(state.config.pageSize)
+        }
+    }
+
+    /**
+     * Replaces the whole cache with a page anchored at [targetIso] (a fast-scroll jump),
+     * or at the newest photo when it's null (an ordinary `REFRESH`, and the way back to
+     * the present after a jump). Public because [PhotoRepository.jumpTo] calls it
+     * *directly* rather than going through `LazyPagingItems.refresh()`: that route
+     * invalidates the pager before this has fetched anything, so
+     * [TimelinePagingSource.getRefreshKey] runs against the old cache with the reset flag
+     * not yet set — several generations flip past before settling, which is exactly the
+     * "bounces around the timeline a few times, then lands nowhere near the date I
+     * picked" the first version of this feature shipped with.
+     */
+    suspend fun reseedAt(targetIso: String?): MediatorResult {
         return try {
-            // Only REFRESH ever consults a pending jump target: it's the one branch
-            // that already clears+reseeds the table wholesale, so seeding that fetch
-            // with a `to` bound instead of none is the only change a jump needs here --
-            // see PhotoRepository.requestJump's own doc.
-            val jumpTargetIso = if (loadType == LoadType.REFRESH) jumpCoordinator.consumePendingTarget() else null
-
-            val cursor =
-                when (loadType) {
-                    LoadType.REFRESH -> null
-                    LoadType.PREPEND -> return MediatorResult.Success(endOfPaginationReached = true)
-                    LoadType.APPEND -> {
-                        timelineCursorDao.observe().first()?.cursor
-                            ?: return MediatorResult.Success(endOfPaginationReached = true)
-                    }
-                }
-
             val instance = instanceStore.current.first() ?: return MediatorResult.Error(IllegalStateException("no connected instance"))
-            val api = apiFor(instance)
             val response =
-                api.getPhotos(
+                apiFor(instance).getPhotos(
                     photosUrl(instance.document.apiBase),
-                    cursor = cursor,
-                    limit = state.config.pageSize,
-                    from = jumpTargetIso?.let { EPOCH_ISO },
-                    to = jumpTargetIso,
+                    cursor = null,
+                    limit = RESEED_PAGE_SIZE,
+                    from = targetIso?.let { EPOCH_ISO },
+                    to = targetIso,
                 )
 
             // TimelinePagingSource.getRefreshKey's own re-anchor logic assumes the
-            // *previous* generation's scroll position is still meaningful -- true for
-            // every REFRESH except a jump-seeded one, where the table is about to be
-            // cleared and reseeded around an arbitrary new target having nothing to do
-            // with where the user was previously scrolled. Set *before* the write
+            // *previous* generation's scroll position is still meaningful -- true for an
+            // ordinary refresh, false for a jump, which reseeds around a target having
+            // nothing to do with where the user was scrolled. Set *before* the write
             // below, not after: Room's InvalidationTracker can fire as part of the
             // transaction commit itself, and the next generation's getRefreshKey has to
-            // see this flag already set whenever that happens, not lose a race with it.
-            if (jumpTargetIso != null) jumpCoordinator.markJustReset()
+            // see this flag already set rather than lose a race with it.
+            jumpCoordinator.markJustReset()
+            writePage(response, clearFirst = true, advanceCursor = true)
+            MediatorResult.Success(endOfPaginationReached = response.cursor == null)
+        } catch (e: IOException) {
+            MediatorResult.Error(e)
+        } catch (e: HttpException) {
+            MediatorResult.Error(e)
+        }
+    }
 
-            // Not androidx.room.withTransaction: that extension still routes through the
-            // legacy SupportSQLiteOpenHelper-based transaction API, which a
-            // setDriver(...)-configured database (see TestDatabase.kt) has none of --
-            // useWriterConnection/Transactor is the driver-based replacement, and works
-            // identically against a framework-backed database too (this repo's real one).
-            db.useWriterConnection { transactor ->
-                transactor.withTransaction(Transactor.SQLiteTransactionType.IMMEDIATE) {
-                    if (loadType == LoadType.REFRESH) {
-                        photoDao.clear()
-                    }
-                    photoDao.upsertAll(response.items.map { it.toEntity() })
+    /**
+     * `PREPEND` — the page immediately *newer* than what's cached, which only matters
+     * once a jump has left the cache anchored somewhere in the middle of the library
+     * rather than at the newest photo. Without it a jump is a one-way trip: scrolling
+     * back toward the present dead-ends at the top of the jumped window.
+     *
+     * Needs design.md's pattern 3b (`order=asc`) rather than the timeline's usual
+     * newest-first read: the rows wanted are the ones *adjacent* to the cache, i.e. the
+     * oldest few of the range above it, not the newest few (which would be the top of
+     * the whole library). `from` is inclusive, so the anchor row itself comes back as
+     * the first item — a page containing only the anchor is how "nothing newer exists"
+     * is told apart from "here are the next few", without a second query.
+     */
+    private suspend fun loadNewerThanCache(pageSize: Int): MediatorResult {
+        return try {
+            val newestCached = photoDao.pageFromStart(1).firstOrNull() ?: return MediatorResult.Success(endOfPaginationReached = true)
+            val instance = instanceStore.current.first() ?: return MediatorResult.Error(IllegalStateException("no connected instance"))
+            val response =
+                apiFor(instance).getPhotos(
+                    photosUrl(instance.document.apiBase),
+                    cursor = null,
+                    limit = pageSize,
+                    from = newestCached.takenAt,
+                    to = FAR_FUTURE_ISO,
+                    order = "asc",
+                )
+
+            val newRows = response.items.filterNot { it.photoId == newestCached.photoId }
+            if (newRows.isEmpty()) return MediatorResult.Success(endOfPaginationReached = true)
+
+            // Deliberately no clear() and no cursor write: this direction is additive,
+            // and TimelineCursorEntity tracks the *append* (older) direction only.
+            writePage(response, clearFirst = false, advanceCursor = false)
+            MediatorResult.Success(endOfPaginationReached = false)
+        } catch (e: IOException) {
+            MediatorResult.Error(e)
+        } catch (e: HttpException) {
+            MediatorResult.Error(e)
+        }
+    }
+
+    private suspend fun loadOlder(pageSize: Int): MediatorResult {
+        return try {
+            val cursor = timelineCursorDao.observe().first()?.cursor ?: return MediatorResult.Success(endOfPaginationReached = true)
+            val instance = instanceStore.current.first() ?: return MediatorResult.Error(IllegalStateException("no connected instance"))
+            val response =
+                apiFor(instance).getPhotos(photosUrl(instance.document.apiBase), cursor = cursor, limit = pageSize)
+
+            writePage(response, clearFirst = false, advanceCursor = true)
+            MediatorResult.Success(endOfPaginationReached = response.cursor == null)
+        } catch (e: IOException) {
+            MediatorResult.Error(e)
+        } catch (e: HttpException) {
+            MediatorResult.Error(e)
+        }
+    }
+
+    // Not androidx.room.withTransaction: that extension still routes through the legacy
+    // SupportSQLiteOpenHelper-based transaction API, which a setDriver(...)-configured
+    // database (see TestDatabase.kt) has none of -- useWriterConnection/Transactor is the
+    // driver-based replacement, and works identically against a framework-backed
+    // database too (this repo's real one).
+    private suspend fun writePage(
+        response: PhotosPageResponse,
+        clearFirst: Boolean,
+        advanceCursor: Boolean,
+    ) {
+        db.useWriterConnection { transactor ->
+            transactor.withTransaction(Transactor.SQLiteTransactionType.IMMEDIATE) {
+                if (clearFirst) photoDao.clear()
+                photoDao.upsertAll(response.items.map { it.toEntity() })
+                if (advanceCursor) {
                     if (response.cursor != null) {
                         timelineCursorDao.set(TimelineCursorEntity(cursor = response.cursor, updatedAt = nowIso()))
                     } else {
@@ -127,12 +205,6 @@ class TimelineRemoteMediator(
                     }
                 }
             }
-
-            MediatorResult.Success(endOfPaginationReached = response.cursor == null)
-        } catch (e: IOException) {
-            MediatorResult.Error(e)
-        } catch (e: HttpException) {
-            MediatorResult.Error(e)
         }
     }
 
@@ -149,6 +221,15 @@ internal fun photosBoundsUrl(apiBase: String) = "$apiBase/photos/bounds"
 /** A jump's `from` bound: old enough that no real photo predates it, so `to` alone
  * effectively bounds the query — the server requires both or neither (`routes/photos.ts`). */
 internal const val EPOCH_ISO = "1970-01-01T00:00:00.000Z"
+
+/** A `PREPEND`'s `to` bound, for the same reason [EPOCH_ISO] is a jump's `from`: the
+ * range is really "everything newer than the anchor", and the server needs both ends. */
+internal const val FAR_FUTURE_ISO = "9999-12-31T23:59:59.999Z"
+
+/** A reseed (jump, or plain refresh) deliberately fetches more than one pager page:
+ * it's replacing the entire cache, so a single page's worth would leave the user one
+ * short scroll away from the edge in both directions. Server caps `limit` at 200. */
+private const val RESEED_PAGE_SIZE = 120
 
 private fun nowIso(): String = Instant.now().truncatedTo(ChronoUnit.MILLIS).toString()
 

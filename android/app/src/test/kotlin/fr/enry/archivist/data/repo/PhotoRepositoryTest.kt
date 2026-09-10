@@ -136,11 +136,34 @@ class PhotoRepositoryTest {
         }
 
     @Test
-    fun `requestJump stages the target on the shared jump coordinator`() =
+    fun `jumpTo replaces the cache with a window bounded at the target`() =
         runTest {
-            repository.requestJump(java.time.Instant.parse("2021-06-15T00:00:00.000Z"))
+            connectInstance()
+            db.photoDao().upsertAll(
+                listOf(
+                    PhotoEntity(
+                        "stale", "2024-01-01T00:00:00.000Z", 0, "image/jpeg", 1, 1,
+                        AssetStatus.READY, emptyMap(), "dek", "mk-1",
+                    ),
+                ),
+            )
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}]}"""))
 
-            assertEquals("2021-06-15T00:00:00.000Z", jumpCoordinator.consumePendingTarget())
+            assertEquals(true, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
+
+            val request = server.takeRequest()
+            assertEquals("2021-06-15T00:00:00.000Z", request.requestUrl?.queryParameter("to"))
+            assertNotNull(db.photoDao().getByPhotoId("jumped"))
+            assertEquals(null, db.photoDao().getByPhotoId("stale"))
+        }
+
+    @Test
+    fun `jumpTo reports failure rather than throwing when the fetch fails`() =
+        runTest {
+            connectInstance()
+            server.enqueue(MockResponse().setResponseCode(500))
+
+            assertEquals(false, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
         }
 
     @Test

@@ -1,17 +1,20 @@
 package fr.enry.archivist.ui.timeline
 
 import fr.enry.archivist.data.repo.TimelineBounds
+import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
-/** Coverage for the fast-scroll interaction math this project has no Compose UI test
- * harness to drive directly (see `android/AGENTS.md`'s "Robolectric has no native
- * JUnit5 support" entry) — everything here is a pure function precisely so it can be
- * tested without one. The gesture wiring itself (`detectFastScrollGesture`,
- * `TimelineScrollbar` composable) is manual-verification-only. */
+/** Coverage for the fast-scroll mapping and rail layout. Everything here is a pure
+ * function precisely so it can be tested without a Compose harness (this project has
+ * none — see `android/AGENTS.md`'s "Robolectric has no native JUnit5 support" entry);
+ * the gesture detection itself is manual-verification-only. */
 class TimelineScrollbarTest {
+    private val utc = ZoneId.of("UTC")
     private val bounds = TimelineBounds(oldest = Instant.parse("2011-03-02T19:44:10.000Z"), newest = Instant.parse("2026-08-02T16:05:33.000Z"))
 
     @Test
@@ -38,44 +41,91 @@ class TimelineScrollbarTest {
         assertEquals(1f, fractionAtInstant(bounds.oldest.minusSeconds(3600), bounds))
     }
 
+    /** The whole point of the rewrite: the touch position *is* the selection, with no
+     * accumulation and no gain, so half way down the track is half way through time. */
     @Test
-    fun `applyFastScrollGain moves 1 to 1 with the finger above the velocity threshold`() {
-        val result = applyFastScrollGain(currentFraction = 0.5f, deltaPx = 100f, trackHeightPx = 1000f, velocityPxPerSec = FAST_SCROLL_VELOCITY_THRESHOLD_PX_PER_S)
-        assertEquals(0.6f, result, 0.001f)
+    fun `fractionAt maps the touch position directly onto the track`() {
+        assertEquals(0f, fractionAt(0f, 1000f))
+        assertEquals(0.5f, fractionAt(500f, 1000f), 0.0001f)
+        assertEquals(1f, fractionAt(1000f, 1000f))
     }
 
     @Test
-    fun `applyFastScrollGain moves at the fine gain below the velocity threshold`() {
-        val result = applyFastScrollGain(currentFraction = 0.5f, deltaPx = 100f, trackHeightPx = 1000f, velocityPxPerSec = 10f)
-        assertEquals(0.5f + 0.1f * FAST_SCROLL_FINE_GAIN, result, 0.001f)
+    fun `fractionAt clamps past either end and tolerates an unmeasured track`() {
+        assertEquals(1f, fractionAt(1500f, 1000f))
+        assertEquals(0f, fractionAt(-200f, 1000f))
+        assertEquals(0f, fractionAt(500f, 0f))
+    }
+
+    /** Releasing at the very top means "back to the present" — an unbounded refresh —
+     * rather than a window bounded at `newest`, which the server's exclusive `to` bound
+     * would drop the newest photo from, and which would leave no way out of a jump. */
+    @Test
+    fun `jumpTargetFor returns null at the top of the rail and an instant elsewhere`() {
+        assertNull(jumpTargetFor(0f, bounds))
+        assertNull(jumpTargetFor(0.005f, bounds))
+        assertEquals(instantAtFraction(0.5f, bounds), jumpTargetFor(0.5f, bounds))
+        assertEquals(bounds.oldest, jumpTargetFor(1f, bounds))
     }
 
     @Test
-    fun `applyFastScrollGain clamps to the track's own ends`() {
-        assertEquals(1f, applyFastScrollGain(0.95f, deltaPx = 1000f, trackHeightPx = 1000f, velocityPxPerSec = FAST_SCROLL_VELOCITY_THRESHOLD_PX_PER_S))
-        assertEquals(0f, applyFastScrollGain(0.05f, deltaPx = -1000f, trackHeightPx = 1000f, velocityPxPerSec = FAST_SCROLL_VELOCITY_THRESHOLD_PX_PER_S))
+    fun `timelineTicks labels a multi-year library by year, in newest-first order`() {
+        val ticks = timelineTicks(bounds, zone = utc)
+
+        assertTrue(ticks.size in 2..14, "expected a readable number of ticks, got ${ticks.size}")
+        assertTrue(ticks.all { it.label.matches(Regex("\\d{4}")) }, "expected year labels, got ${ticks.map { it.label }}")
+        // Fractions increase as the labels go back in time — the rail reads top-down,
+        // newest first, exactly like the grid it sits beside.
+        assertEquals(ticks.sortedBy { it.fraction }, ticks)
+        assertEquals(ticks.map { it.label }.sortedDescending(), ticks.map { it.label })
     }
 
     @Test
-    fun `applyFastScrollGain is a no-op with an unmeasured track`() {
-        assertEquals(0.5f, applyFastScrollGain(0.5f, deltaPx = 500f, trackHeightPx = 0f, velocityPxPerSec = 5000f))
+    fun `timelineTicks labels a short library by month`() {
+        val shortSpan =
+            TimelineBounds(
+                oldest = Instant.parse("2026-01-15T00:00:00.000Z"),
+                newest = Instant.parse("2026-08-02T00:00:00.000Z"),
+            )
+
+        val ticks = timelineTicks(shortSpan, zone = utc)
+
+        assertTrue(ticks.size >= 2, "expected several month ticks, got ${ticks.size}")
+        assertTrue(ticks.all { it.label.contains("2026") }, "expected 'MMM yyyy' labels, got ${ticks.map { it.label }}")
+    }
+
+    /** Every tick has to sit where a drag to that spot would actually land, or the rail
+     * is actively misleading — it's a scale, not decoration. Tolerance is a day because
+     * the fraction is a `Float`: across a 15-year library one ULP is about half a minute,
+     * which is irrelevant for navigating photos but not exactly a year boundary. */
+    @Test
+    fun `every tick's fraction round-trips back to its own label's date`() {
+        for (tick in timelineTicks(bounds, zone = utc)) {
+            val landed = instantAtFraction(tick.fraction, bounds)
+            val labelled = Instant.parse("${tick.label}-01-01T00:00:00.000Z")
+            val offBy = Duration.between(labelled, landed).abs()
+            assertTrue(offBy < Duration.ofDays(1), "tick ${tick.label} lands at $landed, off by $offBy")
+        }
     }
 
     @Test
-    fun `logTickOffsetPx is zero at the center and grows monotonically, but sub-linearly, with distance`() {
-        assertEquals(0f, logTickOffsetPx(0L, 20f))
+    fun `timelineTicks still labels both ends of a library spanning less than one step`() {
+        val tiny =
+            TimelineBounds(
+                oldest = Instant.parse("2026-08-01T00:00:00.000Z"),
+                newest = Instant.parse("2026-08-03T00:00:00.000Z"),
+            )
 
-        val oneDay = logTickOffsetPx(86_400L, 20f)
-        val oneWeek = logTickOffsetPx(7 * 86_400L, 20f)
-        val oneYear = logTickOffsetPx(365 * 86_400L, 20f)
-        assertTrue(oneDay in 0f..oneWeek)
-        assertTrue(oneWeek < oneYear)
-        // Sub-linear: a year is 365x a day, but its screen offset is nowhere near 365x.
-        assertTrue(oneYear < oneDay * 365)
+        val ticks = timelineTicks(tiny, zone = utc)
+
+        assertEquals(2, ticks.size)
+        assertEquals(0f, ticks.first().fraction)
+        assertEquals(1f, ticks.last().fraction)
     }
 
     @Test
-    fun `logTickOffsetPx is antisymmetric`() {
-        assertEquals(-logTickOffsetPx(86_400L, 20f), logTickOffsetPx(-86_400L, 20f), 0.001f)
+    fun `timelineTicks is empty for a degenerate range rather than looping`() {
+        val instant = Instant.parse("2026-08-02T16:05:33.000Z")
+        assertTrue(timelineTicks(TimelineBounds(instant, instant), zone = utc).isEmpty())
     }
 }

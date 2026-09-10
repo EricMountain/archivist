@@ -20,6 +20,13 @@ export interface TimelinePageOptions {
   /** Both inclusive, toIsoUtc-formatted. */
   from?: string;
   to?: string;
+  /**
+   * Oldest-first instead of the default newest-first. The timeline itself is always
+   * read newest-first; this exists for a client loading the page *immediately newer*
+   * than what it already has cached (Paging's `PREPEND`), which needs the oldest few
+   * of a range rather than its newest few — see pattern 3b in design.md.
+   */
+  ascending?: boolean;
 }
 
 function clampLimit(limit: number | undefined): number {
@@ -45,7 +52,7 @@ async function queryTimelinePartition(
       IndexName: "timeline_gsi",
       KeyConditionExpression: keyCondition,
       ExpressionAttributeValues: values,
-      ScanIndexForward: false,
+      ScanIndexForward: opts.ascending === true,
       Limit: clampLimit(opts.limit),
       ExclusiveStartKey: opts.cursor ? decodeCursor(opts.cursor) : undefined,
     }),

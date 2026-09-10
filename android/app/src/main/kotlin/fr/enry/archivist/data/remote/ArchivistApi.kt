@@ -95,8 +95,10 @@ interface ArchivistApi {
      * [fr.enry.archivist.data.repo.TimelineRemoteMediator]. [cursor] is the opaque
      * string `dto.ts`'s `GET /photos` returns, never constructed client-side. [from]/
      * [to] are the server's inclusive range bound (`routes/photos.ts`'s `getPhotos` —
-     * must be supplied together or not at all) — used only for a fast-scroll jump to an
-     * arbitrary timestamp, never alongside [cursor]. */
+     * must be supplied together or not at all) — used for a fast-scroll jump to an
+     * arbitrary timestamp, never alongside [cursor]. [order] `"asc"` returns that range
+     * oldest-first (design.md pattern 3b), which is what a `PREPEND` — loading the page
+     * immediately *newer* than the cache — needs. */
     @GET
     suspend fun getPhotos(
         @Url url: String,
@@ -104,6 +106,7 @@ interface ArchivistApi {
         @Query("limit") limit: Int? = null,
         @Query("from") from: String? = null,
         @Query("to") to: String? = null,
+        @Query("order") order: String? = null,
     ): PhotosPageResponse
 
     /** `GET /photos/bounds` in api.md, design.md pattern 14 — the fast-scroll range for

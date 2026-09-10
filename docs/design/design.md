@@ -70,6 +70,7 @@ wherever the two describe bytes.**
 | 1d | Find the asset owning a path stem, during ingest | `STEM` pointer, `GetItem` |
 | 2 | List photos, newest first, by owner (paginated) | `timeline_gsi`, `ScanIndexForward=false` |
 | 3 | List photos in a time range, by owner | `timeline_gsi`, SK `BETWEEN` |
+| 3b | List photos in a time range oldest-first (a client loading the page immediately *newer* than its cache) | `timeline_gsi`, SK `BETWEEN`, `ScanIndexForward=true` |
 | 4 | List photos containing a certain object, by owner | `facet_gsi` |
 | 5 | List photos by camera / other EXIF attribute, by owner | `facet_gsi` |
 | 4b/5b | Any of the above, restricted to a time range | `facet_gsi`, SK `BETWEEN` |

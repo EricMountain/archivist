@@ -4,6 +4,7 @@ import androidx.paging.ExperimentalPagingApi
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
+import androidx.paging.RemoteMediator
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.AppDatabase
 import fr.enry.archivist.data.local.db.PhotoEntity
@@ -45,19 +46,35 @@ class PhotoRepository
         private val jumpCoordinator: TimelineJumpCoordinator,
     ) {
         @OptIn(ExperimentalPagingApi::class)
+        private val mediator = TimelineRemoteMediator(instanceStore, archivistApiFactory, db, jumpCoordinator)
+
+        @OptIn(ExperimentalPagingApi::class)
         fun timeline(): Flow<PagingData<PhotoEntity>> =
             Pager(
                 config = PagingConfig(pageSize = TIMELINE_PAGE_SIZE, enablePlaceholders = false),
-                remoteMediator = TimelineRemoteMediator(instanceStore, archivistApiFactory, db, jumpCoordinator),
+                remoteMediator = mediator,
                 pagingSourceFactory = { TimelinePagingSource(db, db.photoDao(), jumpCoordinator) },
             ).flow
 
-        /** A fast-scroll drag was released on [target] — see `TimelineScrollbar`'s own
-         * doc for the gesture, and [TimelineJumpCoordinator] for how this reaches the
-         * `Pager`. The caller still has to trigger the actual `REFRESH` itself
-         * (`LazyPagingItems.refresh()`, from the UI layer that owns that instance) —
-         * this only stages the target the mediator picks up when that refresh runs. */
-        fun requestJump(target: Instant) = jumpCoordinator.requestJump(ISO_MILLIS_UTC.format(target))
+        /**
+         * A fast-scroll drag was released on [target] — replace the cache with a window
+         * anchored there. A null [target] means "back to the present", which is both the
+         * top of the scrollbar's own track and the escape hatch out of a jumped-to
+         * position.
+         *
+         * Calls the mediator *directly* rather than staging a target and asking the UI
+         * for a `LazyPagingItems.refresh()`. That indirection was the first version's
+         * bug: `refresh()` invalidates the pager before the mediator has fetched
+         * anything, so the pager re-anchors against the old cache and several
+         * generations flip past before settling — visible as the grid bouncing around
+         * and landing somewhere other than the date that was picked. Going straight to
+         * the mediator means exactly one write, and therefore exactly one new generation.
+         */
+        @OptIn(ExperimentalPagingApi::class)
+        suspend fun jumpTo(target: Instant?): Boolean {
+            val result = mediator.reseedAt(target?.let { ISO_MILLIS_UTC.format(it) })
+            return result !is RemoteMediator.MediatorResult.Error
+        }
 
         /** The scrollbar's own range — fetched fresh each call, best-effort (a stale or
          * missing range just means the scrollbar can't position itself precisely yet,

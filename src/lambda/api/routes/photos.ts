@@ -22,9 +22,12 @@ function parseLimit(raw: string | undefined): number | undefined {
 
 export const getPhotos: RouteHandler = async (req: ApiRequest) => {
   const ownerId = req.auth!.ownerId;
-  const { cursor, from, to } = req.query;
+  const { cursor, from, to, order } = req.query;
   if ((from && !to) || (to && !from)) {
     throw ApiError.validation("from and to must be supplied together");
+  }
+  if (order && order !== "asc" && order !== "desc") {
+    throw ApiError.validation("order must be asc or desc");
   }
 
   const page = await timelinePage(ownerId, {
@@ -32,6 +35,7 @@ export const getPhotos: RouteHandler = async (req: ApiRequest) => {
     limit: parseLimit(req.query["limit"]),
     from,
     to,
+    ascending: order === "asc",
   });
 
   return ok({ items: page.items.map(timelineEntryDto), cursor: page.cursor });

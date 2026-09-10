@@ -706,6 +706,32 @@ July 2026 only (pattern 3) is the same query with a range condition:
 Because the sort key is `<takenAt>#<photoId>`, `:to` needs no `#` suffix — every real
 key at that instant sorts after the bare timestamp.
 
+### The page immediately newer than a cached one (pattern 3b)
+
+A client whose cache starts at A5 (21 June) wants the photos just *newer* than it, nearest
+first. The same range query with `ScanIndexForward: true` — the newest-first form would
+return A10/A8/A7 (the top of the range) instead of A1/A2, which are the ones actually
+adjacent to what's cached.
+
+```js
+{
+  IndexName: "timeline_gsi",
+  KeyConditionExpression: "timelinePk = :o AND timelineSk BETWEEN :from AND :to",
+  ExpressionAttributeValues: {
+    ":o":    "O#01J7X…",
+    ":from": "2026-06-21T14:30:00.000Z",
+    ":to":   "9999-12-31T23:59:59.999Z"
+  },
+  ScanIndexForward: true,
+  Limit: 3
+}
+// → A5, A2, A1 — A5 first because :from is inclusive of the anchor itself
+```
+
+The anchor coming back as the first row is deliberate: it's what tells the client
+"nothing newer exists" (a page containing only the anchor) apart from "here are three
+newer ones", without a second query.
+
 ### Timeline bounds (pattern 14)
 
 The fast-scroll range: two `Limit: 1` queries against the same rows, one ascending, one
