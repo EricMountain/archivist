@@ -175,7 +175,8 @@ private fun TimelineRail(
     }
 }
 
-/** The precise date under the finger, offset clear of it so it isn't covered. */
+/** The precise date at the touch point, placed clear to the *left* of the rail: sitting
+ * beside the finger it was simply covered by it and unreadable. */
 @Composable
 private fun SelectedDateLabel(
     instant: Instant,
@@ -190,7 +191,7 @@ private fun SelectedDateLabel(
             // Unbounded, or the pill is measured against the rail's width and the date
             // wraps one character per line.
             .wrapContentSize(align = Alignment.TopEnd, unbounded = true)
-            .offset(x = (-12).dp, y = y - 18.dp),
+            .offset(x = -(RAIL_WIDTH + 12.dp), y = y - 18.dp),
     ) {
         Surface(
             shape = RoundedCornerShape(8.dp),

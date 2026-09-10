@@ -9,6 +9,7 @@ import androidx.paging.map
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.data.repo.JumpOutcome
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.TimelineBounds
@@ -117,12 +118,13 @@ class TimelineViewModel
         private val _bounds = MutableStateFlow<TimelineBounds?>(null)
         val bounds: StateFlow<TimelineBounds?> = _bounds.asStateFlow()
 
-        /** Emitted once a jump's new window is committed to Room, so the grid can land
-         * on its top. A `SharedFlow` with no replay on purpose: it's a one-shot "this
-         * just happened", and a replayed value would re-scroll the grid to the top on
-         * the next recomposition that happens to re-collect it. */
-        private val _jumpCompleted = MutableSharedFlow<Unit>()
-        val jumpCompleted: SharedFlow<Unit> = _jumpCompleted.asSharedFlow()
+        /** Emitted once a jump's new window is committed to Room, carrying the photo the
+         * grid should land on (the boundary at the requested instant), or null to land at
+         * the top. A `SharedFlow` with no replay on purpose: it's a one-shot "this just
+         * happened", and a replayed value would re-scroll the grid on the next
+         * recomposition that happens to re-collect it. */
+        private val _jumpCompleted = MutableSharedFlow<String?>()
+        val jumpCompleted: SharedFlow<String?> = _jumpCompleted.asSharedFlow()
 
         /** A fast-scroll drag was released. [target] is null for "back to the present"
          * (the top of the scrollbar's track). Failures are swallowed the same way every
@@ -130,15 +132,15 @@ class TimelineViewModel
          * already had, and the grid simply doesn't move. */
         fun onJumpRequested(target: Instant?) {
             viewModelScope.launch {
-                val landed =
+                val outcome =
                     try {
                         photoRepository.jumpTo(target)
                     } catch (e: IOException) {
-                        false
+                        JumpOutcome.Failed
                     } catch (e: HttpException) {
-                        false
+                        JumpOutcome.Failed
                     }
-                if (landed) _jumpCompleted.emit(Unit)
+                if (outcome is JumpOutcome.Landed) _jumpCompleted.emit(outcome.photoId)
             }
         }
 

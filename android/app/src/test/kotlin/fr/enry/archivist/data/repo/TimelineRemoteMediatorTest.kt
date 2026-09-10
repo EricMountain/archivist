@@ -32,6 +32,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -55,6 +56,12 @@ class TimelineRemoteMediatorTest {
     private var photosResponseBody = """{"items":[]}"""
     private var lastRequest: RecordedRequest? = null
 
+    /** A jump fetches both directions around its target, so assertions have to name the
+     * request they mean rather than trusting whichever landed last. */
+    private val requests = mutableListOf<RecordedRequest>()
+
+    private fun requestWith(param: String) = requests.lastOrNull { it.requestUrl?.queryParameter(param) != null }
+
     @BeforeEach
     fun setUp() {
         server = MockWebServer()
@@ -62,6 +69,7 @@ class TimelineRemoteMediatorTest {
             object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     lastRequest = request
+                    requests += request
                     return if (request.path.orEmpty().startsWith("/api/photos")) {
                         MockResponse().setResponseCode(200).setBody(photosResponseBody)
                     } else {
@@ -176,12 +184,45 @@ class TimelineRemoteMediatorTest {
             )
             photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
 
-            mediator.reseedAt("2021-06-15T00:00:00.000Z")
+            val outcome = mediator.reseedAt("2021-06-15T00:00:00.000Z")
 
-            assertEquals("2021-06-15T00:00:00.000Z", lastRequest?.requestUrl?.queryParameter("to"))
-            assertEquals(EPOCH_ISO, lastRequest?.requestUrl?.queryParameter("from"))
+            // The older half: everything up to the target, newest-first.
+            val older = requests.first { it.requestUrl?.queryParameter("order") == null }
+            assertEquals("2021-06-15T00:00:00.000Z", older.requestUrl?.queryParameter("to"))
+            assertEquals(EPOCH_ISO, older.requestUrl?.queryParameter("from"))
+            // ...and a little context after it, so the landing is a boundary rather than
+            // the top of the list.
+            val newer = requests.first { it.requestUrl?.queryParameter("order") == "asc" }
+            assertEquals("2021-06-15T00:00:00.000Z", newer.requestUrl?.queryParameter("from"))
+            assertEquals(FAR_FUTURE_ISO, newer.requestUrl?.queryParameter("to"))
+
             assertNull(db.photoDao().getByPhotoId("stale"))
             assertEquals("2021-06-01T00:00:00.000Z", db.photoDao().getByPhotoId("p1")?.takenAt)
+            assertEquals("p1", outcome.landOnPhotoId)
+        }
+
+    /** An instance that predates `order=asc` answers the "newer" half newest-first, which
+     * would be the top of the whole library — splicing a disjoint chunk into the cache.
+     * The reseed drops that page rather than caching it. */
+    @Test
+    fun `reseedAt ignores a newer page the server answered in the wrong order`() =
+        runTest {
+            connectInstance()
+            server.dispatcher =
+                object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse {
+                        requests += request
+                        val descending =
+                            """{"items":[${photoJson("newest", "2026-01-01T00:00:00.000Z")},${photoJson("older", "2021-06-01T00:00:00.000Z")}]}"""
+                        return MockResponse().setResponseCode(200).setBody(descending)
+                    }
+                }
+
+            val outcome = mediator.reseedAt("2021-06-15T00:00:00.000Z")
+
+            // The older half is still honoured -- it asked for newest-first and got it.
+            assertEquals("newest", outcome.landOnPhotoId)
+            assertNotNull(db.photoDao().getByPhotoId("older"))
         }
 
     /** The paging source has to land on the new window's top rather than re-anchor on
@@ -209,6 +250,7 @@ class TimelineRemoteMediatorTest {
 
             mediator.reseedAt(null)
 
+            assertEquals(1, requests.size, "back-to-the-present needs no context fetch")
             assertNull(lastRequest?.requestUrl?.queryParameter("to"))
             assertNull(lastRequest?.requestUrl?.queryParameter("from"))
         }

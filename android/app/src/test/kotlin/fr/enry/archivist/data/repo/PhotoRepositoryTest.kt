@@ -147,13 +147,18 @@ class PhotoRepositoryTest {
                     ),
                 ),
             )
+            // A jump fetches both directions around the target: everything up to it, then
+            // a little of what follows it.
             server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("after", "2021-07-01T00:00:00.000Z")}]}"""))
 
-            assertEquals(true, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
+            val outcome = repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z"))
 
-            val request = server.takeRequest()
-            assertEquals("2021-06-15T00:00:00.000Z", request.requestUrl?.queryParameter("to"))
+            assertEquals(JumpOutcome.Landed("jumped"), outcome)
+            assertEquals("2021-06-15T00:00:00.000Z", server.takeRequest().requestUrl?.queryParameter("to"))
+            assertEquals("asc", server.takeRequest().requestUrl?.queryParameter("order"))
             assertNotNull(db.photoDao().getByPhotoId("jumped"))
+            assertNotNull(db.photoDao().getByPhotoId("after"))
             assertEquals(null, db.photoDao().getByPhotoId("stale"))
         }
 
@@ -163,7 +168,7 @@ class PhotoRepositoryTest {
             connectInstance()
             server.enqueue(MockResponse().setResponseCode(500))
 
-            assertEquals(false, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
+            assertEquals(JumpOutcome.Failed, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
         }
 
     @Test
