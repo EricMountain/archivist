@@ -324,17 +324,44 @@ internal fun fractionAtInstant(
 }
 
 /**
+ * Where a release at [fraction] actually jumps to.
+ *
  * Null — meaning "back to the present", an unbounded refresh — for a release at the very
  * top of the track, rather than a bounded window at `newest`. Two reasons: the server's
  * `to` bound is exclusive of photos at exactly that instant (`timelineSk` is
  * `<takenAt>#<photoId>`, so a bare timestamp sorts before every real key at it, per
  * sample-data.md), which would drop the newest photo; and it makes the top of the rail
  * the reliable way back to a normal, present-anchored timeline after a jump.
+ *
+ * Everywhere else the target is snapped to the **end of the local day** the finger is
+ * over, not the exact instant the fraction maps to. The rail is labelled in months and
+ * the pill names a day, so a day is the finest thing the user can actually aim at;
+ * jumping to a bare instant mid-afternoon lands on whatever preceded it, which for a
+ * sparse day is the day before — the user asked to land on the date they picked, and
+ * the last photo *of* that date is the one that puts its header at the top of the grid.
+ *
+ * It also fixes the bottom of the rail outright. `fraction = 1f` maps to exactly
+ * [TimelineBounds.oldest], and a `to` bound at that instant excludes the very photo it
+ * names — so the whole-library jump returned nothing, cleared the cache and left the
+ * timeline on "No photos yet" with no cursor in either direction to recover from
+ * (reported live; the app had to be restarted). End-of-day is at or after every photo on
+ * that day, including the oldest one.
  */
 internal fun jumpTargetFor(
     fraction: Float,
     bounds: TimelineBounds,
-): Instant? = if (fraction <= TOP_OF_RAIL_FRACTION) null else instantAtFraction(fraction, bounds)
+    zone: ZoneId = ZoneId.systemDefault(),
+): Instant? {
+    if (fraction <= TOP_OF_RAIL_FRACTION) return null
+    return endOfLocalDay(instantAtFraction(fraction, bounds), zone)
+}
+
+/** Last representable instant of [instant]'s local day. Built from the *next* day's start
+ * so a DST transition inside the day is the zone rules' problem, not this function's. */
+private fun endOfLocalDay(
+    instant: Instant,
+    zone: ZoneId,
+): Instant = instant.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().minusMillis(1)
 
 private const val TOP_OF_RAIL_FRACTION = 0.01f
 

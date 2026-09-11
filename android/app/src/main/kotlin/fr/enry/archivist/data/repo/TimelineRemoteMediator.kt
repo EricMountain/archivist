@@ -40,8 +40,8 @@ import retrofit2.HttpException
  * `PagingSource` above keeps serving it directly from Room regardless of whether this
  * mediator's own fetch just failed.
  *
- * `APPEND` walks older via the stored server cursor. `PREPEND` is a no-op — see
- * [loadNewerThanCache] for what was tried instead and why it was withdrawn.
+ * `APPEND` walks older via the stored server cursor; `PREPEND` walks newer via an
+ * ascending range from the newest cached photo ([loadNewerThanCache]).
  *
  * [initialize] matters more than it looks, and independently of [TimelinePagingSource]'s
  * own item-keyed fix for the same symptom: any write to `photos` — including this very
@@ -105,6 +105,18 @@ class TimelineRemoteMediator(
             // the target — the boundary itself. With nothing before it, the first of the
             // ascending page is the closest photo after it instead.
             val landOn = older.items.firstOrNull()
+
+            // A jump that matched nothing keeps the cache it already had, rather than
+            // clearing it and committing an empty one. An empty timeline is a dead end:
+            // there is no row for `PREPEND` to work back from and no cursor for `APPEND`
+            // to follow, so the grid shows "No photos yet" until the process is restarted
+            // — which is exactly what a drag to the very bottom of the rail used to do.
+            // [jumpTargetFor] no longer produces such a target, but a jump is a whole-
+            // cache replacement and is not worth leaving one bad bound away from that.
+            // A *plain* refresh is exempt: there, empty genuinely means an empty library.
+            if (targetIso != null && older.items.isEmpty()) {
+                return MediatorResult.Error(IllegalStateException("no photos at or before $targetIso"))
+            }
 
             // Staged *before* the write, not after: Room's InvalidationTracker can fire
             // as part of the transaction commit itself, and the next generation's

@@ -64,8 +64,48 @@ class TimelineScrollbarTest {
     fun `jumpTargetFor returns null at the top of the rail and an instant elsewhere`() {
         assertNull(jumpTargetFor(0f, bounds))
         assertNull(jumpTargetFor(0.005f, bounds))
-        assertEquals(instantAtFraction(0.5f, bounds), jumpTargetFor(0.5f, bounds))
-        assertEquals(bounds.oldest, jumpTargetFor(1f, bounds))
+        assertTrue(jumpTargetFor(0.5f, bounds, utc)!! >= instantAtFraction(0.5f, bounds))
+    }
+
+    /** The rail is labelled in months and the pill names a day, so a day is the finest
+     * thing a drag can actually aim at. Landing on the *last* photo of the chosen day is
+     * what puts that day's header at the top of the grid, which is what "land on the date
+     * I picked" means — a bare mid-afternoon instant lands on whatever preceded it, which
+     * on a sparse day is the day before. */
+    @Test
+    fun `jumpTargetFor snaps to the end of the local day the finger is over`() {
+        val target = jumpTargetFor(0.5f, bounds, utc)!!
+        val sameDayAsTheFraction = instantAtFraction(0.5f, bounds).atZone(utc).toLocalDate()
+
+        assertEquals(sameDayAsTheFraction, target.atZone(utc).toLocalDate())
+        assertEquals("23:59:59.999", target.atZone(utc).toLocalTime().toString())
+    }
+
+    /**
+     * The bottom of the rail used to strand the app. `fraction = 1f` maps to exactly
+     * [TimelineBounds.oldest], and the server's `to` bound is *exclusive* of photos at
+     * that instant (`timelineSk` is `<takenAt>#<photoId>`, which sorts after a bare
+     * timestamp), so the whole-library jump matched nothing, cleared the cache and left
+     * the grid on "No photos yet" with no cursor in either direction to recover from.
+     * End-of-day is at or after every photo on that day, the oldest one included.
+     */
+    @Test
+    fun `jumping to the very bottom of the rail lands after the oldest photo, not on it`() {
+        val target = jumpTargetFor(1f, bounds, utc)!!
+
+        assertTrue(target > bounds.oldest, "a `to` bound at exactly `oldest` excludes the oldest photo")
+        assertEquals(bounds.oldest.atZone(utc).toLocalDate(), target.atZone(utc).toLocalDate())
+    }
+
+    /** A zone whose day boundary isn't UTC midnight, to pin that the snap is to the
+     * *viewer's* day — the same day the rail's pill just named — not to a UTC one. */
+    @Test
+    fun `the day boundary is the viewer's, not UTC`() {
+        val tokyo = ZoneId.of("Asia/Tokyo")
+        val target = jumpTargetFor(0.5f, bounds, tokyo)!!
+
+        assertEquals("23:59:59.999", target.atZone(tokyo).toLocalTime().toString())
+        assertEquals(instantAtFraction(0.5f, bounds).atZone(tokyo).toLocalDate(), target.atZone(tokyo).toLocalDate())
     }
 
     @Test

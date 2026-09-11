@@ -18,6 +18,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,10 +27,12 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 
@@ -106,8 +109,34 @@ class TimelineViewModel
                 .map { it?.host }
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+        /**
+         * Bumped by a completed jump, which rebuilds the `Pager` rather than letting the
+         * existing one carry on over a cache it no longer describes.
+         *
+         * `RemoteMediator`'s `endOfPaginationReached` is latched by Paging per direction
+         * and cleared only when *Paging itself* runs a mediator `REFRESH`. A jump calls
+         * [fr.enry.archivist.data.repo.TimelineRemoteMediator.reseedAt] directly (going
+         * through `LazyPagingItems.refresh()` instead is what made the first version of
+         * this feature bounce through several generations before settling), so that latch
+         * survived the jump. Once `PREPEND` had legitimately reported "nothing newer than
+         * the cache" at the present, a jump into the past left the flag set over a window
+         * that now had eight months of newer photos above it — the mediator was never
+         * asked for them again, and scrolling toward the present stopped dead as soon as
+         * the locally cached rows ran out. Reported live as "after a few swipes at most it
+         * blocks and won't go further into the future".
+         *
+         * A jump replaces the entire cache, so every piece of pager state derived from it
+         * is stale by definition; rebuilding is the honest response and resets both
+         * directions at once. It costs nothing visible: the reseed has already committed
+         * the new window, and a fresh `Pager` starts at the top of it — which *is* the
+         * landing photo.
+         */
+        private val pagerGeneration = MutableStateFlow(0)
+
+        @OptIn(ExperimentalCoroutinesApi::class)
         val timeline: Flow<PagingData<TimelineItem>> =
-            photoRepository.timeline()
+            pagerGeneration
+                .flatMapLatest { photoRepository.timeline() }
                 .toTimelineItems()
                 .cachedIn(viewModelScope)
 
@@ -139,7 +168,12 @@ class TimelineViewModel
                     } catch (e: HttpException) {
                         false
                     }
-                if (landed) _jumpCompleted.emit(Unit)
+                if (landed) {
+                    // Order matters: rebuild the pager over the committed window first,
+                    // then tell the grid to go to the top of it.
+                    pagerGeneration.update { it + 1 }
+                    _jumpCompleted.emit(Unit)
+                }
             }
         }
 

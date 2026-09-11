@@ -196,6 +196,55 @@ class TimelineRemoteMediatorTest {
             assertEquals(TimelineKey("2021-06-01T00:00:00.000Z", "p1"), jumpCoordinator.consumeLanding())
         }
 
+    /**
+     * An empty timeline is a dead end — no row for `PREPEND` to work back from, no cursor
+     * for `APPEND` to follow — so the grid sits on "No photos yet" until the process is
+     * restarted. A jump that matches nothing therefore keeps the cache it already had
+     * rather than committing an empty one over it. (A drag to the very bottom of the rail
+     * used to produce exactly such a jump; [jumpTargetFor] no longer can, but a jump is a
+     * whole-cache replacement and isn't worth leaving one bad bound away from it.)
+     */
+    @Test
+    fun `a jump that matches nothing keeps the existing cache instead of emptying it`() =
+        runTest {
+            connectInstance()
+            db.photoDao().upsertAll(
+                listOf(
+                    PhotoEntity(
+                        "kept", "2024-01-01T00:00:00.000Z", 0, "image/jpeg", 1, 1,
+                        AssetStatus.READY, emptyMap(), "dek", "mk-1",
+                    ),
+                ),
+            )
+            photosResponseBody = """{"items":[]}"""
+
+            val result = mediator.reseedAt("1999-01-01T00:00:00.000Z")
+
+            assertTrue(result is RemoteMediator.MediatorResult.Error)
+            assertNotNull(db.photoDao().getByPhotoId("kept"))
+        }
+
+    /** A *plain* refresh is exempt from the guard above: there, empty genuinely means an
+     * empty library, and refusing to commit it would leave deleted photos on screen. */
+    @Test
+    fun `a plain refresh that returns nothing does clear the cache`() =
+        runTest {
+            connectInstance()
+            db.photoDao().upsertAll(
+                listOf(
+                    PhotoEntity(
+                        "gone", "2024-01-01T00:00:00.000Z", 0, "image/jpeg", 1, 1,
+                        AssetStatus.READY, emptyMap(), "dek", "mk-1",
+                    ),
+                ),
+            )
+            photosResponseBody = """{"items":[]}"""
+
+            mediator.reseedAt(null)
+
+            assertNull(db.photoDao().getByPhotoId("gone"))
+        }
+
     /** The paging source starts the next generation at this key rather than re-anchoring
      * on wherever the user was scrolled before the jump — see its own `getRefreshKey`. */
     @Test
