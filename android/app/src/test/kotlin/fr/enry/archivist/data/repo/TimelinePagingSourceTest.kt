@@ -111,6 +111,48 @@ class TimelinePagingSourceTest {
             assertEquals(listOf("p3", "p2"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
         }
 
+    /**
+     * The timeline's "stepping into the past on its own" bug, pinned down live (STATUS.md,
+     * plan step 2.11). `anchorPosition` is the last *accessed* index and a
+     * `LazyVerticalGrid` composes well past what it shows, so the refresh key names an
+     * item below the viewport. A page beginning there excluded the photo actually on
+     * screen, the grid's key-based restoration had nothing to match, and it fell back to
+     * the raw index — landing on an older photo. Every write to `photos` restarts this
+     * generation, so it repeated, walking the view days further back each time.
+     *
+     * Loading part of the page from newer than the key keeps the displayed photo inside
+     * it, which is what stops the drift.
+     */
+    @Test
+    fun `a keyed refresh includes items newer than the key, so the displayed one stays in the page`() =
+        runTest {
+            seed(p5, p4, p3, p2, p1)
+
+            val result =
+                source.load(
+                    PagingSource.LoadParams.Refresh(key = TimelineKey("2024-01-02T00:00:00.000Z", "p2"), loadSize = 6, placeholdersEnabled = false),
+                )
+
+            // loadSize 6 -> a lead of 2 newer than p2, then p2 itself and what follows.
+            assertEquals(listOf("p4", "p3", "p2", "p1"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
+        }
+
+    /** A fast-scroll landing must still sit at index 0: the reseed has just deleted
+     * everything newer than the target, so the lead comes back empty of its own accord
+     * rather than needing to be special-cased away. */
+    @Test
+    fun `the lead is empty at the top of the table, leaving a jump landing first`() =
+        runTest {
+            seed(p3, p2, p1)
+
+            val result =
+                source.load(
+                    PagingSource.LoadParams.Refresh(key = TimelineKey("2024-01-03T00:00:00.000Z", "p3"), loadSize = 6, placeholdersEnabled = false),
+                )
+
+            assertEquals(listOf("p3", "p2", "p1"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
+        }
+
     @Test
     fun `getRefreshKey resolves to the anchor item's own identity, not its position`() =
         runTest {
@@ -132,15 +174,17 @@ class TimelinePagingSourceTest {
             assertEquals(TimelineKey("2024-01-03T00:00:00.000Z", "p3"), source.getRefreshKey(state))
         }
 
+    /** A jump stages the photo at the requested instant, and the next generation starts
+     * there — the whole point being that the grid then lands on it at index 0, with no
+     * index computed against a list that is still being replaced. */
     @Test
-    fun `getRefreshKey returns null right after a jump, ignoring a stale anchor`() =
+    fun `getRefreshKey starts the generation at a staged jump landing, ignoring the stale anchor`() =
         runTest {
-            // p1 is the anchor from *before* the jump -- no longer in the table at all
-            // once TimelineRemoteMediator has cleared+reseeded it around the jump
-            // target, exactly as it would post-jump.
-            seed(p3, p4)
-            jumpCoordinator.markJustReset()
-            val state =
+            seed(p3, p2)
+            jumpCoordinator.stageLanding(TimelineKey("2024-01-03T00:00:00.000Z", "p3"))
+            // p1 is where the user was *before* the jump, and has nothing to do with
+            // where they asked to go.
+            val staleState =
                 PagingState(
                     pages = listOf(PagingSource.LoadResult.Page<TimelineKey, PhotoEntity>(data = listOf(p1), prevKey = null, nextKey = null)),
                     anchorPosition = 0,
@@ -148,14 +192,19 @@ class TimelinePagingSourceTest {
                     leadingPlaceholderCount = 0,
                 )
 
-            assertNull(source.getRefreshKey(state))
+            val refreshKey = source.getRefreshKey(staleState)
+            assertEquals(TimelineKey("2024-01-03T00:00:00.000Z", "p3"), refreshKey)
+
+            // Loading from it puts the landing photo first, so "go to the top" is right.
+            val result = source.load(PagingSource.LoadParams.Refresh(key = refreshKey, loadSize = 2, placeholdersEnabled = false))
+            assertEquals(listOf("p3", "p2"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
         }
 
     @Test
-    fun `getRefreshKey falls back to the anchor once the just-reset flag has been consumed`() =
+    fun `a staged landing is consumed once, then getRefreshKey falls back to the anchor`() =
         runTest {
-            jumpCoordinator.markJustReset()
-            source.getRefreshKey(emptyRefreshState()) // consumes the flag
+            jumpCoordinator.stageLanding(TimelineKey("2024-01-05T00:00:00.000Z", "p5"))
+            assertEquals(TimelineKey("2024-01-05T00:00:00.000Z", "p5"), source.getRefreshKey(emptyRefreshState()))
 
             val state =
                 PagingState(
@@ -166,36 +215,6 @@ class TimelinePagingSourceTest {
                 )
 
             assertEquals(TimelineKey("2024-01-03T00:00:00.000Z", "p3"), source.getRefreshKey(state))
-        }
-
-    /** The scenario the class doc calls out by name: jumping *forward*, but not all the
-     * way to the newest end, from an anchor the old (pre-jump) generation left behind.
-     * Trusting that stale anchor's `takenAt < :anchor` condition against the *new*
-     * (post-jump) window -- whose rows are all *newer* than the stale anchor here --
-     * would silently exclude everything and load nothing at all, rather than the top of
-     * the jumped-to window. */
-    @Test
-    fun `a forward jump not reaching the newest end still lands on the new window, not the stale anchor`() =
-        runTest {
-            // The jump target sits between p2 and p4 -- TimelineRemoteMediator would
-            // have reseeded exactly this window (p3, p2 here, newest of the window
-            // first) around it. The anchor left behind is p1 -- older than everything
-            // in the new window, which is what makes the naive anchor-based key wrong.
-            seed(p3, p2)
-            jumpCoordinator.markJustReset()
-            val staleState =
-                PagingState(
-                    pages = listOf(PagingSource.LoadResult.Page<TimelineKey, PhotoEntity>(data = listOf(p1), prevKey = null, nextKey = null)),
-                    anchorPosition = 0,
-                    config = config,
-                    leadingPlaceholderCount = 0,
-                )
-
-            val refreshKey = source.getRefreshKey(staleState)
-            assertNull(refreshKey)
-
-            val result = source.load(PagingSource.LoadParams.Refresh(key = refreshKey, loadSize = 2, placeholdersEnabled = false))
-            assertEquals(listOf("p3", "p2"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
         }
 
     private fun emptyRefreshState() =

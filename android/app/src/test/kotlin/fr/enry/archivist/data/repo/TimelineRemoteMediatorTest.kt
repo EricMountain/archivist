@@ -184,60 +184,31 @@ class TimelineRemoteMediatorTest {
             )
             photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
 
-            val outcome = mediator.reseedAt("2021-06-15T00:00:00.000Z")
+            mediator.reseedAt("2021-06-15T00:00:00.000Z")
 
             // The older half: everything up to the target, newest-first.
-            val older = requests.first { it.requestUrl?.queryParameter("order") == null }
-            assertEquals("2021-06-15T00:00:00.000Z", older.requestUrl?.queryParameter("to"))
-            assertEquals(EPOCH_ISO, older.requestUrl?.queryParameter("from"))
-            // ...and a little context after it, so the landing is a boundary rather than
-            // the top of the list.
-            val newer = requests.first { it.requestUrl?.queryParameter("order") == "asc" }
-            assertEquals("2021-06-15T00:00:00.000Z", newer.requestUrl?.queryParameter("from"))
-            assertEquals(FAR_FUTURE_ISO, newer.requestUrl?.queryParameter("to"))
+            assertEquals(1, requests.size, "a jump is one bounded fetch, nothing more")
+            assertEquals("2021-06-15T00:00:00.000Z", lastRequest?.requestUrl?.queryParameter("to"))
+            assertEquals(EPOCH_ISO, lastRequest?.requestUrl?.queryParameter("from"))
 
             assertNull(db.photoDao().getByPhotoId("stale"))
             assertEquals("2021-06-01T00:00:00.000Z", db.photoDao().getByPhotoId("p1")?.takenAt)
-            assertEquals("p1", outcome.landOnPhotoId)
+            assertEquals(TimelineKey("2021-06-01T00:00:00.000Z", "p1"), jumpCoordinator.consumeLanding())
         }
 
-    /** An instance that predates `order=asc` answers the "newer" half newest-first, which
-     * would be the top of the whole library — splicing a disjoint chunk into the cache.
-     * The reseed drops that page rather than caching it. */
+    /** The paging source starts the next generation at this key rather than re-anchoring
+     * on wherever the user was scrolled before the jump — see its own `getRefreshKey`. */
     @Test
-    fun `reseedAt ignores a newer page the server answered in the wrong order`() =
-        runTest {
-            connectInstance()
-            server.dispatcher =
-                object : Dispatcher() {
-                    override fun dispatch(request: RecordedRequest): MockResponse {
-                        requests += request
-                        val descending =
-                            """{"items":[${photoJson("newest", "2026-01-01T00:00:00.000Z")},${photoJson("older", "2021-06-01T00:00:00.000Z")}]}"""
-                        return MockResponse().setResponseCode(200).setBody(descending)
-                    }
-                }
-
-            val outcome = mediator.reseedAt("2021-06-15T00:00:00.000Z")
-
-            // The older half is still honoured -- it asked for newest-first and got it.
-            assertEquals("newest", outcome.landOnPhotoId)
-            assertNotNull(db.photoDao().getByPhotoId("older"))
-        }
-
-    /** The paging source has to land on the new window's top rather than re-anchor on
-     * wherever the user was scrolled before the jump — see its own `getRefreshKey`. */
-    @Test
-    fun `reseedAt marks just-reset before its write, for either kind of reseed`() =
+    fun `reseedAt stages its landing key before its write, for either kind of reseed`() =
         runTest {
             connectInstance()
             photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
 
             mediator.reseedAt("2021-06-15T00:00:00.000Z")
-            assertTrue(jumpCoordinator.consumeJustReset())
+            assertEquals(TimelineKey("2021-06-01T00:00:00.000Z", "p1"), jumpCoordinator.consumeLanding())
 
             mediator.reseedAt(null)
-            assertTrue(jumpCoordinator.consumeJustReset())
+            assertEquals(TimelineKey("2021-06-01T00:00:00.000Z", "p1"), jumpCoordinator.consumeLanding())
         }
 
     /** "Back to the present" — the top of the fast-scroll rail, and the way out of a
@@ -255,8 +226,11 @@ class TimelineRemoteMediatorTest {
             assertNull(lastRequest?.requestUrl?.queryParameter("from"))
         }
 
+    /** What makes a jumped-to position escapable: an ascending range starting at the
+     * newest cached photo (design.md pattern 3b). Without it the timeline can only travel
+     * further into the past from wherever a jump left it. */
     @Test
-    fun `prepend asks for the page just newer than the cache, oldest-first`() =
+    fun `prepend fetches the ascending page starting at the newest cached photo`() =
         runTest {
             connectInstance()
             db.photoDao().upsertAll(
@@ -267,8 +241,7 @@ class TimelineRemoteMediatorTest {
                     ),
                 ),
             )
-            photosResponseBody =
-                """{"items":[${photoJson("anchor", "2021-06-01T00:00:00.000Z")},${photoJson("newer", "2021-06-02T00:00:00.000Z")}]}"""
+            photosResponseBody = """{"items":[${photoJson("anchor", "2021-06-01T00:00:00.000Z")},${photoJson("newer", "2021-06-02T00:00:00.000Z")}]}"""
 
             val result = mediator.load(LoadType.PREPEND, emptyState())
 
@@ -276,16 +249,16 @@ class TimelineRemoteMediatorTest {
             assertEquals(FAR_FUTURE_ISO, lastRequest?.requestUrl?.queryParameter("to"))
             assertEquals("asc", lastRequest?.requestUrl?.queryParameter("order"))
             assertEquals(false, (result as RemoteMediator.MediatorResult.Success).endOfPaginationReached)
-            assertEquals("2021-06-02T00:00:00.000Z", db.photoDao().getByPhotoId("newer")?.takenAt)
-            // Additive: the anchor it started from is still there.
-            assertEquals("2021-06-01T00:00:00.000Z", db.photoDao().getByPhotoId("anchor")?.takenAt)
+            assertNotNull(db.photoDao().getByPhotoId("newer"))
+            // The older-direction cursor belongs to APPEND and must survive untouched.
+            assertNull(db.timelineCursorDao().observe().first())
         }
 
-    /** `from` is inclusive, so a page containing only the anchor means nothing newer
-     * exists — that's how the end of the newer direction is detected without a second
-     * query. */
+    /** `from` is inclusive, so the boundary photo always comes back. A page containing
+     * nothing *but* it is what "already at the present" looks like — and not recognising
+     * that would leave PREPEND asking for the same page forever. */
     @Test
-    fun `prepend reaching only its own anchor reports end of pagination`() =
+    fun `prepend that returns only the boundary photo reports end of pagination`() =
         runTest {
             connectInstance()
             db.photoDao().upsertAll(
@@ -301,27 +274,6 @@ class TimelineRemoteMediatorTest {
             val result = mediator.load(LoadType.PREPEND, emptyState())
 
             assertTrue((result as RemoteMediator.MediatorResult.Success).endOfPaginationReached)
-        }
-
-    @Test
-    fun `prepend never touches the append cursor`() =
-        runTest {
-            connectInstance()
-            db.photoDao().upsertAll(
-                listOf(
-                    PhotoEntity(
-                        "anchor", "2021-06-01T00:00:00.000Z", 0, "image/jpeg", 1, 1,
-                        AssetStatus.READY, emptyMap(), "dek", "mk-1",
-                    ),
-                ),
-            )
-            db.timelineCursorDao().set(fr.enry.archivist.data.local.db.TimelineCursorEntity(cursor = "older-page", updatedAt = "now"))
-            photosResponseBody =
-                """{"items":[${photoJson("anchor", "2021-06-01T00:00:00.000Z")},${photoJson("newer", "2021-06-02T00:00:00.000Z")}],"cursor":"ignore-me"}"""
-
-            mediator.load(LoadType.PREPEND, emptyState())
-
-            assertEquals("older-page", db.timelineCursorDao().observe().first()?.cursor)
         }
 
     @Test

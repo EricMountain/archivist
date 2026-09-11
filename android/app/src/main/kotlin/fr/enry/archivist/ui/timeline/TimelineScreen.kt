@@ -50,7 +50,6 @@ import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.Instant
 import java.time.format.DateTimeFormatter
-import kotlinx.coroutines.delay
 import java.time.format.FormatStyle
 
 /** The rung shown in the grid — matches [fr.enry.archivist.sync.Thumbnailer]'s smallest
@@ -103,17 +102,14 @@ fun TimelineScreen(
     // to the top on every "open a photo, then back out".
     val gridState = rememberLazyGridState()
 
-    // The grid lands on a jumped-to window only once TimelineViewModel says it is
-    // actually committed to Room, and on the photo at the requested instant rather than
-    // on index 0 — a jump across a gap in the library lands on the boundary, with later
-    // photos still above it. Deliberately a one-shot event rather than a LaunchedEffect
-    // keyed on load state: keying on items.itemCount re-ran this on every page that
-    // loaded afterwards, yanking the grid back to the top mid-scroll.
+    // A jumped-to window *starts* at the requested instant (TimelineJumpCoordinator), so
+    // landing on it is just "go to the top" once the window is committed to Room --
+    // deliberately not a search for the photo's index, which resolved against the
+    // outgoing list and scrolled somewhere unrelated. Deliberately a one-shot event
+    // rather than a LaunchedEffect keyed on load state, too: keying on items.itemCount
+    // re-ran this on every page that loaded afterwards, yanking the grid back mid-scroll.
     LaunchedEffect(Unit) {
-        viewModel.jumpCompleted.collect { landOnPhotoId ->
-            val index = landOnPhotoId?.let { awaitPhotoIndex(items, it) } ?: 0
-            gridState.scrollToItem(index)
-        }
+        viewModel.jumpCompleted.collect { gridState.scrollToItem(0) }
     }
 
     // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
@@ -249,39 +245,6 @@ private fun TimelineItemGrid(
             }
         }
     }
-}
-
-/**
- * The reseeded window arrives asynchronously — Room's invalidation, a new `Pager`
- * generation, then composition — so the photo to land on isn't in [items] the instant
- * the jump reports success. Polls for it rather than keying off `itemCount`, which can
- * coincidentally match the outgoing window's and never signal at all. Gives up rather
- * than hanging if the photo never shows (a jump whose window was immediately replaced).
- */
-private suspend fun awaitPhotoIndex(
-    items: LazyPagingItems<TimelineItem>,
-    photoId: String,
-): Int? {
-    repeat(60) {
-        indexOfPhoto(items, photoId)?.let { return it }
-        delay(50)
-    }
-    return null
-}
-
-/** Lands on the day header above the photo when there is one, so the date the jump was
- * aimed at is the first thing on screen rather than the row under it. */
-private fun indexOfPhoto(
-    items: LazyPagingItems<TimelineItem>,
-    photoId: String,
-): Int? {
-    for (i in 0 until items.itemCount) {
-        val item = items.peek(i)
-        if (item is TimelineItem.Photo && item.photo.photoId == photoId) {
-            return if (i > 0 && items.peek(i - 1) is TimelineItem.Header) i - 1 else i
-        }
-    }
-    return null
 }
 
 @Composable

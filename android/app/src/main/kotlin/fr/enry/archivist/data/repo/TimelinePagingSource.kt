@@ -48,19 +48,16 @@ class TimelinePagingSource(
      * applied to a local table): the anchor's own identity, not its position, survives
      * the restart this triggers.
      *
-     * The one exception is a fast-scroll jump: [TimelineJumpCoordinator.consumeJustReset]
-     * comes back `true` only for the generation immediately after
-     * [TimelineRemoteMediator] clears+reseeds the table around a jump target, at which
-     * point the *previous* generation's anchor refers to a row that has nothing to do
-     * with where the user just asked to go. Trusting it anyway would silently mis-land
-     * a jump that doesn't reach all the way to the newest end: e.g. jumping from an
-     * anchor in 2019 forward to 2021 (not "now") would resolve to `takenAt < 2019`,
-     * which — restricted to the new [EPOCH_ISO]`..2021` window — excludes everything
-     * between 2019 and 2021 and lands back near 2019. Returning `null` instead forces
-     * [PhotoDao.pageFromStart], which is unconditionally correct here: the table now
-     * contains exactly the jumped-to window, so its own top *is* the jump target. */
+     * The one exception is a fast-scroll jump, which stages its landing key on
+     * [TimelineJumpCoordinator]: the previous generation's anchor refers to wherever the
+     * user happened to be *before* the jump, which has nothing to do with where they
+     * asked to go. Starting the generation at the staged key instead puts the requested
+     * photo at index 0, so the grid lands on it without anyone having to compute an
+     * index against a list that is still being replaced — see that class's doc for the
+     * bug that approach shipped with. Photos newer than the landing point stay in the
+     * cache and are reached by scrolling up, via this source's own `Prepend`. */
     override fun getRefreshKey(state: PagingState<TimelineKey, PhotoEntity>): TimelineKey? {
-        if (jumpCoordinator.consumeJustReset()) return null
+        jumpCoordinator.consumeLanding()?.let { return it }
         return state.anchorPosition?.let { anchor ->
             state.closestItemToPosition(anchor)?.let { TimelineKey(it.takenAt, it.photoId) }
         }
@@ -72,7 +69,7 @@ class TimelinePagingSource(
             val page =
                 when (params) {
                     is LoadParams.Refresh ->
-                        params.key?.let { photoDao.pageFromKey(it.takenAt, it.photoId, limit) }
+                        params.key?.let { refreshAround(it, limit) }
                             ?: photoDao.pageFromStart(limit)
                     is LoadParams.Append -> photoDao.pageAfter(params.key.takenAt, params.key.photoId, limit)
                     is LoadParams.Prepend -> photoDao.pageBefore(params.key.takenAt, params.key.photoId, limit)
@@ -93,4 +90,42 @@ class TimelinePagingSource(
         } catch (e: Exception) {
             LoadResult.Error(e)
         }
+
+    /**
+     * A keyed refresh loads a window *around* [key], not one starting at it — the
+     * difference between the timeline holding still and it walking into the past on its
+     * own.
+     *
+     * [PagingState.anchorPosition] is the most recently *accessed* index, and a
+     * `LazyVerticalGrid` composes well beyond what it displays, so the anchor routinely
+     * sits a screenful of items further down the list than the photo actually on screen.
+     * A page that began at the anchor therefore did not contain the visible photo at all;
+     * `LazyVerticalGrid`'s key-based position restoration found nothing to restore to,
+     * fell back to the raw index, and the grid silently started showing an item some days
+     * older — then `Prepend` refilled the missing head, moving the index but not the
+     * content. Since every write to `photos` (each `APPEND` the mediator makes, every
+     * finished upload) restarts this generation, that ran as a ratchet: each round
+     * re-anchored deeper and dragged the view a few days further back, which is what a
+     * jump looked like "stepping" its way to a date years off target, and what the
+     * runaway prepends behind an earlier ANR actually were.
+     *
+     * Loading [REFRESH_LEAD_FRACTION] of the page from *newer* than the key keeps
+     * whatever the grid is displaying inside the new page, so restoration succeeds and
+     * the view stays exactly where it was. It costs nothing on a fast-scroll landing: the
+     * reseed has just cleared everything newer than the target, so the lead comes back
+     * empty and the landing photo is still the page's first item.
+     */
+    private suspend fun refreshAround(
+        key: TimelineKey,
+        limit: Int,
+    ): List<PhotoEntity> {
+        val lead = photoDao.pageBefore(key.takenAt, key.photoId, limit / REFRESH_LEAD_FRACTION)
+        return lead + photoDao.pageFromKey(key.takenAt, key.photoId, limit - lead.size)
+    }
 }
+
+/** One third of a refresh page is spent on items newer than the anchor. The lead only
+ * has to outrun how far `LazyVerticalGrid` composes ahead of the viewport — measured at
+ * 16-28 items on a phone-sized grid — and a third of `initialLoadSize` clears that with
+ * room to spare without meaningfully shrinking what a refresh loads below the anchor. */
+private const val REFRESH_LEAD_FRACTION = 3

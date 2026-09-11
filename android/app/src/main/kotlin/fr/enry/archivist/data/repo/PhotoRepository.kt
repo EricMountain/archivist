@@ -24,15 +24,6 @@ private const val TIMELINE_PAGE_SIZE = 60
 /** The fast-scroll range — `GET /photos/bounds`, design.md pattern 14. */
 data class TimelineBounds(val oldest: Instant, val newest: Instant)
 
-/** [PhotoRepository.jumpTo]'s result. [Landed.photoId] is the photo the grid should
- * scroll to — the boundary at the requested instant — or null when the library has
- * nothing to land on at all. */
-sealed interface JumpOutcome {
-    data class Landed(val photoId: String?) : JumpOutcome
-
-    data object Failed : JumpOutcome
-}
-
 /** Design.md's "fixed width" ISO-8601 convention, which a `to` bound compared
  * lexicographically against `timelineSk` has to honor exactly — unlike
  * [Instant.toString], which silently *drops* the fractional-seconds group whenever it's
@@ -80,14 +71,8 @@ class PhotoRepository
          * the mediator means exactly one write, and therefore exactly one new generation.
          */
         @OptIn(ExperimentalPagingApi::class)
-        suspend fun jumpTo(target: Instant?): JumpOutcome {
-            val outcome = mediator.reseedAt(target?.let { ISO_MILLIS_UTC.format(it) })
-            return if (outcome.result is RemoteMediator.MediatorResult.Error) {
-                JumpOutcome.Failed
-            } else {
-                JumpOutcome.Landed(outcome.landOnPhotoId)
-            }
-        }
+        suspend fun jumpTo(target: Instant?): Boolean =
+            mediator.reseedAt(target?.let { ISO_MILLIS_UTC.format(it) }) !is RemoteMediator.MediatorResult.Error
 
         /** The scrollbar's own range — fetched fresh each call, best-effort (a stale or
          * missing range just means the scrollbar can't position itself precisely yet,

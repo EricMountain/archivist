@@ -147,18 +147,17 @@ class PhotoRepositoryTest {
                     ),
                 ),
             )
-            // A jump fetches both directions around the target: everything up to it, then
-            // a little of what follows it.
+            // One bounded fetch, newest-first, ending at the target -- not two. Fetching
+            // the *newer* side as well is what ran away into an ANR; see
+            // TimelineRemoteMediator.loadNewerThanCache's own doc.
             server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}]}"""))
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("after", "2021-07-01T00:00:00.000Z")}]}"""))
 
             val outcome = repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z"))
 
-            assertEquals(JumpOutcome.Landed("jumped"), outcome)
+            assertEquals(true, outcome)
+            assertEquals(1, server.requestCount, "a jump is one bounded fetch, nothing more")
             assertEquals("2021-06-15T00:00:00.000Z", server.takeRequest().requestUrl?.queryParameter("to"))
-            assertEquals("asc", server.takeRequest().requestUrl?.queryParameter("order"))
             assertNotNull(db.photoDao().getByPhotoId("jumped"))
-            assertNotNull(db.photoDao().getByPhotoId("after"))
             assertEquals(null, db.photoDao().getByPhotoId("stale"))
         }
 
@@ -168,7 +167,7 @@ class PhotoRepositoryTest {
             connectInstance()
             server.enqueue(MockResponse().setResponseCode(500))
 
-            assertEquals(JumpOutcome.Failed, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
+            assertEquals(false, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
         }
 
     @Test
