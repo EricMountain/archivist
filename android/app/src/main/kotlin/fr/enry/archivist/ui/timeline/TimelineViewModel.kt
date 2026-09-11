@@ -20,7 +20,6 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +34,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 
@@ -153,63 +154,70 @@ class TimelineViewModel
         private val _jumpCompleted = MutableSharedFlow<Unit>()
         val jumpCompleted: SharedFlow<Unit> = _jumpCompleted.asSharedFlow()
 
-        /** The window currently committed to Room by a jump, so a scrub that lands back
-         * on a day already loaded costs nothing. Wrapped because `null` is a real
-         * destination here ("back to the present"), distinct from "no jump yet". */
+        /** The window currently loaded by a jump, so a scrub that lands back on a day
+         * already showing costs nothing. Wrapped because `null` is a real destination here
+         * ("back to the present"), distinct from "no jump yet". */
         private var applied: Scrubbed? = null
-        private var jumpJob: Job? = null
+
+        /** Jumps run one at a time. A drag issues a stream of scrubs and then a commit,
+         * and two reseeds overlapping would leave the cache on whichever finished last
+         * rather than on the one the user actually asked for. */
+        private val jumpLock = Mutex()
 
         private data class Scrubbed(val day: LocalDate?)
 
         /**
-         * The finger paused over [day] mid-drag: load that window now so the grid follows
-         * along, without ending the gesture. Superseding rather than queueing — a drag
-         * produces several of these and only the newest is worth having, and letting two
-         * reseeds race would leave the cache on whichever happened to finish last.
+         * The finger is over [day] mid-drag: load that window so the grid follows along,
+         * without ending the gesture.
+         *
+         * Suspends until the window is committed, which is the point — the caller
+         * `conflate`s on it, so this returning is what releases the next scrub, and the
+         * drag is paced by however long a fetch actually takes instead of by a timer
+         * guessing at it.
          */
-        fun onScrubTo(day: LocalDate?) = jumpTo(day, commit = false)
+        suspend fun onScrubTo(day: LocalDate?) = applyJump(day, commit = false)
 
         /**
          * The drag was released on [day] (null for the top of the rail, "back to the
-         * present"). Always rebuilds the pager even when a scrub already loaded this exact
-         * window, because that rebuild is what clears `PREPEND`'s latched
-         * end-of-pagination — see [pagerGeneration].
+         * present"). Always rebuilds the pager, even when a scrub already loaded this
+         * exact window, because that rebuild is what clears `PREPEND`'s latched
+         * end-of-pagination — see [pagerGeneration]. The refetch itself is skipped in that
+         * case, so the common "drag, release" costs one request rather than two and the
+         * release is visually a no-op.
          */
-        fun onJumpCommitted(day: LocalDate?) = jumpTo(day, commit = true)
+        fun onJumpCommitted(day: LocalDate?) {
+            viewModelScope.launch { applyJump(day, commit = true) }
+        }
 
         /** Failures are swallowed the same way every other network path on this screen
          * does: the cache keeps serving whatever it already had, and the grid doesn't
          * move. */
-        private fun jumpTo(
+        private suspend fun applyJump(
             day: LocalDate?,
             commit: Boolean,
-        ) {
-            jumpJob?.cancel()
-            jumpJob =
-                viewModelScope.launch {
-                    val target = Scrubbed(day)
-                    val landed =
-                        applied == target ||
-                            try {
-                                photoRepository.jumpTo(day)
-                            } catch (e: IOException) {
-                                false
-                            } catch (e: HttpException) {
-                                false
-                            }
-                    if (!landed) return@launch
-
-                    applied = target
-                    if (commit) {
-                        // Forgotten on commit rather than kept: once the gesture ends the
-                        // user can scroll, which loads pages either side and leaves the
-                        // cache no longer describing just this day. A later scrub back
-                        // here has to fetch again rather than trust a stale match.
-                        applied = null
-                        pagerGeneration.update { it + 1 }
+        ) = jumpLock.withLock {
+            val target = Scrubbed(day)
+            val landed =
+                applied == target ||
+                    try {
+                        photoRepository.jumpTo(day)
+                    } catch (e: IOException) {
+                        false
+                    } catch (e: HttpException) {
+                        false
                     }
-                    _jumpCompleted.emit(Unit)
-                }
+            if (!landed) return@withLock
+
+            applied = target
+            if (commit) {
+                // Forgotten on commit rather than kept: once the gesture ends the user can
+                // scroll, which loads pages either side and leaves the cache no longer
+                // describing just this day. A later scrub back here has to fetch again
+                // rather than trust a stale match.
+                applied = null
+                pagerGeneration.update { it + 1 }
+            }
+            _jumpCompleted.emit(Unit)
         }
 
         private fun refreshBounds() {

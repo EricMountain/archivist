@@ -163,7 +163,7 @@ private fun TimelineGrid(
     gridState: LazyGridState,
     bounds: TimelineBounds?,
     onPhotoClick: (String) -> Unit,
-    onScrub: (LocalDate?) -> Unit,
+    onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {

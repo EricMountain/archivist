@@ -21,10 +21,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -46,7 +46,10 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -75,7 +78,7 @@ fun TimelineScrollbar(
     gridState: LazyGridState,
     items: LazyPagingItems<TimelineItem>,
     bounds: TimelineBounds?,
-    onScrub: (LocalDate?) -> Unit,
+    onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -84,8 +87,6 @@ fun TimelineScrollbar(
     val haptics = LocalHapticFeedback.current
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
     var heldFraction by remember { mutableStateOf<Float?>(null) }
-    var scrubbed by remember { mutableStateOf<Scrub?>(null) }
-    var lastScrubAt by remember { mutableLongStateOf(0L) }
 
     val idleFraction by remember(items, bounds) {
         derivedStateOf {
@@ -97,26 +98,23 @@ fun TimelineScrollbar(
     val held = heldFraction
     val thumbFraction = held ?: idleFraction ?: 0f
 
-    // The day under the finger right now, or null when nothing is held. Wrapped rather
-    // than a bare LocalDate? because null is itself a meaningful destination here — the
-    // top of the rail means "back to the present" — and the two have to be told apart.
-    val hovered = held?.let { Scrub(jumpDayFor(it, bounds)) }
-
-    // Scrolling the grid along with the finger, without a request per frame. The whole
-    // library is on the rail but only the visited window is in Room, so every day the
-    // finger crosses would otherwise be a fetch. Keying the effect on the hovered day
-    // makes it a debounce for free: each change cancels the pending one, so a fetch only
-    // happens once the finger settles ([SCRUB_SETTLE_MS]). A drag that never settles
-    // would then show nothing until release, so a scrub also goes through unconditionally
-    // once [SCRUB_MAX_INTERVAL_MS] has passed since the last one — which is what keeps a
-    // long continuous drag moving rather than frozen.
-    LaunchedEffect(hovered) {
-        val target = hovered ?: return@LaunchedEffect
-        if (target == scrubbed) return@LaunchedEffect
-        if (System.currentTimeMillis() - lastScrubAt < SCRUB_MAX_INTERVAL_MS) delay(SCRUB_SETTLE_MS)
-        scrubbed = target
-        lastScrubAt = System.currentTimeMillis()
-        onScrub(target.day)
+    // Scrolling the grid along with the finger, as fast as the network allows and no
+    // faster. The whole library is on the rail but only the visited window is in Room, so
+    // a fetch per frame is not available; `conflate` is what makes that a pacing problem
+    // rather than a queueing one — while a window is loading, every day the finger crosses
+    // is dropped except the most recent, so the next fetch always asks for where the
+    // finger is *now* rather than working through a backlog of where it has been.
+    //
+    // Deliberately not a debounce on the hovered day, which is what shipped first: a day
+    // is about six pixels of track, so a resting finger wobbles across day boundaries and
+    // restarted the timer every time. It only ever fired if the finger was held genuinely
+    // still, which read as the feature not being implemented at all.
+    LaunchedEffect(bounds) {
+        snapshotFlow { heldFraction?.let { Scrub(jumpDayFor(it, bounds)) } }
+            .filterNotNull()
+            .distinctUntilChanged()
+            .conflate()
+            .collect { onScrub(it.day) }
     }
 
     // The rail's own width, so its background and labels aren't measured against the
@@ -150,7 +148,6 @@ fun TimelineScrollbar(
                             // refetch when the day is unchanged, so that costs nothing.
                             heldFraction?.let { onCommit(jumpDayFor(it, bounds)) }
                             heldFraction = null
-                            scrubbed = null
                         },
                     )
                 },
@@ -178,14 +175,6 @@ fun TimelineScrollbar(
  * because `null` means "back to the present" — a real destination, distinct from "not
  * dragging". */
 private data class Scrub(val day: LocalDate?)
-
-/** How long the finger has to hold still on a day before the grid follows it there. */
-private const val SCRUB_SETTLE_MS = 150L
-
-/** ...and how long a continuously moving drag may go without the grid following, before
- * one goes through regardless. Without this a slow sweep across the rail never settles
- * and so never previews anything. */
-private const val SCRUB_MAX_INTERVAL_MS = 500L
 
 private val HIT_TARGET_WIDTH = 48.dp
 private val RAIL_WIDTH = 96.dp
