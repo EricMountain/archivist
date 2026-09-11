@@ -9,6 +9,7 @@ import androidx.paging.map
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.data.local.db.localDate
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.TimelineBounds
@@ -19,6 +20,7 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,9 +56,6 @@ sealed interface TimelineItem {
 
     data class Header(val date: LocalDate, val anchorPhotoId: String) : TimelineItem
 }
-
-internal fun PhotoEntity.localDate(): LocalDate =
-    Instant.parse(takenAt).atOffset(ZoneOffset.ofTotalSeconds(tzOffsetMin * 60)).toLocalDate()
 
 /** Inserts a [TimelineItem.Header] ahead of the first photo of each new *local* day —
  * pulled out of [TimelineViewModel] as a standalone function so it's testable directly
@@ -154,27 +153,63 @@ class TimelineViewModel
         private val _jumpCompleted = MutableSharedFlow<Unit>()
         val jumpCompleted: SharedFlow<Unit> = _jumpCompleted.asSharedFlow()
 
-        /** A fast-scroll drag was released. [target] is null for "back to the present"
-         * (the top of the scrollbar's track). Failures are swallowed the same way every
-         * other network path on this screen does: the cache keeps serving whatever it
-         * already had, and the grid simply doesn't move. */
-        fun onJumpRequested(target: Instant?) {
-            viewModelScope.launch {
-                val landed =
-                    try {
-                        photoRepository.jumpTo(target)
-                    } catch (e: IOException) {
-                        false
-                    } catch (e: HttpException) {
-                        false
+        /** The window currently committed to Room by a jump, so a scrub that lands back
+         * on a day already loaded costs nothing. Wrapped because `null` is a real
+         * destination here ("back to the present"), distinct from "no jump yet". */
+        private var applied: Scrubbed? = null
+        private var jumpJob: Job? = null
+
+        private data class Scrubbed(val day: LocalDate?)
+
+        /**
+         * The finger paused over [day] mid-drag: load that window now so the grid follows
+         * along, without ending the gesture. Superseding rather than queueing — a drag
+         * produces several of these and only the newest is worth having, and letting two
+         * reseeds race would leave the cache on whichever happened to finish last.
+         */
+        fun onScrubTo(day: LocalDate?) = jumpTo(day, commit = false)
+
+        /**
+         * The drag was released on [day] (null for the top of the rail, "back to the
+         * present"). Always rebuilds the pager even when a scrub already loaded this exact
+         * window, because that rebuild is what clears `PREPEND`'s latched
+         * end-of-pagination — see [pagerGeneration].
+         */
+        fun onJumpCommitted(day: LocalDate?) = jumpTo(day, commit = true)
+
+        /** Failures are swallowed the same way every other network path on this screen
+         * does: the cache keeps serving whatever it already had, and the grid doesn't
+         * move. */
+        private fun jumpTo(
+            day: LocalDate?,
+            commit: Boolean,
+        ) {
+            jumpJob?.cancel()
+            jumpJob =
+                viewModelScope.launch {
+                    val target = Scrubbed(day)
+                    val landed =
+                        applied == target ||
+                            try {
+                                photoRepository.jumpTo(day)
+                            } catch (e: IOException) {
+                                false
+                            } catch (e: HttpException) {
+                                false
+                            }
+                    if (!landed) return@launch
+
+                    applied = target
+                    if (commit) {
+                        // Forgotten on commit rather than kept: once the gesture ends the
+                        // user can scroll, which loads pages either side and leaves the
+                        // cache no longer describing just this day. A later scrub back
+                        // here has to fetch again rather than trust a stale match.
+                        applied = null
+                        pagerGeneration.update { it + 1 }
                     }
-                if (landed) {
-                    // Order matters: rebuild the pager over the committed window first,
-                    // then tell the grid to go to the top of it.
-                    pagerGeneration.update { it + 1 }
                     _jumpCompleted.emit(Unit)
                 }
-            }
         }
 
         private fun refreshBounds() {

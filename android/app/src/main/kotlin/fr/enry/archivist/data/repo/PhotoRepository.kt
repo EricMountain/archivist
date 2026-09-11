@@ -10,6 +10,7 @@ import fr.enry.archivist.data.local.db.AppDatabase
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -29,7 +30,7 @@ data class TimelineBounds(val oldest: Instant, val newest: Instant)
  * [Instant.toString], which silently *drops* the fractional-seconds group whenever it's
  * precisely zero (`"…T00:00:00Z"`, not `"…T00:00:00.000Z"`), breaking that fixed width
  * for any jump target landing on an exact second. */
-private val ISO_MILLIS_UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
+internal val ISO_MILLIS_UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
 
 /**
  * Plan step 2.11: the `Pager` wiring behind the timeline grid. [TimelinePagingSource]'s
@@ -71,8 +72,8 @@ class PhotoRepository
          * the mediator means exactly one write, and therefore exactly one new generation.
          */
         @OptIn(ExperimentalPagingApi::class)
-        suspend fun jumpTo(target: Instant?): Boolean =
-            mediator.reseedAt(target?.let { ISO_MILLIS_UTC.format(it) }) !is RemoteMediator.MediatorResult.Error
+        suspend fun jumpTo(day: LocalDate?): Boolean =
+            mediator.reseedAt(day) !is RemoteMediator.MediatorResult.Error
 
         /** The scrollbar's own range — fetched fresh each call, best-effort (a stale or
          * missing range just means the scrollbar can't position itself precisely yet,

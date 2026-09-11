@@ -22,6 +22,7 @@ import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import java.io.File
 import java.nio.file.Files
+import java.time.LocalDate
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -121,8 +122,9 @@ class TimelineRemoteMediatorTest {
     private fun photoJson(
         photoId: String,
         takenAt: String,
+        tzOffsetMin: Int = 0,
     ) = """{"photoId":"$photoId","takenAt":"$takenAt","thumbs":{"256":{"bucket":"derived","key":"th/o1/$photoId/256","iv":"aXY=","bytes":100}},""" +
-        """"encDek":"ZGVr","encKeyId":"mk-1","width":10,"height":10,"mime":"image/jpeg","tzOffsetMin":0,"status":"ready"}"""
+        """"encDek":"ZGVr","encKeyId":"mk-1","width":10,"height":10,"mime":"image/jpeg","tzOffsetMin":$tzOffsetMin,"status":"ready"}"""
 
     @Test
     fun `refresh upserts the returned page and stores the cursor`() =
@@ -184,11 +186,13 @@ class TimelineRemoteMediatorTest {
             )
             photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
 
-            mediator.reseedAt("2021-06-15T00:00:00.000Z")
+            mediator.reseedAt(LocalDate.parse("2021-06-15"))
 
-            // The older half: everything up to the target, newest-first.
+            // One bounded fetch, newest-first, reaching twelve hours past the day's end
+            // in UTC so no photo carrying that day's header is excluded — see
+            // `lastInstantOnOrBefore`.
             assertEquals(1, requests.size, "a jump is one bounded fetch, nothing more")
-            assertEquals("2021-06-15T00:00:00.000Z", lastRequest?.requestUrl?.queryParameter("to"))
+            assertEquals("2021-06-16T11:59:59.999Z", lastRequest?.requestUrl?.queryParameter("to"))
             assertEquals(EPOCH_ISO, lastRequest?.requestUrl?.queryParameter("from"))
 
             assertNull(db.photoDao().getByPhotoId("stale"))
@@ -218,7 +222,7 @@ class TimelineRemoteMediatorTest {
             )
             photosResponseBody = """{"items":[]}"""
 
-            val result = mediator.reseedAt("1999-01-01T00:00:00.000Z")
+            val result = mediator.reseedAt(LocalDate.parse("1999-01-01"))
 
             assertTrue(result is RemoteMediator.MediatorResult.Error)
             assertNotNull(db.photoDao().getByPhotoId("kept"))
@@ -253,7 +257,7 @@ class TimelineRemoteMediatorTest {
             connectInstance()
             photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
 
-            mediator.reseedAt("2021-06-15T00:00:00.000Z")
+            mediator.reseedAt(LocalDate.parse("2021-06-15"))
             assertEquals(TimelineKey("2021-06-01T00:00:00.000Z", "p1"), jumpCoordinator.consumeLanding())
 
             mediator.reseedAt(null)
@@ -400,5 +404,50 @@ class TimelineRemoteMediatorTest {
             )
 
             assertEquals(InitializeAction.SKIP_INITIAL_REFRESH, mediator.initialize())
+        }
+
+    /**
+     * The bug behind "picking a date doesn't land on that date": the grid headers a photo
+     * with *its own* recorded offset, but the jump used to resolve the day in the
+     * viewer's timezone. A photo at 22:40:29Z with `tzOffsetMin = 120` is still 17
+     * November on a UTC+1 phone and so came back as the landing, while the header above
+     * it read 18 November. Seen live on the device, not hypothesised.
+     */
+    @Test
+    fun `a jump lands on the newest photo whose own header reads the requested day`() =
+        runTest {
+            connectInstance()
+            // Newest-first, as the server returns them. The first belongs to the 18th once
+            // its own +02:00 offset is applied, so it must not be the landing.
+            photosResponseBody =
+                """{"items":[
+                    ${photoJson("next-day", "2025-11-17T22:40:29.000Z", tzOffsetMin = 120)},
+                    ${photoJson("wanted", "2025-11-17T16:10:00.000Z", tzOffsetMin = 120)},
+                    ${photoJson("earlier", "2025-11-16T09:00:00.000Z", tzOffsetMin = 120)}
+                ]}""".trimIndent()
+
+            mediator.reseedAt(LocalDate.parse("2025-11-17"))
+
+            assertEquals(TimelineKey("2025-11-17T16:10:00.000Z", "wanted"), jumpCoordinator.consumeLanding())
+            // The later-day photo is dropped rather than cached above the landing, so the
+            // landing stays the first row of the window — which is what puts it at the top
+            // of the grid for both a staged re-anchor and a rebuilt Pager.
+            assertNull(db.photoDao().getByPhotoId("next-day"))
+            assertNotNull(db.photoDao().getByPhotoId("earlier"))
+        }
+
+    /** Every photo fetched belonging to a later day still has to land somewhere — an
+     * empty window is the dead end the bottom of the rail used to produce. */
+    @Test
+    fun `a jump whose whole page belongs to a later day lands on the oldest of it`() =
+        runTest {
+            connectInstance()
+            photosResponseBody =
+                """{"items":[${photoJson("late", "2025-11-17T23:30:00.000Z", tzOffsetMin = 720)}]}"""
+
+            mediator.reseedAt(LocalDate.parse("2025-11-17"))
+
+            assertEquals(TimelineKey("2025-11-17T23:30:00.000Z", "late"), jumpCoordinator.consumeLanding())
+            assertNotNull(db.photoDao().getByPhotoId("late"))
         }
 }

@@ -17,9 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -36,12 +38,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.paging.compose.LazyPagingItems
+import fr.enry.archivist.data.local.db.localDate
 import fr.enry.archivist.data.repo.TimelineBounds
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -70,7 +75,8 @@ fun TimelineScrollbar(
     gridState: LazyGridState,
     items: LazyPagingItems<TimelineItem>,
     bounds: TimelineBounds?,
-    onJump: (Instant?) -> Unit,
+    onScrub: (LocalDate?) -> Unit,
+    onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (bounds == null) return
@@ -78,6 +84,8 @@ fun TimelineScrollbar(
     val haptics = LocalHapticFeedback.current
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
     var heldFraction by remember { mutableStateOf<Float?>(null) }
+    var scrubbed by remember { mutableStateOf<Scrub?>(null) }
+    var lastScrubAt by remember { mutableLongStateOf(0L) }
 
     val idleFraction by remember(items, bounds) {
         derivedStateOf {
@@ -88,6 +96,28 @@ fun TimelineScrollbar(
 
     val held = heldFraction
     val thumbFraction = held ?: idleFraction ?: 0f
+
+    // The day under the finger right now, or null when nothing is held. Wrapped rather
+    // than a bare LocalDate? because null is itself a meaningful destination here — the
+    // top of the rail means "back to the present" — and the two have to be told apart.
+    val hovered = held?.let { Scrub(jumpDayFor(it, bounds)) }
+
+    // Scrolling the grid along with the finger, without a request per frame. The whole
+    // library is on the rail but only the visited window is in Room, so every day the
+    // finger crosses would otherwise be a fetch. Keying the effect on the hovered day
+    // makes it a debounce for free: each change cancels the pending one, so a fetch only
+    // happens once the finger settles ([SCRUB_SETTLE_MS]). A drag that never settles
+    // would then show nothing until release, so a scrub also goes through unconditionally
+    // once [SCRUB_MAX_INTERVAL_MS] has passed since the last one — which is what keeps a
+    // long continuous drag moving rather than frozen.
+    LaunchedEffect(hovered) {
+        val target = hovered ?: return@LaunchedEffect
+        if (target == scrubbed) return@LaunchedEffect
+        if (System.currentTimeMillis() - lastScrubAt < SCRUB_MAX_INTERVAL_MS) delay(SCRUB_SETTLE_MS)
+        scrubbed = target
+        lastScrubAt = System.currentTimeMillis()
+        onScrub(target.day)
+    }
 
     // The rail's own width, so its background and labels aren't measured against the
     // narrow touch strip (which clipped the background and wrapped the date pill onto
@@ -112,8 +142,15 @@ fun TimelineScrollbar(
                         },
                         onDrag = { y -> heldFraction = fractionAt(y, trackHeightPx) },
                         onEnd = {
-                            heldFraction?.let { onJump(jumpTargetFor(it, bounds)) }
+                            // Always commits, even when the finger settled here long
+                            // enough that the window is already loaded: the commit is
+                            // also what rebuilds the pager, and that is what clears
+                            // PREPEND's latched end-of-pagination so the timeline can be
+                            // scrolled back toward the present. The repository skips the
+                            // refetch when the day is unchanged, so that costs nothing.
+                            heldFraction?.let { onCommit(jumpDayFor(it, bounds)) }
                             heldFraction = null
+                            scrubbed = null
                         },
                     )
                 },
@@ -136,6 +173,19 @@ fun TimelineScrollbar(
         }
     }
 }
+
+/** One destination the rail can select. A wrapper rather than a bare `LocalDate?`
+ * because `null` means "back to the present" — a real destination, distinct from "not
+ * dragging". */
+private data class Scrub(val day: LocalDate?)
+
+/** How long the finger has to hold still on a day before the grid follows it there. */
+private const val SCRUB_SETTLE_MS = 150L
+
+/** ...and how long a continuously moving drag may go without the grid following, before
+ * one goes through regardless. Without this a slow sweep across the rail never settles
+ * and so never previews anything. */
+private const val SCRUB_MAX_INTERVAL_MS = 500L
 
 private val HIT_TARGET_WIDTH = 48.dp
 private val RAIL_WIDTH = 96.dp
@@ -324,7 +374,7 @@ internal fun fractionAtInstant(
 }
 
 /**
- * Where a release at [fraction] actually jumps to.
+ * Which **calendar day** a release at [fraction] jumps to.
  *
  * Null — meaning "back to the present", an unbounded refresh — for a release at the very
  * top of the track, rather than a bounded window at `newest`. Two reasons: the server's
@@ -333,35 +383,29 @@ internal fun fractionAtInstant(
  * sample-data.md), which would drop the newest photo; and it makes the top of the rail
  * the reliable way back to a normal, present-anchored timeline after a jump.
  *
- * Everywhere else the target is snapped to the **end of the local day** the finger is
- * over, not the exact instant the fraction maps to. The rail is labelled in months and
- * the pill names a day, so a day is the finest thing the user can actually aim at;
- * jumping to a bare instant mid-afternoon lands on whatever preceded it, which for a
- * sparse day is the day before — the user asked to land on the date they picked, and
- * the last photo *of* that date is the one that puts its header at the top of the grid.
+ * A day, not the exact instant the fraction maps to. The rail is labelled in months and
+ * the pill names a day, so a day is the finest thing the user can actually aim at, and
+ * the resolution of a day into a specific photo belongs with the data that defines what
+ * a day *is* — see [localDate], and `TimelineRemoteMediator.reseedAt`. Returning a bare
+ * instant here meant the bound was resolved in the viewer's timezone while the grid's
+ * headers group by each photo's own recorded offset, so the two disagreed by a day
+ * whenever those differed near a boundary.
  *
  * It also fixes the bottom of the rail outright. `fraction = 1f` maps to exactly
  * [TimelineBounds.oldest], and a `to` bound at that instant excludes the very photo it
  * names — so the whole-library jump returned nothing, cleared the cache and left the
  * timeline on "No photos yet" with no cursor in either direction to recover from
- * (reported live; the app had to be restarted). End-of-day is at or after every photo on
- * that day, including the oldest one.
+ * (reported live; the app had to be restarted). A whole day always contains its own
+ * photos.
  */
-internal fun jumpTargetFor(
+internal fun jumpDayFor(
     fraction: Float,
     bounds: TimelineBounds,
     zone: ZoneId = ZoneId.systemDefault(),
-): Instant? {
+): LocalDate? {
     if (fraction <= TOP_OF_RAIL_FRACTION) return null
-    return endOfLocalDay(instantAtFraction(fraction, bounds), zone)
+    return instantAtFraction(fraction, bounds).atZone(zone).toLocalDate()
 }
-
-/** Last representable instant of [instant]'s local day. Built from the *next* day's start
- * so a DST transition inside the day is the zone rules' problem, not this function's. */
-private fun endOfLocalDay(
-    instant: Instant,
-    zone: ZoneId,
-): Instant = instant.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().minusMillis(1)
 
 private const val TOP_OF_RAIL_FRACTION = 0.01f
 

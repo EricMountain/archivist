@@ -7,6 +7,7 @@ import androidx.paging.PagingState
 import androidx.paging.testing.asSnapshot
 import fr.enry.archivist.data.local.db.AssetStatus
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.data.local.db.localDate
 import java.time.LocalDate
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals

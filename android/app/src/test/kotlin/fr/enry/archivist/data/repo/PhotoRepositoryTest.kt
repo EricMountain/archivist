@@ -152,11 +152,11 @@ class PhotoRepositoryTest {
             // TimelineRemoteMediator.loadNewerThanCache's own doc.
             server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}]}"""))
 
-            val outcome = repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z"))
+            val outcome = repository.jumpTo(java.time.LocalDate.parse("2021-06-15"))
 
             assertEquals(true, outcome)
             assertEquals(1, server.requestCount, "a jump is one bounded fetch, nothing more")
-            assertEquals("2021-06-15T00:00:00.000Z", server.takeRequest().requestUrl?.queryParameter("to"))
+            assertEquals("2021-06-16T11:59:59.999Z", server.takeRequest().requestUrl?.queryParameter("to"))
             assertNotNull(db.photoDao().getByPhotoId("jumped"))
             assertEquals(null, db.photoDao().getByPhotoId("stale"))
         }
@@ -167,7 +167,7 @@ class PhotoRepositoryTest {
             connectInstance()
             server.enqueue(MockResponse().setResponseCode(500))
 
-            assertEquals(false, repository.jumpTo(java.time.Instant.parse("2021-06-15T00:00:00.000Z")))
+            assertEquals(false, repository.jumpTo(java.time.LocalDate.parse("2021-06-15")))
         }
 
     @Test

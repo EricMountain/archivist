@@ -6,6 +6,9 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Transaction
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
 
@@ -185,3 +188,19 @@ interface PhotoDao {
     @Query("SELECT NOT EXISTS(SELECT 1 FROM photos)")
     suspend fun isEmpty(): Boolean
 }
+
+/**
+ * The calendar day this photo belongs to **in its own recorded offset**, not in the
+ * viewer's timezone — the rule the timeline's date headers group by, and therefore the
+ * only definition of "day" the user ever sees on this screen.
+ *
+ * Lives here rather than next to the grid because the fast-scroll jump has to agree with
+ * it: picking a day off the rail selects a *calendar day*, and the photo it lands on is
+ * chosen by this, so that the header above the landing shows the date the pill named.
+ * Resolving the bound in the device's zone instead put the pill and the header one day
+ * apart for any photo near a day boundary whose offset differs from the phone's — e.g. a
+ * photo at 22:40:29Z with `tzOffsetMin = 120` is still 17 November on a UTC+1 phone but
+ * is 18 November to itself, which is what the header shows.
+ */
+fun PhotoEntity.localDate(): LocalDate =
+    Instant.parse(takenAt).atOffset(ZoneOffset.ofTotalSeconds(tzOffsetMin * 60)).toLocalDate()

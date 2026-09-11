@@ -48,7 +48,7 @@ import fr.enry.archivist.ui.detail.DetailScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.settings.SettingsScreen
-import java.time.Instant
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -141,7 +141,8 @@ fun TimelineScreen(
             gridState = gridState,
             bounds = bounds,
             onPhotoClick = { selectedPhotoId = it },
-            onJump = viewModel::onJumpRequested,
+            onScrub = viewModel::onScrubTo,
+            onCommit = viewModel::onJumpCommitted,
             modifier = Modifier.weight(1f),
         )
     }
@@ -162,7 +163,8 @@ private fun TimelineGrid(
     gridState: LazyGridState,
     bounds: TimelineBounds?,
     onPhotoClick: (String) -> Unit,
-    onJump: (Instant?) -> Unit,
+    onScrub: (LocalDate?) -> Unit,
+    onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val refreshState = items.loadState.refresh
@@ -208,7 +210,8 @@ private fun TimelineGrid(
                     gridState = gridState,
                     items = items,
                     bounds = bounds,
-                    onJump = onJump,
+                    onScrub = onScrub,
+                    onCommit = onCommit,
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
             }

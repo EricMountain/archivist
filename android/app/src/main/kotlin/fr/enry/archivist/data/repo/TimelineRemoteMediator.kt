@@ -14,12 +14,15 @@ import fr.enry.archivist.data.local.db.AssetStatus
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.TimelineCursorEntity
 import fr.enry.archivist.data.local.db.TimelineKey
+import fr.enry.archivist.data.local.db.localDate
 import fr.enry.archivist.data.remote.ArchivistApi
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.PhotosPageResponse
 import fr.enry.archivist.data.remote.TimelineEntryDto
 import java.io.IOException
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import kotlinx.coroutines.flow.first
 import retrofit2.HttpException
@@ -94,17 +97,14 @@ class TimelineRemoteMediator(
      * "bounces around the timeline a few times, then lands nowhere near the date I
      * picked" the first version of this feature shipped with.
      */
-    suspend fun reseedAt(targetIso: String?): MediatorResult {
+    suspend fun reseedAt(day: LocalDate?): MediatorResult {
         return try {
             val instance = instanceStore.current.first() ?: return MediatorResult.Error(IllegalStateException("no connected instance"))
             val api = apiFor(instance)
             val url = photosUrl(instance.document.apiBase)
 
-            val older = api.getPhotos(url, cursor = null, limit = RESEED_PAGE_SIZE, from = targetIso?.let { EPOCH_ISO }, to = targetIso)
-            // Newest-first, so the first of `older` is the photo immediately at or before
-            // the target — the boundary itself. With nothing before it, the first of the
-            // ascending page is the closest photo after it instead.
-            val landOn = older.items.firstOrNull()
+            val toIso = day?.let { ISO_MILLIS_UTC.format(lastInstantOnOrBefore(it)) }
+            val page = api.getPhotos(url, cursor = null, limit = RESEED_PAGE_SIZE, from = day?.let { EPOCH_ISO }, to = toIso)
 
             // A jump that matched nothing keeps the cache it already had, rather than
             // clearing it and committing an empty one. An empty timeline is a dead end:
@@ -114,9 +114,19 @@ class TimelineRemoteMediator(
             // [jumpTargetFor] no longer produces such a target, but a jump is a whole-
             // cache replacement and is not worth leaving one bad bound away from that.
             // A *plain* refresh is exempt: there, empty genuinely means an empty library.
-            if (targetIso != null && older.items.isEmpty()) {
-                return MediatorResult.Error(IllegalStateException("no photos at or before $targetIso"))
+            if (day != null && page.items.isEmpty()) {
+                return MediatorResult.Error(IllegalStateException("no photos on or before $day"))
             }
+
+            // The bound is deliberately loose (see [lastInstantOnOrBefore]), so the head of
+            // the page can hold photos that belong to a *later* day than the one picked.
+            // Dropping them is what makes the landing the newest photo whose own header
+            // reads the requested date, and keeps it the first row of the window — which
+            // both `getRefreshKey`'s staged landing and a rebuilt `Pager`'s `pageFromStart`
+            // rely on to put it at the top of the grid.
+            val entities = page.items.map { it.toEntity() }
+            val window = if (day == null) entities else entities.drop(entities.landingIndexFor(day))
+            val landOn = window.firstOrNull()
 
             // Staged *before* the write, not after: Room's InvalidationTracker can fire
             // as part of the transaction commit itself, and the next generation's
@@ -127,18 +137,18 @@ class TimelineRemoteMediator(
             db.useWriterConnection { transactor ->
                 transactor.withTransaction(Transactor.SQLiteTransactionType.IMMEDIATE) {
                     photoDao.clear()
-                    photoDao.upsertAll(older.items.map { it.toEntity() })
+                    photoDao.upsertAll(window)
                     // The cursor tracks the older direction only, which is the one
                     // ordinary scrolling continues in.
-                    if (older.cursor != null) {
-                        timelineCursorDao.set(TimelineCursorEntity(cursor = older.cursor, updatedAt = nowIso()))
+                    if (page.cursor != null) {
+                        timelineCursorDao.set(TimelineCursorEntity(cursor = page.cursor, updatedAt = nowIso()))
                     } else {
                         timelineCursorDao.clear()
                     }
                 }
             }
 
-            MediatorResult.Success(endOfPaginationReached = older.cursor == null)
+            MediatorResult.Success(endOfPaginationReached = page.cursor == null)
         } catch (e: IOException) {
             MediatorResult.Error(e)
         } catch (e: HttpException) {
@@ -244,6 +254,35 @@ internal fun photosBoundsUrl(apiBase: String) = "$apiBase/photos/bounds"
 /** A jump's `from` bound: old enough that no real photo predates it, so `to` alone
  * effectively bounds the query — the server requires both or neither (`routes/photos.ts`). */
 internal const val EPOCH_ISO = "1970-01-01T00:00:00.000Z"
+
+/**
+ * The latest UTC instant at which a photo can still *belong* to [day], for any recorded
+ * offset — i.e. the `to` bound that is guaranteed not to exclude a photo the grid would
+ * header with that date.
+ *
+ * A photo's day is `takenAt` shifted by its own `tzOffsetMin` ([localDate]), and the
+ * furthest west any real offset goes is UTC−12, so a photo can carry [day]'s header until
+ * twelve hours after that day has ended in UTC. Bounding at the end of the day in the
+ * *viewer's* zone instead is what made the pill and the header disagree: it excluded
+ * exactly those photos, landing the jump a day early.
+ *
+ * The bound is therefore deliberately loose in the other direction — it also admits
+ * photos belonging to the *next* day — and `reseedAt` drops those from the head of the
+ * page rather than trying to express the condition in the query. It can't be expressed
+ * there: `timeline_gsi` is keyed on UTC `takenAt`, and a photo's offset isn't part of the
+ * key at all.
+ */
+internal fun lastInstantOnOrBefore(day: LocalDate): Instant =
+    day.plusDays(1).atStartOfDay().plusHours(MAX_HOURS_WEST_OF_UTC).toInstant(ZoneOffset.UTC).minusMillis(1)
+
+private const val MAX_HOURS_WEST_OF_UTC = 12L
+
+/** Index of the newest photo whose own header date is at or before [day] — the photo a
+ * jump to that day should land on. Falls back to the oldest photo fetched when every one
+ * of them belongs to a later day, so a jump always lands somewhere rather than committing
+ * an empty window. */
+internal fun List<PhotoEntity>.landingIndexFor(day: LocalDate): Int =
+    indexOfFirst { it.localDate() <= day }.takeIf { it >= 0 } ?: lastIndex
 
 /** [TimelineRemoteMediator.loadNewerThanCache]'s `to` bound: far enough ahead that no
  * real photo postdates it, so `from` alone effectively bounds the query. Mirrors
