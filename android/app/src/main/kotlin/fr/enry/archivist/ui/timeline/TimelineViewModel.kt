@@ -135,9 +135,13 @@ class TimelineViewModel
          */
         private val pagerGeneration = MutableStateFlow(PagerSeed(generation = 0, initialKey = null))
 
-        /** A rebuild, and where the rebuilt pager starts. The generation is what forces a
-         * rebuild when the landing happens to repeat. */
+        /** A rebuild, and where the rebuilt pager starts. */
         private data class PagerSeed(val generation: Int, val initialKey: TimelineKey?)
+
+        /** What the *live* pager is currently anchored at, so a jump landing on exactly
+         * that key again can skip rebuilding it — see [applyJump]. `null` is a real value
+         * here (the present, `pagerGeneration`'s own starting state), not "unknown". */
+        private var livePagerKey: TimelineKey? = null
 
         @OptIn(ExperimentalCoroutinesApi::class)
         val timeline: Flow<PagingData<TimelineItem>> =
@@ -207,12 +211,24 @@ class TimelineViewModel
                     null
                 } ?: return@withLock
 
-            // Rebuilt on every jump, local ones included, and started at the landing. The
-            // rebuild is what clears PREPEND's latched end-of-pagination (see
-            // [pagerGeneration]); starting at the landing is what puts it at the top of
-            // the grid now that the cache keeps the rows above it rather than dropping
-            // them.
-            pagerGeneration.update { PagerSeed(it.generation + 1, outcome.landing) }
+            // Rebuilt only when the landing actually differs from what's already live —
+            // skipped entirely for a release that lands exactly where the last scrub
+            // already put things, which used to force a visible reload of content that
+            // was already on screen (reported live: "when I take my finger off the rail,
+            // the screen refreshes even though it stays in the same position").
+            //
+            // Safe to skip precisely because nothing has moved: a `RemoteMediator`'s own
+            // load state (including PREPEND's latched end-of-pagination — see
+            // [pagerGeneration]'s own doc) survives a `PagingSource` restart *within* the
+            // same `Pager`, which is exactly what an unchanged landing means happened, if
+            // anything — Room's own invalidation already re-anchors the existing pager on
+            // a staged landing with no rebuild needed at all. It only needs resetting when
+            // the window has actually moved to somewhere with different headroom above
+            // it, which an unchanged landing key rules out by definition.
+            if (outcome.landing != livePagerKey) {
+                livePagerKey = outcome.landing
+                pagerGeneration.update { PagerSeed(it.generation + 1, outcome.landing) }
+            }
             _jumpCompleted.emit(Unit)
         }
 
