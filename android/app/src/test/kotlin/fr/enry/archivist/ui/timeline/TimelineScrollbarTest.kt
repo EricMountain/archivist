@@ -224,4 +224,97 @@ class TimelineScrollbarTest {
         val instant = Instant.parse("2026-08-02T16:05:33.000Z")
         assertTrue(timelineTicks(TimelineBounds(instant, instant), zone = utc).isEmpty())
     }
+
+    // ---- lensWarp / lensUnwarp: the magnifier's own math -----------------------------
+
+    @Test
+    fun `the anchor is always a fixed point of the warp`() {
+        for (anchor in listOf(0.05f, 0.3f, 0.5f, 0.7f, 0.95f)) {
+            assertEquals(anchor, lensWarp(anchor, anchor), 0.0001f)
+        }
+    }
+
+    @Test
+    fun `the track's own endpoints never move`() {
+        for (anchor in listOf(0.1f, 0.5f, 0.9f)) {
+            assertEquals(0f, lensWarp(0f, anchor), 0.0001f)
+            assertEquals(1f, lensWarp(1f, anchor), 0.0001f)
+        }
+    }
+
+    @Test
+    fun `lensUnwarp is the exact inverse of lensWarp across the whole track`() {
+        val anchor = 0.35f
+        for (u in listOf(0f, 0.05f, 0.2f, 0.34f, 0.35f, 0.36f, 0.6f, 0.9f, 1f)) {
+            val warped = lensWarp(u, anchor)
+            assertEquals(u, lensUnwarp(warped, anchor), 0.001f, "u=$u warped=$warped")
+        }
+    }
+
+    /** The whole point: a fixed step in touch position, right next to the anchor, must
+     * select a *smaller* step in underlying position than the same touch step taken far
+     * from the anchor — otherwise the lens isn't doing anything. */
+    @Test
+    fun `a small move near the anchor selects less underlying ground than the same move far from it`() {
+        val anchor = 0.5f
+        val step = 0.01f
+
+        val nearDelta = lensUnwarp(anchor + step, anchor) - lensUnwarp(anchor, anchor)
+        val farTouch = 0.05f // close to the track's own edge, far from a mid-track anchor
+        val farDelta = lensUnwarp(farTouch + step, anchor) - lensUnwarp(farTouch, anchor)
+
+        assertTrue(
+            nearDelta < farDelta / 2,
+            "expected the near-anchor step ($nearDelta) to select noticeably less ground than the far one ($farDelta)",
+        )
+    }
+
+    @Test
+    fun `an anchor near either edge still produces a valid, monotonic warp`() {
+        for (anchor in listOf(0.02f, 0.98f)) {
+            val points = listOf(0f, 0.1f, 0.3f, 0.5f, 0.7f, 0.9f, 1f)
+            val warped = points.map { lensWarp(it, anchor) }
+            assertEquals(warped.sorted(), warped, "warp must stay monotonic for anchor=$anchor")
+            for ((p, w) in points.zip(warped)) {
+                assertEquals(p, lensUnwarp(w, anchor), 0.005f, "round trip failed at p=$p, anchor=$anchor")
+            }
+        }
+    }
+
+    // ---- fineTicks: day-level detail once the lens has spread a region apart ---------
+
+    @Test
+    fun `density fineTicks centres on the anchor's own day and stays within maxCount`() {
+        val days = (1..20).associate { "2026-01-%02d".format(it) to 1 }
+        val scale = DensityScale(TimelineHistogram(days, total = 20))
+        val centerFraction = scale.fractionOfDay(LocalDate.parse("2026-01-10"))
+
+        val fine = scale.fineTicks(centerFraction, maxCount = 6)
+
+        assertTrue(fine.size <= 7, "at most maxCount/2 either side of the centre, plus the centre itself")
+        assertTrue(fine.any { it.major }, "the anchor's own day should be marked major")
+        val majorLabel = fine.first { it.major }
+        assertEquals(FINE_TICK_FORMATTER.format(LocalDate.parse("2026-01-10")), majorLabel.label)
+    }
+
+    @Test
+    fun `density fineTicks near the start of the library doesn't run off the end`() {
+        val days = (1..5).associate { "2026-01-%02d".format(it) to 1 }
+        val scale = DensityScale(TimelineHistogram(days, total = 5))
+
+        val fine = scale.fineTicks(scale.fractionOfDay(LocalDate.parse("2026-01-01")), maxCount = 9)
+
+        assertEquals(5, fine.size, "fewer than maxCount when the library itself is smaller")
+    }
+
+    @Test
+    fun `time scale fineTicks generates one entry per day around the centre, clamped to bounds`() {
+        val scale = TimeScale(bounds, utc)
+        val center = 0.5f
+
+        val fine = scale.fineTicks(center, maxCount = 4)
+
+        assertTrue(fine.size <= 5)
+        assertTrue(fine.any { it.major })
+    }
 }

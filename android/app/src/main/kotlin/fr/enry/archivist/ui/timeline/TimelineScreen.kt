@@ -52,10 +52,26 @@ import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** The rung shown in the grid — matches [fr.enry.archivist.sync.Thumbnailer]'s smallest
  * rung, per android.md's "load the 256 thumbnail for instant paint". */
 private const val GRID_THUMB_SIZE = 256
+
+/** How long a burst of `itemCount` changes has to go quiet before the `jumpCompleted`
+ * collector reasserts `scrollToItem(0)` again — short enough that several reasserts
+ * during a fast page-load burst don't read as separate, visible scroll events. */
+private const val JUMP_SCROLL_DEBOUNCE_MS = 80L
+
+/** How long after a jump the `jumpCompleted` collector keeps reasserting the scroll
+ * position at all. Bounded so it stops fighting the user's own scrolling once real
+ * browsing resumes — an ordinary `APPEND` from scrolling also changes `itemCount`, and
+ * that must not get snapped back to the top. Comfortably longer than a jump's own
+ * settle time in practice (page loads observed finishing within a few hundred ms). */
+private const val JUMP_SCROLL_SETTLE_WINDOW_MS = 2000L
 
 /**
  * Plan step 2.11: the justified-grid timeline, Paging 3 over Room. Reuses
@@ -64,6 +80,7 @@ private const val GRID_THUMB_SIZE = 256
  * unlock ceremony — see [TimelineViewModel.locked]'s doc for why this screen is what
  * actually checks the master key continuously, unlike `MainActivity`'s own gate.
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 @Composable
 fun TimelineScreen(
     onSessionEnded: () -> Unit,
@@ -124,7 +141,42 @@ fun TimelineScreen(
     // rather than a LaunchedEffect keyed on load state, too: keying on items.itemCount
     // re-ran this on every page that loaded afterwards, yanking the grid back mid-scroll.
     LaunchedEffect(Unit) {
-        viewModel.jumpCompleted.collect { gridState.scrollToItem(0) }
+        viewModel.jumpCompleted.collect {
+            gridState.scrollToItem(0)
+            // One reassert isn't enough: a jump's fresh PagingData generation streams in
+            // over several subsequent page loads, not one shot, and *each* one can
+            // retrigger LazyVerticalGrid's own key-based position-preservation, nudging
+            // the scroll a row past the top again — confirmed live via instrumentation,
+            // itemCount still growing (168 -> 257 -> 258) well after an earlier reassert
+            // had already reported reaching index 0, with the position drifting again on
+            // the next page. Reported as "Latest doesn't quite get me to the top... I
+            // can't scroll to the top date label itself".
+            //
+            // So this keeps reasserting on every itemCount change (debounced, so a burst
+            // of loads gets one reassert per lull rather than one per page) for a bounded
+            // window after the jump, rather than trusting a single delayed retry. Bounded
+            // so it stops fighting the user's own scrolling once real browsing resumes —
+            // an APPEND from an ordinary scroll also changes itemCount, and this must not
+            // snap that back to the top.
+            //
+            // Launched as its own coroutine, deliberately not awaited inline: this
+            // collector is also what `_jumpCompleted.emit(Unit)` suspends on in
+            // `TimelineViewModel.applyJump`, which runs under the same lock every scrub
+            // in a drag shares. Awaiting the full window here serialised every later
+            // scrub behind this one's own settle time, which — confirmed live — was
+            // enough to stall a continuous drag almost completely; several seconds of a
+            // finger sweeping across the rail rendered as the grid barely moving.
+            // Reasserting "index 0" from several overlapping launches at once is
+            // harmless (they agree on the target), so nothing here needs the ordering
+            // that awaiting would have provided anyway.
+            launch {
+                withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
+                    snapshotFlow { items.itemCount }
+                        .debounce(JUMP_SCROLL_DEBOUNCE_MS)
+                        .collect { gridState.scrollToItem(0) }
+                }
+            }
+        }
     }
 
     // Plan step 2.12: which photo the detail screen is open on, if any. Plain local

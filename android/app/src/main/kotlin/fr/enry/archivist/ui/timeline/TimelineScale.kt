@@ -7,6 +7,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import kotlin.math.pow
 
 /**
  * What the fast-scroll rail maps a finger position onto.
@@ -25,7 +26,24 @@ internal interface RailScale {
 
     /** The labelled points drawn down the rail, top-down (newest first). */
     fun ticks(maxTicks: Int = MAX_TICKS): List<TimelineTick>
+
+    /**
+     * The individual days immediately around [centerFraction], for the magnifier lens
+     * (`lensWarp`/`lensUnwarp`'s own doc) to actually have something day-grained to show
+     * once it's spread that region of track apart. [ticks] alone can't: it's a sparse,
+     * whole-library set of ~14 month/year labels, and the whole point of the lens is
+     * precision finer than a month. Up to [maxCount] entries, but never assume exactly
+     * that many — running off the start or end of the library returns fewer.
+     */
+    fun fineTicks(
+        centerFraction: Float,
+        maxCount: Int = FINE_TICK_COUNT,
+    ): List<TimelineTick>
 }
+
+/** How many day-level ticks the lens shows on each side of the anchor at most — enough
+ * to fill the expanded region without crowding into unreadable text. */
+internal const val FINE_TICK_COUNT = 9
 
 /** One label on the fast-scroll rail. [fraction] is its position along the track. */
 internal data class TimelineTick(
@@ -129,6 +147,25 @@ internal class DensityScale(histogram: TimelineHistogram) : RailScale {
         }
         return out
     }
+
+    /** [days] is exactly the index this needs — newest-first, one entry per day that
+     * actually has a photo, which is precisely what makes a day worth offering as a fine
+     * tick at all: every one of these is reachable, matching [DensityScale]'s own reason
+     * for existing. */
+    override fun fineTicks(
+        centerFraction: Float,
+        maxCount: Int,
+    ): List<TimelineTick> {
+        val centerDay = dayAt(centerFraction) ?: return emptyList()
+        val centerIndex = days.indexOf(centerDay).takeIf { it >= 0 } ?: return emptyList()
+        val half = maxCount / 2
+        val from = (centerIndex - half).coerceAtLeast(0)
+        val to = (centerIndex + half).coerceAtMost(days.lastIndex)
+        return (from..to).map { i ->
+            val day = days[i]
+            TimelineTick(fraction = fractionOfDay(day), label = FINE_TICK_FORMATTER.format(day), major = day == centerDay)
+        }
+    }
 }
 
 /**
@@ -148,6 +185,25 @@ internal class TimeScale(private val bounds: TimelineBounds, private val zone: Z
         fractionAtInstant(day.atStartOfDay(zone).toInstant(), bounds)
 
     override fun ticks(maxTicks: Int): List<TimelineTick> = timelineTicks(bounds, zone, maxTicks)
+
+    /** No histogram to index into here, so the "days" are generated directly: one
+     * calendar day per entry, walking outward from the centre. Clamped to [bounds] —
+     * this scale doesn't know which of those days have photos (that's exactly what it's
+     * standing in for until the histogram arrives), so a day outside the library's own
+     * range isn't offered even though the arithmetic would happily produce one. */
+    override fun fineTicks(
+        centerFraction: Float,
+        maxCount: Int,
+    ): List<TimelineTick> {
+        val centerDay = dayAt(centerFraction) ?: return emptyList()
+        val half = maxCount / 2
+        return (-half..half).mapNotNull { offset ->
+            val day = centerDay.plusDays(offset.toLong())
+            val instant = day.atStartOfDay(zone).toInstant()
+            if (instant.isBefore(bounds.oldest) || instant.isAfter(bounds.newest)) return@mapNotNull null
+            TimelineTick(fraction = fractionAtInstant(instant, bounds), label = FINE_TICK_FORMATTER.format(day), major = offset == 0)
+        }
+    }
 }
 
 /** Fraction along the track -> the [Instant] it represents, linear in time. `0f` is
@@ -233,6 +289,77 @@ internal fun timelineTicks(
 private val TICK_STEPS_MONTHS = listOf(1, 2, 3, 6, 12, 24, 60, 120)
 
 internal val MONTH_TICK_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM yyyy")
+internal val FINE_TICK_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM")
+
+/**
+ * The magnifier lens: distorts the track so the region around [anchor] gets more of the
+ * pixels, and everything else gets correspondingly less — the "logarithmic... away from
+ * my finger" magnification asked for from the very first version of this feature,
+ * deferred every pass since until slow-drag precision became the thing actually blocking
+ * someone. [lensWarp] maps an *underlying* track fraction (where a day naturally sits,
+ * per whichever [RailScale] is in use) to where it should be *drawn*; [lensUnwarp] is the
+ * inverse, mapping a raw touch fraction back to the underlying fraction it selects.
+ *
+ * The anchor has to be fixed for the drag's duration, not the live touch position, or the
+ * whole thing does nothing: `warp(anchor) == anchor` always (see below), so a lens that
+ * re-centred on the current touch every frame would make *right where the finger already
+ * is* a fixed point on every single frame, and a fixed point has slope exactly 1 — the
+ * one property that would actually help disappears exactly where it's needed. Anchoring
+ * once, at the start of the gesture (`TimelineScrollbar`'s own `lensAnchor`), is what
+ * gives fine control *around wherever the drag began* while leaving distant, fast travel
+ * unmagnified (an area far from a fixed anchor is heavily *compressed*, i.e. a small
+ * finger movement there still covers a lot of underlying ground) — the same "fast stays
+ * fast, slow gets precise" split the user asked for early on, but reached geometrically,
+ * with no explicit velocity threshold to mistune (the velocity-gated version tried
+ * earlier made *all* movement feel disconnected from the finger and was withdrawn for
+ * exactly that reason; this can't reproduce that failure because it isn't looking at
+ * velocity at all, only at distance from a fixed point).
+ *
+ * A power-law curve — `(u/a)^k` on the near side of the anchor, its mirror image on the
+ * far side — not a literal logarithm: it's naturally bounded to [0,1] with no asymptote
+ * to normalise away, its inverse is closed-form (just another power, no iteration), and
+ * it has the same qualitative shape a log does here — steep near the anchor, shallow far
+ * from it. `k` (`LENS_EXPONENT`) is the zoom factor exactly at the anchor: `warp'(a) = k`,
+ * so `k = 6` means the pixel-per-underlying-unit density right at the touch point is 6x
+ * the unmagnified rate.
+ */
+internal fun lensWarp(
+    u: Float,
+    anchor: Float,
+    exponent: Float = LENS_EXPONENT,
+): Float {
+    val a = anchor.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
+    val clamped = u.coerceIn(0f, 1f)
+    return if (clamped <= a) {
+        a * (clamped / a).pow(exponent)
+    } else {
+        val t = (clamped - a) / (1f - a)
+        a + (1f - a) * (1f - (1f - t).pow(exponent))
+    }
+}
+
+/** The inverse of [lensWarp]. */
+internal fun lensUnwarp(
+    p: Float,
+    anchor: Float,
+    exponent: Float = LENS_EXPONENT,
+): Float {
+    val a = anchor.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
+    val clamped = p.coerceIn(0f, 1f)
+    return if (clamped <= a) {
+        a * (clamped / a).pow(1f / exponent)
+    } else {
+        val t = 1f - (1f - (clamped - a) / (1f - a)).pow(1f / exponent)
+        a + (1f - a) * t
+    }
+}
+
+/** Keeps the anchor strictly inside (0,1): at exactly 0 or 1 one side of the warp divides
+ * by a zero-width span, and an anchor a user's finger actually produces is never that
+ * exact anyway. */
+private const val LENS_EDGE_EPSILON = 0.0001f
+
+private const val LENS_EXPONENT = 6f
 
 /**
  * The scale the rail should use: density when the histogram has arrived and has anything
