@@ -23,3 +23,19 @@ export function isIsoUtc(value: string): boolean {
 export function epochSecondsAfterDays(fromIso: string, days: number): number {
   return Math.floor(new Date(fromIso).getTime() / 1000) + days * 86400;
 }
+
+/**
+ * The calendar day a photo belongs to **in its own recorded offset** — `takenAt`
+ * shifted by `tzOffsetMin`, then truncated. This is the definition the Android grid
+ * groups its date headers by (`PhotoEntity.localDate`), so the per-day histogram
+ * (pattern 15) has to use the same one or the counts would describe different days
+ * than the ones the client draws.
+ *
+ * Deliberately not the viewer's timezone and not UTC: a photo taken at 22:40Z with a
+ * +02:00 offset belongs to the next day, and a histogram keyed on UTC would file it
+ * under the previous one.
+ */
+export function localDateOf(takenAtIso: string, tzOffsetMin: number): string {
+  const shifted = new Date(Date.parse(takenAtIso) + tzOffsetMin * 60_000);
+  return shifted.toISOString().slice(0, 10);
+}

@@ -143,6 +143,27 @@ export function sortKey(timestamp: string, id: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Per-day histogram (pattern 15) — counters maintained alongside timeline_gsi.
+// ---------------------------------------------------------------------------
+
+/** `O#<ownerId>#HIST` — the partition holding one counter per local day, plus the
+ * `#META` item carrying the version every histogram response is ETagged with. */
+export function histogramPk(ownerId: string): string {
+  return `${ownerPk(ownerId)}${SEP}HIST`;
+}
+
+/** sk of one day's counter: `D#<yyyy-mm-dd>`. Sorts after `#META`, so a single
+ * forward query on the partition returns the version before the days it describes. */
+export function histogramDaySk(localDate: string): string {
+  return `D${SEP}${localDate}`;
+}
+
+/** sk of the histogram partition's own `#META` item. */
+export function histogramMetaSk(): string {
+  return "#META";
+}
+
+// ---------------------------------------------------------------------------
 // facet_gsi (queries 4, 5, 7, 8) — sparse, written only on F# items.
 // ---------------------------------------------------------------------------
 

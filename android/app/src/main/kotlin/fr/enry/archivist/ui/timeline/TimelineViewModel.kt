@@ -9,10 +9,12 @@ import androidx.paging.map
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.localDate
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.TimelineBounds
+import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.data.repo.UploadEvents
 import java.io.IOException
 import java.time.Instant
@@ -131,12 +133,16 @@ class TimelineViewModel
          * the new window, and a fresh `Pager` starts at the top of it — which *is* the
          * landing photo.
          */
-        private val pagerGeneration = MutableStateFlow(0)
+        private val pagerGeneration = MutableStateFlow(PagerSeed(generation = 0, initialKey = null))
+
+        /** A rebuild, and where the rebuilt pager starts. The generation is what forces a
+         * rebuild when the landing happens to repeat. */
+        private data class PagerSeed(val generation: Int, val initialKey: TimelineKey?)
 
         @OptIn(ExperimentalCoroutinesApi::class)
         val timeline: Flow<PagingData<TimelineItem>> =
             pagerGeneration
-                .flatMapLatest { photoRepository.timeline() }
+                .flatMapLatest { photoRepository.timeline(it.initialKey) }
                 .toTimelineItems()
                 .cachedIn(viewModelScope)
 
@@ -146,6 +152,12 @@ class TimelineViewModel
         private val _bounds = MutableStateFlow<TimelineBounds?>(null)
         val bounds: StateFlow<TimelineBounds?> = _bounds.asStateFlow()
 
+        /** Photos per local day, from Room — so the scrollbar is density-weighted the
+         * instant a long press opens it, not after a round trip. Kept fresh by
+         * [refreshBounds], which revalidates it alongside the range. */
+        val histogram: StateFlow<TimelineHistogram?> =
+            photoRepository.histogram().stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
         /** Emitted once a jump's new window is committed to Room. The window itself
          * starts at the requested instant (see [TimelineJumpCoordinator]), so the grid
          * only has to go to the top. A `SharedFlow` with no replay on purpose: it's a
@@ -154,39 +166,29 @@ class TimelineViewModel
         private val _jumpCompleted = MutableSharedFlow<Unit>()
         val jumpCompleted: SharedFlow<Unit> = _jumpCompleted.asSharedFlow()
 
-        /** The window currently loaded by a jump, so a scrub that lands back on a day
-         * already showing costs nothing. Wrapped because `null` is a real destination here
-         * ("back to the present"), distinct from "no jump yet". */
-        private var applied: Scrubbed? = null
-
         /** Jumps run one at a time. A drag issues a stream of scrubs and then a commit,
          * and two reseeds overlapping would leave the cache on whichever finished last
          * rather than on the one the user actually asked for. */
         private val jumpLock = Mutex()
 
-        private data class Scrubbed(val day: LocalDate?)
-
         /**
-         * The finger is over [day] mid-drag: load that window so the grid follows along,
-         * without ending the gesture.
+         * The finger is over [day] mid-drag: move the grid there without ending the
+         * gesture.
          *
-         * Suspends until the window is committed, which is the point — the caller
+         * Suspends until the window is in place, which is the point — the caller
          * `conflate`s on it, so this returning is what releases the next scrub, and the
-         * drag is paced by however long a fetch actually takes instead of by a timer
-         * guessing at it.
+         * drag is paced by however long that actually takes. Free when the day is already
+         * cached; one screenful-sized request when it isn't.
          */
-        suspend fun onScrubTo(day: LocalDate?) = applyJump(day, commit = false)
+        suspend fun onScrubTo(day: LocalDate?) = applyJump(day, scrub = true)
 
         /**
          * The drag was released on [day] (null for the top of the rail, "back to the
-         * present"). Always rebuilds the pager, even when a scrub already loaded this
-         * exact window, because that rebuild is what clears `PREPEND`'s latched
-         * end-of-pagination — see [pagerGeneration]. The refetch itself is skipped in that
-         * case, so the common "drag, release" costs one request rather than two and the
-         * release is visually a no-op.
+         * present"). Usually free: the scrubs have already loaded this window, so the
+         * repository answers from Room.
          */
         fun onJumpCommitted(day: LocalDate?) {
-            viewModelScope.launch { applyJump(day, commit = true) }
+            viewModelScope.launch { applyJump(day, scrub = false) }
         }
 
         /** Failures are swallowed the same way every other network path on this screen
@@ -194,29 +196,23 @@ class TimelineViewModel
          * move. */
         private suspend fun applyJump(
             day: LocalDate?,
-            commit: Boolean,
+            scrub: Boolean,
         ) = jumpLock.withLock {
-            val target = Scrubbed(day)
-            val landed =
-                applied == target ||
-                    try {
-                        photoRepository.jumpTo(day)
-                    } catch (e: IOException) {
-                        false
-                    } catch (e: HttpException) {
-                        false
-                    }
-            if (!landed) return@withLock
+            val outcome =
+                try {
+                    photoRepository.jumpTo(day, scrub)
+                } catch (e: IOException) {
+                    null
+                } catch (e: HttpException) {
+                    null
+                } ?: return@withLock
 
-            applied = target
-            if (commit) {
-                // Forgotten on commit rather than kept: once the gesture ends the user can
-                // scroll, which loads pages either side and leaves the cache no longer
-                // describing just this day. A later scrub back here has to fetch again
-                // rather than trust a stale match.
-                applied = null
-                pagerGeneration.update { it + 1 }
-            }
+            // Rebuilt on every jump, local ones included, and started at the landing. The
+            // rebuild is what clears PREPEND's latched end-of-pagination (see
+            // [pagerGeneration]); starting at the landing is what puts it at the top of
+            // the grid now that the cache keeps the rows above it rather than dropping
+            // them.
+            pagerGeneration.update { PagerSeed(it.generation + 1, outcome.landing) }
             _jumpCompleted.emit(Unit)
         }
 
@@ -228,6 +224,15 @@ class TimelineViewModel
                     // offline -- keep whatever range (possibly none) is already shown.
                 } catch (e: HttpException) {
                     // server error -- same as above.
+                }
+            }
+            viewModelScope.launch {
+                try {
+                    photoRepository.syncHistogram()
+                } catch (e: IOException) {
+                    // offline -- the cached histogram (or the time-scale fallback) stands.
+                } catch (e: HttpException) {
+                    // same as above.
                 }
             }
         }

@@ -32,6 +32,14 @@ class Converters {
     @TypeConverter
     fun renditionRoleFromString(raw: String): RenditionRole = RenditionRole.valueOf(raw)
 
+    /** The histogram's day -> count map ([HistogramEntity.days]). Stored as one JSON
+     * column rather than a row per day: it is read whole, on every scrollbar frame. */
+    @TypeConverter
+    fun dayCountsToJson(days: Map<String, Int>): String = json.encodeToString(days)
+
+    @TypeConverter
+    fun dayCountsFromJson(raw: String): Map<String, Int> = json.decodeFromString(raw)
+
     @TypeConverter
     fun uploadStateToString(state: UploadState): String = state.name
 

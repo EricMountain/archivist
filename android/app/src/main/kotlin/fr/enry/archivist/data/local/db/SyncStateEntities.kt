@@ -100,3 +100,45 @@ interface TimelineCursorDao {
     @Query("DELETE FROM timeline_cursor")
     suspend fun clear()
 }
+
+/**
+ * What the cached `photos` table currently *is*, as a span of the library — the fact
+ * every read that wants to trust it without asking the server depends on.
+ *
+ * The invariant this records is that the cache is always **one contiguous span** of the
+ * timeline: every write either replaces it (a jump, a refresh) or extends it at an edge
+ * (`APPEND` older, `PREPEND` and [fr.enry.archivist.data.repo.PhotoRepository.refreshLatest]
+ * newer). Contiguous means every live photo between the oldest cached row and
+ * [completeThrough] is present, which is what lets a jump to a day inside the span be
+ * answered from Room with no request at all. Keyset paging relies on it too: a hole
+ * would be paged straight across, silently skipping everything missing from it.
+ *
+ * [completeThrough] is the upper edge, as a fixed-width UTC instant: every live photo
+ * taken at or before it (and no older than the oldest cached row) is cached. `null`
+ * means the cache reaches the present. It is an instant rather than "the newest cached
+ * row" because a jump fetches everything up to a bound that is usually *later* than the
+ * newest photo it finds — knowing there is nothing in that gap is information, and it is
+ * the information that makes the next scrub to the same day free.
+ *
+ * One row. Absent on a fresh install, which reads as `null`: the first thing a fresh
+ * install does is a `REFRESH` from the present.
+ */
+@Entity(tableName = "timeline_window")
+data class TimelineWindowEntity(
+    @PrimaryKey val id: Int = 0,
+    val completeThrough: String?,
+)
+
+@Dao
+interface TimelineWindowDao {
+    @Query(
+        """
+        INSERT INTO timeline_window (id, completeThrough) VALUES (0, :completeThrough)
+        ON CONFLICT(id) DO UPDATE SET completeThrough = excluded.completeThrough
+        """,
+    )
+    suspend fun setCompleteThrough(completeThrough: String?)
+
+    @Query("SELECT completeThrough FROM timeline_window WHERE id = 0")
+    suspend fun completeThrough(): String?
+}

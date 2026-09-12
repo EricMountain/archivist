@@ -29,8 +29,10 @@ import androidx.room.TypeConverters
         FolderSelectionEntity::class,
         TimelineCursorEntity::class,
         DeviceEntity::class,
+        HistogramEntity::class,
+        TimelineWindowEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -48,4 +50,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun timelineCursorDao(): TimelineCursorDao
 
     abstract fun deviceDao(): DeviceDao
+
+    abstract fun histogramDao(): HistogramDao
+
+    abstract fun timelineWindowDao(): TimelineWindowDao
 }

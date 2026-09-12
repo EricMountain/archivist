@@ -54,7 +54,7 @@ export async function handler(
     const req = toApiRequest(event, requestId, auth, identity);
     const res = await entry.handler(req);
     log({ requestId, routeKey, status: res.statusCode, durationMs: Date.now() - start });
-    return respond(res.statusCode, res.body);
+    return respond(res.statusCode, res.body, res.headers);
   } catch (err) {
     if (err instanceof ApiError) {
       const status = HTTP_STATUS_BY_CODE[err.code];
@@ -84,10 +84,11 @@ export async function handler(
 function respond(
   statusCode: number,
   body?: unknown,
+  headers?: Record<string, string>,
 ): APIGatewayProxyStructuredResultV2 {
   return {
     statusCode,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }

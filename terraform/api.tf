@@ -109,6 +109,7 @@ locals {
     "POST /uploads",
     "GET /photos",
     "GET /photos/bounds",
+    "GET /photos/histogram",
     "GET /photos/{photoId}",
     "PATCH /photos/{photoId}/renditions/{renditionId}",
     "DELETE /photos/{photoId}",

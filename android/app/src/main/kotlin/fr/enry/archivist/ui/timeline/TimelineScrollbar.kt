@@ -39,7 +39,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.paging.compose.LazyPagingItems
 import fr.enry.archivist.data.local.db.localDate
+import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.TimelineBounds
+import fr.enry.archivist.data.repo.TimelineHistogram
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -78,20 +80,23 @@ fun TimelineScrollbar(
     gridState: LazyGridState,
     items: LazyPagingItems<TimelineItem>,
     bounds: TimelineBounds?,
+    histogram: TimelineHistogram?,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (bounds == null) return
+    // Density-weighted once the histogram is cached, linear in time until then — see
+    // RailScale. Null only on a first launch that hasn't reached the server at all.
+    val scale = remember(histogram, bounds) { railScale(histogram, bounds) } ?: return
 
     val haptics = LocalHapticFeedback.current
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
     var heldFraction by remember { mutableStateOf<Float?>(null) }
 
-    val idleFraction by remember(items, bounds) {
+    val idleFraction by remember(items, scale) {
         derivedStateOf {
-            nearestPhotoTakenAt(items, gridState.firstVisibleItemIndex)
-                ?.let { fractionAtInstant(Instant.parse(it), bounds) }
+            nearestPhoto(items, gridState.firstVisibleItemIndex)
+                ?.let { scale.fractionOfDay(it.localDate()) }
         }
     }
 
@@ -109,8 +114,8 @@ fun TimelineScrollbar(
     // is about six pixels of track, so a resting finger wobbles across day boundaries and
     // restarted the timer every time. It only ever fired if the finger was held genuinely
     // still, which read as the feature not being implemented at all.
-    LaunchedEffect(bounds) {
-        snapshotFlow { heldFraction?.let { Scrub(jumpDayFor(it, bounds)) } }
+    LaunchedEffect(scale) {
+        snapshotFlow { heldFraction?.let { Scrub(scale.dayAt(it)) } }
             .filterNotNull()
             .distinctUntilChanged()
             .conflate()
@@ -123,7 +128,7 @@ fun TimelineScrollbar(
     // transparent and non-interactive, so photos underneath stay tappable.
     Box(modifier.fillMaxHeight().width(RAIL_WIDTH)) {
         if (held != null) {
-            TimelineRail(bounds = bounds, trackHeightPx = trackHeightPx)
+            TimelineRail(scale = scale, trackHeightPx = trackHeightPx)
         }
 
         Box(
@@ -132,7 +137,7 @@ fun TimelineScrollbar(
                 .fillMaxHeight()
                 .width(HIT_TARGET_WIDTH)
                 .onSizeChanged { trackHeightPx = it.height.toFloat() }
-                .pointerInput(bounds) {
+                .pointerInput(scale) {
                     detectFastScrollGesture(
                         onStart = { y ->
                             heldFraction = fractionAt(y, trackHeightPx)
@@ -146,7 +151,7 @@ fun TimelineScrollbar(
                             // PREPEND's latched end-of-pagination so the timeline can be
                             // scrolled back toward the present. The repository skips the
                             // refetch when the day is unchanged, so that costs nothing.
-                            heldFraction?.let { onCommit(jumpDayFor(it, bounds)) }
+                            heldFraction?.let { onCommit(scale.dayAt(it)) }
                             heldFraction = null
                         },
                     )
@@ -162,7 +167,7 @@ fun TimelineScrollbar(
 
         if (held != null) {
             SelectedDateLabel(
-                instant = instantAtFraction(held, bounds),
+                day = scale.dayAt(held),
                 fraction = held,
                 trackHeightPx = trackHeightPx,
                 modifier = Modifier.align(Alignment.TopStart),
@@ -184,11 +189,11 @@ private val HELD_THUMB = 10.dp to 40.dp
 /** The whole library laid out along the track, so the drag has something to aim at. */
 @Composable
 private fun TimelineRail(
-    bounds: TimelineBounds,
+    scale: RailScale,
     trackHeightPx: Float,
 ) {
     val density = LocalDensity.current
-    val ticks = remember(bounds) { timelineTicks(bounds) }
+    val ticks = remember(scale) { scale.ticks() }
 
     Box(
         Modifier
@@ -218,7 +223,7 @@ private fun TimelineRail(
  * beside the finger it was simply covered by it and unreadable. */
 @Composable
 private fun SelectedDateLabel(
-    instant: Instant,
+    day: LocalDate?,
     fraction: Float,
     trackHeightPx: Float,
     modifier: Modifier = Modifier,
@@ -238,7 +243,9 @@ private fun SelectedDateLabel(
             shadowElevation = 4.dp,
         ) {
             Text(
-                text = SELECTED_DATE_FORMATTER.format(instant.atZone(ZoneId.systemDefault())),
+                // Null is the top of the rail, which means "back to the present" rather
+                // than any particular date — so it says that instead of naming one.
+                text = day?.let(SELECTED_DATE_FORMATTER::format) ?: "Latest",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onPrimary,
                 maxLines = 1,
@@ -320,15 +327,17 @@ private suspend fun PointerInputScope.detectFastScrollGesture(
 }
 
 /** The idle thumb's own row: nearest photo at or after [startIndex] (skipping a
- * [TimelineItem.Header], which has no `takenAt` of its own), read via
- * [LazyPagingItems.peek] so drawing a scrollbar never triggers a page load. */
-internal fun nearestPhotoTakenAt(
+ * [TimelineItem.Header], which isn't a photo), read via [LazyPagingItems.peek] so drawing
+ * a scrollbar never triggers a page load. The whole entity rather than its `takenAt`,
+ * because placing the thumb on a density-weighted rail needs the photo's *day*, and that
+ * depends on its own recorded offset too. */
+internal fun nearestPhoto(
     items: LazyPagingItems<TimelineItem>,
     startIndex: Int,
-): String? {
+): PhotoEntity? {
     for (i in startIndex until minOf(startIndex + 3, items.itemCount)) {
         val item = items.peek(i) ?: continue
-        if (item is TimelineItem.Photo) return item.photo.takenAt
+        if (item is TimelineItem.Photo) return item.photo
     }
     return null
 }
@@ -337,130 +346,3 @@ internal fun fractionAt(
     y: Float,
     trackHeightPx: Float,
 ): Float = if (trackHeightPx <= 0f) 0f else (y / trackHeightPx).coerceIn(0f, 1f)
-
-/** Fraction along the track -> the [Instant] it represents. `0f` is
- * [TimelineBounds.newest] (top of the newest-first grid), `1f` is
- * [TimelineBounds.oldest]. */
-internal fun instantAtFraction(
-    fraction: Float,
-    bounds: TimelineBounds,
-): Instant {
-    val clamped = fraction.coerceIn(0f, 1f)
-    val totalMillis = bounds.newest.toEpochMilli() - bounds.oldest.toEpochMilli()
-    // Double, not Float: a multi-year range in milliseconds (order 1e11) already exceeds
-    // a Float's ~7 significant digits, which rounded fraction=1f visibly short of oldest.
-    return bounds.newest.minusMillis((totalMillis * clamped.toDouble()).toLong())
-}
-
-/** The inverse of [instantAtFraction], for the idle thumb. */
-internal fun fractionAtInstant(
-    instant: Instant,
-    bounds: TimelineBounds,
-): Float {
-    val totalMillis = (bounds.newest.toEpochMilli() - bounds.oldest.toEpochMilli()).coerceAtLeast(1)
-    val elapsed = bounds.newest.toEpochMilli() - instant.toEpochMilli()
-    return (elapsed.toDouble() / totalMillis).toFloat().coerceIn(0f, 1f)
-}
-
-/**
- * Which **calendar day** a release at [fraction] jumps to.
- *
- * Null — meaning "back to the present", an unbounded refresh — for a release at the very
- * top of the track, rather than a bounded window at `newest`. Two reasons: the server's
- * `to` bound is exclusive of photos at exactly that instant (`timelineSk` is
- * `<takenAt>#<photoId>`, so a bare timestamp sorts before every real key at it, per
- * sample-data.md), which would drop the newest photo; and it makes the top of the rail
- * the reliable way back to a normal, present-anchored timeline after a jump.
- *
- * A day, not the exact instant the fraction maps to. The rail is labelled in months and
- * the pill names a day, so a day is the finest thing the user can actually aim at, and
- * the resolution of a day into a specific photo belongs with the data that defines what
- * a day *is* — see [localDate], and `TimelineRemoteMediator.reseedAt`. Returning a bare
- * instant here meant the bound was resolved in the viewer's timezone while the grid's
- * headers group by each photo's own recorded offset, so the two disagreed by a day
- * whenever those differed near a boundary.
- *
- * It also fixes the bottom of the rail outright. `fraction = 1f` maps to exactly
- * [TimelineBounds.oldest], and a `to` bound at that instant excludes the very photo it
- * names — so the whole-library jump returned nothing, cleared the cache and left the
- * timeline on "No photos yet" with no cursor in either direction to recover from
- * (reported live; the app had to be restarted). A whole day always contains its own
- * photos.
- */
-internal fun jumpDayFor(
-    fraction: Float,
-    bounds: TimelineBounds,
-    zone: ZoneId = ZoneId.systemDefault(),
-): LocalDate? {
-    if (fraction <= TOP_OF_RAIL_FRACTION) return null
-    return instantAtFraction(fraction, bounds).atZone(zone).toLocalDate()
-}
-
-private const val TOP_OF_RAIL_FRACTION = 0.01f
-
-/** One label on the fast-scroll rail. [fraction] is its position along the track. */
-internal data class TimelineTick(
-    val fraction: Float,
-    val label: String,
-    val major: Boolean,
-)
-
-/**
- * The whole library as a handful of labelled points — years for a long library, months
- * for a short one — so a drag can be aimed rather than guessed at. Granularity adapts to
- * the span because both extremes are useless: month labels across fifteen years are an
- * unreadable smear, and year labels across eight months are a single tick.
- *
- * Positions are linear in *time*, matching [instantAtFraction] exactly — a rail whose
- * labels didn't agree with where a drag actually lands would be worse than none.
- */
-internal fun timelineTicks(
-    bounds: TimelineBounds,
-    zone: ZoneId = ZoneId.systemDefault(),
-    maxTicks: Int = 14,
-): List<TimelineTick> {
-    val oldest = bounds.oldest.atZone(zone)
-    val newest = bounds.newest.atZone(zone)
-    if (!oldest.isBefore(newest)) return emptyList()
-
-    val months = ChronoUnit.MONTHS.between(oldest.withDayOfMonth(1), newest.withDayOfMonth(1)).toInt() + 1
-    val stepMonths = TICK_STEPS_MONTHS.firstOrNull { months / it <= maxTicks } ?: TICK_STEPS_MONTHS.last()
-    val yearOnly = stepMonths >= 12
-
-    // Labels land on round dates (a January, or a quarter start) rather than wherever
-    // the library happens to begin — the point is a legible scale, not an exact
-    // reproduction of the range's endpoints.
-    val alignTo = if (yearOnly) 12 else stepMonths
-    var cursor = oldest.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)
-    while ((cursor.monthValue - 1) % alignTo != 0) cursor = cursor.plusMonths(1)
-    while (cursor.isBefore(oldest)) cursor = cursor.plusMonths(stepMonths.toLong())
-
-    val ticks = mutableListOf<TimelineTick>()
-    while (!cursor.isAfter(newest)) {
-        ticks +=
-            TimelineTick(
-                fraction = fractionAtInstant(cursor.toInstant(), bounds),
-                label = if (yearOnly) cursor.year.toString() else MONTH_TICK_FORMATTER.format(cursor),
-                major = if (yearOnly) cursor.year % 5 == 0 else cursor.monthValue == 1,
-            )
-        cursor = cursor.plusMonths(stepMonths.toLong())
-    }
-
-    // A library spanning less than one step boundary would otherwise draw an empty rail,
-    // which reads as broken rather than as "there's not much here".
-    if (ticks.size < 2) {
-        return listOf(
-            TimelineTick(0f, MONTH_TICK_FORMATTER.format(newest), major = true),
-            TimelineTick(1f, MONTH_TICK_FORMATTER.format(oldest), major = true),
-        )
-    }
-    // Top-down, i.e. newest first and fraction ascending — the order the rail is read in,
-    // and the same order as the grid beside it. Generation walks the other way because
-    // it has to start from a round boundary at the old end.
-    return ticks.asReversed()
-}
-
-/** Month steps to try, coarsening until the whole range fits in `maxTicks` labels. */
-private val TICK_STEPS_MONTHS = listOf(1, 2, 3, 6, 12, 24, 60, 120)
-
-private val MONTH_TICK_FORMATTER = DateTimeFormatter.ofPattern("MMM yyyy")

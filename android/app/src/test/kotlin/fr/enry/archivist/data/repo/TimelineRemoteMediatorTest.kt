@@ -228,6 +228,21 @@ class TimelineRemoteMediatorTest {
             assertNotNull(db.photoDao().getByPhotoId("kept"))
         }
 
+    /** Back to the present is the one reseed that leaves the window reaching the present,
+     * which is what lets `refreshLatest` fold finished uploads straight in. */
+    @Test
+    fun `a jump records how far the cache is complete, and going back to the present clears it`() =
+        runTest {
+            connectInstance()
+            photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
+
+            mediator.reseedAt(LocalDate.parse("2021-06-15"))
+            assertEquals("2021-06-16T11:59:59.999Z", db.timelineWindowDao().completeThrough())
+
+            mediator.reseedAt(null)
+            assertNull(db.timelineWindowDao().completeThrough())
+        }
+
     /** A *plain* refresh is exempt from the guard above: there, empty genuinely means an
      * empty library, and refusing to commit it would leave deleted photos on screen. */
     @Test
@@ -303,6 +318,9 @@ class TimelineRemoteMediatorTest {
             assertEquals("asc", lastRequest?.requestUrl?.queryParameter("order"))
             assertEquals(false, (result as RemoteMediator.MediatorResult.Success).endOfPaginationReached)
             assertNotNull(db.photoDao().getByPhotoId("newer"))
+            // The window's upper edge moved with it — it is no longer complete only to
+            // where the jump left it.
+            assertEquals("2021-06-02T00:00:00.000Z", db.timelineWindowDao().completeThrough())
             // The older-direction cursor belongs to APPEND and must survive untouched.
             assertNull(db.timelineCursorDao().observe().first())
         }
@@ -327,6 +345,8 @@ class TimelineRemoteMediatorTest {
             val result = mediator.load(LoadType.PREPEND, emptyState())
 
             assertTrue((result as RemoteMediator.MediatorResult.Success).endOfPaginationReached)
+            // Nothing newer exists, so the cache now reaches the present.
+            assertNull(db.timelineWindowDao().completeThrough())
         }
 
     @Test
@@ -429,11 +449,14 @@ class TimelineRemoteMediatorTest {
             mediator.reseedAt(LocalDate.parse("2025-11-17"))
 
             assertEquals(TimelineKey("2025-11-17T16:10:00.000Z", "wanted"), jumpCoordinator.consumeLanding())
-            // The later-day photo is dropped rather than cached above the landing, so the
-            // landing stays the first row of the window — which is what puts it at the top
-            // of the grid for both a staged re-anchor and a rebuilt Pager.
-            assertNull(db.photoDao().getByPhotoId("next-day"))
+            // The later-day photo is kept, not discarded: the whole page up to the bound is
+            // known, and that is exactly what lets the window claim to be complete through
+            // it — which is what makes the next jump to this day free. A rebuilt Pager
+            // starts *at* the landing, so `next-day` sitting above it is reachable by
+            // scrolling up rather than in the way.
+            assertNotNull(db.photoDao().getByPhotoId("next-day"))
             assertNotNull(db.photoDao().getByPhotoId("earlier"))
+            assertEquals("2025-11-18T11:59:59.999Z", db.timelineWindowDao().completeThrough())
         }
 
     /** Every photo fetched belonging to a later day still has to land somewhere — an

@@ -16,6 +16,8 @@ import {
   timelineGsi1Pk,
 } from "../keys";
 import type { AssetStatus, GroupSrc, MetaItem, RenditionItem, TakenAtSrc, TzSrc } from "../items";
+import { histogramAdd, histogramMove } from "./histogram";
+import { getAssetPartition } from "./media";
 
 export interface CreateAssetInput {
   stem: string;
@@ -96,6 +98,10 @@ export async function createAsset(input: CreateAssetInput): Promise<void> {
       },
     },
   ];
+
+  // Counted in the same transaction that makes the asset live, never alongside it —
+  // see repo/histogram.ts for why that is the whole design.
+  items.push(...histogramAdd(meta.ownerId, meta.takenAt, meta.tzOffsetMin));
 
   await runTransaction(items, "stem, path or content hash already claimed");
 }
@@ -229,6 +235,25 @@ export async function attachRendition(input: AttachRenditionInput): Promise<void
       },
     },
   ];
+
+  // A takenAt improvement usually refines the time within the same day, in which
+  // case this is empty; when it does cross a day boundary the counter has to follow,
+  // because timelineSk just did.
+  if (input.takenAtImprovement) {
+    const { meta } = await getAssetPartition(input.ownerId, input.photoId);
+    if (meta) {
+      items.push(
+        ...histogramMove(
+          input.ownerId,
+          { takenAt: meta.takenAt, tzOffsetMin: meta.tzOffsetMin },
+          {
+            takenAt: input.takenAtImprovement.takenAt,
+            tzOffsetMin: input.takenAtImprovement.tzOffsetMin,
+          },
+        ),
+      );
+    }
+  }
 
   await runTransaction(
     items,

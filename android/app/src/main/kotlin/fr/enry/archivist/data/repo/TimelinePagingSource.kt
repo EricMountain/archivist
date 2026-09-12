@@ -69,8 +69,17 @@ class TimelinePagingSource(
             val page =
                 when (params) {
                     is LoadParams.Refresh ->
-                        params.key?.let { refreshAround(it, limit) }
-                            ?: photoDao.pageFromStart(limit)
+                        params.key?.let { key ->
+                            // A jump's landing loads from exactly there, so it is index 0
+                            // and "go to the top" lands on it. Every other keyed refresh
+                            // is an anchor restoring the user's own position, and needs
+                            // the lead above it — see refreshAround.
+                            if (jumpCoordinator.isLanding(key)) {
+                                photoDao.pageFromKey(key.takenAt, key.photoId, limit)
+                            } else {
+                                refreshAround(key, limit)
+                            }
+                        } ?: photoDao.pageFromStart(limit)
                     is LoadParams.Append -> photoDao.pageAfter(params.key.takenAt, params.key.photoId, limit)
                     is LoadParams.Prepend -> photoDao.pageBefore(params.key.takenAt, params.key.photoId, limit)
                 }

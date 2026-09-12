@@ -1,6 +1,6 @@
 .PHONY: install build test typecheck deploy deploy-dev plan-dev clean \
 	test-infra-up test-infra-down test-infra-status test-integration \
-	teardown-dev-load-test
+	teardown-load-test-dev backfill-histogram backfill-histogram-dev
 
 install:
 	npm install
@@ -58,13 +58,48 @@ clean:
 # describes (default stem prefix "load_test_") from the dev instance's real S3 +
 # DynamoDB -- no soft delete, no HASH# tombstone, just gone. Defaults to a dry run;
 # pass EXECUTE=1 to actually delete. OWNER_ID is required and deliberately not
-# defaulted -- this is real-account data, not something to guess at.
+# defaulted -- this is real-account data, not something to guess at. No plain
+# `teardown-load-test` (prod) counterpart: load-test data is synthetic, seeded only
+# against dev by the Android instrumented test that makes it, so there's nothing for
+# a prod target to ever clean up. Named with the trailing `-dev` anyway, matching
+# every other workspace-scoped target here (deploy/deploy-dev,
+# backfill-histogram/-dev) rather than burying it mid-name.
 PREFIX ?= load_test_
 
-teardown-dev-load-test:
-	@test -n "$(OWNER_ID)" || (echo "usage: make teardown-dev-load-test OWNER_ID=<ownerId> [PREFIX=load_test_] [EXECUTE=1]"; exit 1)
+teardown-load-test-dev:
+	@test -n "$(OWNER_ID)" || (echo "usage: make teardown-load-test-dev OWNER_ID=<ownerId> [PREFIX=load_test_] [EXECUTE=1]"; exit 1)
 	cd terraform && terraform workspace select dev >/dev/null && \
 	MEDIA_TABLE=$$(terraform output -raw media_table_name) \
 	ORIGINALS_BUCKET=$$(terraform output -raw originals_bucket) \
 	DERIVED_BUCKET=$$(terraform output -raw derived_bucket) \
 	node ../tools/teardown-load-test.mjs --owner-id "$(OWNER_ID)" --prefix "$(PREFIX)" $(if $(EXECUTE),--yes)
+
+# Rebuilds the per-day photo histogram (design.md pattern 15) from timeline_gsi —
+# needed once per owner whose photos predate this feature, since the counters only
+# ever move on a create/trash/restore and nothing already in the table was ever
+# counted. Safe to re-run: it overwrites rather than adds, so running it twice
+# produces the same state. Defaults to a dry run (reports the counts, writes
+# nothing); pass EXECUTE=1 to write. Either OWNER_ID=<ownerId> or ALL=1 (every owner
+# in the registry) is required.
+#
+# backfill-histogram (prod, "default" workspace) and backfill-histogram-dev differ
+# only in which workspace supplies MEDIA_TABLE -- no -var-file either way, since
+# `terraform output` reads already-applied state rather than re-evaluating
+# variables (the same reason `terraform output` calls elsewhere in this file, e.g.
+# teardown-load-test-dev above, never carry one). Shared here via one `define`/
+# `call` rather than copy-pasted twice, unlike deploy/deploy-dev/plan-dev below,
+# which differ in `-var-file` too and stay direct recipes deliberately -- those are
+# the actual deploy-to-AWS entry points, and directly-readable beats DRY on a path
+# where "which exact command runs" needs to be obvious at a glance.
+define backfill_histogram_recipe
+	@test -n "$(OWNER_ID)$(ALL)" || (echo "usage: make $(1) OWNER_ID=<ownerId> [EXECUTE=1]  (or ALL=1 for every owner)"; exit 1)
+	cd terraform && terraform workspace select $(2) >/dev/null && \
+	MEDIA_TABLE=$$(terraform output -raw media_table_name) \
+	node ../tools/backfill-histogram.mjs $(if $(ALL),--all-owners,--owner-id "$(OWNER_ID)") $(if $(EXECUTE),--yes)
+endef
+
+backfill-histogram:
+	$(call backfill_histogram_recipe,backfill-histogram,default)
+
+backfill-histogram-dev:
+	$(call backfill_histogram_recipe,backfill-histogram-dev,dev)

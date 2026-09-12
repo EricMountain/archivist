@@ -5,6 +5,7 @@ import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.HTTP
 import retrofit2.http.PATCH
 import retrofit2.http.POST
@@ -115,6 +116,22 @@ interface ArchivistApi {
     suspend fun getPhotosBounds(
         @Url url: String,
     ): PhotosBoundsResponse
+
+    /**
+     * `GET /photos/histogram` in api.md, design.md pattern 15 — live photos per local
+     * day, which is what the scrollbar weights itself by.
+     *
+     * Conditional: [ifNoneMatch] carries the `ETag` of whatever is already cached, and
+     * the server answers 304 with no body when nothing has changed. `Response<..>`
+     * rather than a bare body because 304 *is* the common answer — the histogram only
+     * changes when a photo is added or trashed — and Retrofit would otherwise fail
+     * deserialising an empty body.
+     */
+    @GET
+    suspend fun getPhotosHistogram(
+        @Url url: String,
+        @Header("If-None-Match") ifNoneMatch: String?,
+    ): Response<PhotosHistogramResponse>
 
     /** Plan step 2.12: single-asset detail — `GET /photos/{photoId}` in `api.md`. Unlike
      * [getPhotos], `routes/photos.ts`'s `getPhoto` returns the raw `#META`/`R#` items
@@ -347,6 +364,16 @@ data class PhotosPageResponse(val items: List<TimelineEntryDto>, val cursor: Str
 /** `GET /photos/bounds` — see [ArchivistApi.getPhotosBounds]. */
 @Serializable
 data class PhotosBoundsResponse(val oldest: String? = null, val newest: String? = null)
+
+/** `GET /photos/histogram`'s body. [days] is keyed `yyyy-mm-dd` in the *photo's* own
+ * offset, matching [fr.enry.archivist.data.local.db.localDate] and therefore the grid's
+ * own date headers; days with no photos are absent rather than zero. */
+@Serializable
+data class PhotosHistogramResponse(
+    val days: Map<String, Int> = emptyMap(),
+    val total: Int = 0,
+    val version: Long = 0,
+)
 
 /** The subset of `MetaItem` (`src/core/items.ts`) plan step 2.12 needs — see
  * [ArchivistApi.getPhoto]'s doc for why this doesn't declare the item's full field set.

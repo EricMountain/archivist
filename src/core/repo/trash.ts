@@ -8,6 +8,7 @@ import { ApiError } from "../errors";
 import { ddb, tableName } from "../db";
 import { facetGsiPk, mediaPk, metaSk, sortKey, timelineGsi1Pk, trashGsi1Pk } from "../keys";
 import { getAssetPartition } from "./media";
+import { histogramAdd, histogramRemove } from "./histogram";
 
 export async function trashAsset(
   ownerId: string,
@@ -44,6 +45,9 @@ export async function trashAsset(
     })),
   ];
 
+  // Leaving the live partition is leaving the histogram, in the same transaction.
+  items.push(...histogramRemove(ownerId, meta.takenAt, meta.tzOffsetMin));
+
   await runOrConflict(items, "asset is already trashed");
 }
 
@@ -79,6 +83,9 @@ export async function restoreAsset(ownerId: string, photoId: string): Promise<vo
       },
     })),
   ];
+
+  // Re-entering the live partition is re-entering the histogram.
+  items.push(...histogramAdd(ownerId, meta.takenAt, meta.tzOffsetMin));
 
   await runOrConflict(items, "asset was already restored");
 }

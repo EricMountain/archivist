@@ -604,6 +604,34 @@ Query 3 ("July 2026") is the same timeline query with
 though it was taken on 14 July, because the range condition only ever runs against the
 live partition.
 
+## Histogram items (pattern 15)
+
+The `O#<ownerId>#HIST` partition, maintained by the same transactions that write the
+`timelinePk`/`timelineSk` above. Nine live assets, six days:
+
+```text
+pk                                 sk              attributes
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  #META           version 9   total 9
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2011-03-02    n 1          A4
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-06-21    n 1          A5
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-14    n 3          A1, A2, A3
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-15    n 2          A6, A7
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-16    n 1          A8
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-08-02    n 1          A10
+```
+
+**A2 is the row worth staring at.** Its `timelineSk` starts `2026-07-13`, but its
+histogram day is `2026-07-14`: `takenAt` is `16:48:20Z` and `tzOffsetMin` is 540, so
+locally it is `01:48` on the 14th. The index sorts by UTC and the histogram counts by
+the photo's own offset, and for A2 those disagree — which is precisely why the
+histogram cannot be derived by truncating `timelineSk`, and why the client's date
+headers (which use the same offset rule) show A2 under 14 July alongside A1 and A3.
+
+**A9 is absent.** It was counted when created and decremented when trashed, in the
+same transaction that moved it to the `#TRASH` partition of `timeline_gsi`. `version`
+is 9 rather than 11 only because this sample is written as its end state; a real
+partition that had created and then trashed A9 would read `version 11, total 9`.
+
 ## facet_gsi
 
 A slice, showing three different facet types sharing one index:
@@ -761,6 +789,30 @@ descending — no `BETWEEN`, no cursor.
 
 The trash partition (A9) is a different `timelinePk` and never enters into this —
 the fast-scroll range only ever covers what's actually visible in the timeline.
+
+### Per-day histogram (pattern 15)
+
+```
+Query
+  TableName            archivist-media
+  KeyConditionExpression  pk = :pk
+  :pk                  O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST
+```
+
+Returns the seven items above — `#META` first, because `#` sorts before `D`, so a
+single forward query hands back the version before the days it describes. The handler
+turns them into:
+
+```json
+{ "version": 9, "total": 9,
+  "days": { "2011-03-02": 1, "2026-06-21": 1, "2026-07-14": 3,
+            "2026-07-15": 2, "2026-07-16": 1, "2026-08-02": 1 } }
+```
+
+served with `ETag: "tl-9"`. A client that already holds `"tl-9"` sends it back as
+`If-None-Match` and gets a bodiless 304 — for which the handler reads only the `#META`
+item, never the day rows. `GET /photos/bounds` shares the same ETag: both answers are
+functions of which photos are live, which is what `version` counts changes to.
 
 ### Facets (patterns 4, 5, 7, 8)
 

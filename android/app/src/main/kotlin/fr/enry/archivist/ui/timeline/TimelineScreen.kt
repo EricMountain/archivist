@@ -44,6 +44,7 @@ import coil3.compose.AsyncImage
 import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.TimelineBounds
+import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.ui.detail.DetailScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
@@ -92,6 +93,7 @@ fun TimelineScreen(
     val items = viewModel.timeline.collectAsLazyPagingItems()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
     val bounds by viewModel.bounds.collectAsStateWithLifecycle()
+    val histogram by viewModel.histogram.collectAsStateWithLifecycle()
 
     // Hoisted above the selectedPhotoId branch below (rather than left for
     // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so it
@@ -140,6 +142,7 @@ fun TimelineScreen(
             host = host,
             gridState = gridState,
             bounds = bounds,
+            histogram = histogram,
             onPhotoClick = { selectedPhotoId = it },
             onScrub = viewModel::onScrubTo,
             onCommit = viewModel::onJumpCommitted,
@@ -162,6 +165,7 @@ private fun TimelineGrid(
     host: String?,
     gridState: LazyGridState,
     bounds: TimelineBounds?,
+    histogram: TimelineHistogram?,
     onPhotoClick: (String) -> Unit,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
@@ -210,6 +214,7 @@ private fun TimelineGrid(
                     gridState = gridState,
                     items = items,
                     bounds = bounds,
+                    histogram = histogram,
                     onScrub = onScrub,
                     onCommit = onCommit,
                     modifier = Modifier.align(Alignment.TopEnd),

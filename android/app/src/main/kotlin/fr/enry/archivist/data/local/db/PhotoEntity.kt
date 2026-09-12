@@ -173,6 +173,15 @@ interface PhotoDao {
         limit: Int,
     ): List<PhotoEntity>
 
+    /** Newest-first, everything at or before [takenAt] — the candidates a jump to a
+     * day chooses its landing from when the day is already cached. [takenAt] is a
+     * fixed-width ISO bound, so the string comparison is chronological. */
+    @Query("SELECT * FROM photos WHERE takenAt <= :takenAt ORDER BY takenAt DESC, photoId DESC LIMIT :limit")
+    suspend fun pageAtOrBefore(
+        takenAt: String,
+        limit: Int,
+    ): List<PhotoEntity>
+
     @Query("SELECT * FROM photos WHERE photoId = :photoId")
     suspend fun getByPhotoId(photoId: String): PhotoEntity?
 

@@ -84,6 +84,7 @@ wherever the two describe bytes.**
 | 12 | Find assets whose retention has expired | `timeline_gsi`, trash partition, SK `<` cutoff |
 | 13 | List every owner in the deployment (for the purge sweep) | `REGISTRY#OWNERS`, `Query` on PK |
 | 14 | Oldest and newest `takenAt`, by owner (fast-scroll range) | `timeline_gsi`, `Limit 1`, `ScanIndexForward` true/false |
+| 15 | Live photos per local day, by owner (scrollbar density) | `O#<ownerId>#HIST`, `Query` on PK |
 
 Queries 4 and 5 collapse into one index: "contains a dog" and "shot on a Canon R5"
 are both *facets* — a `(type, value)` pair attached to a photo. One index, one code
@@ -492,6 +493,55 @@ and guarantees a total order, which is what makes cursor pagination correct.
 
 Pagination: pass `LastEvaluatedKey` back to the client as an opaque base64 cursor.
 Don't expose the key shape — see the sharding note below.
+
+## Per-day histogram (query 15)
+
+Partition `O#<ownerId>#HIST`, holding one counter per local day plus a `#META` item:
+
+| sk | Attributes | Meaning |
+| --- | --- | --- |
+| `#META` | `version`, `total` | Changes so far, and live photos across all days |
+| `D#<yyyy-mm-dd>` | `n` | Live photos on that local day |
+
+**What it's for.** A scrollbar spanning a whole library has to decide how much track
+to give each stretch of time. Elapsed time is the obvious answer and the wrong one: a
+fortnight's holiday and the eight quiet months after it get the same room, so the part
+of the library worth navigating is compressed into a few pixels. Weighting by photo
+count instead gives each photo the same share of the track. The same data lets a
+client name only dates that actually have photos, rather than offering a date and then
+silently landing somewhere else.
+
+**Why counters and not aggregation.** DynamoDB has none, so the alternative is walking
+`timeline_gsi` and counting on every request — tens of thousands of items read to
+produce a few kilobytes, each time a client opens its scrollbar.
+
+**Why they can't drift.** The counters are updated *inside the transactions that
+already move an asset between the live and trash partitions of `timeline_gsi`* — asset
+creation and a `takenAt` improvement in `repo/ingest.ts`, trash and restore in
+`repo/trash.ts`. A photo cannot be live but uncounted, because the same
+`TransactWriteItems` did both. Purging is deliberately not a hook: it acts on an asset
+already in the trash, which was decremented when it was trashed.
+
+**Days are the photo's own, not the viewer's.** A day is `takenAt` shifted by the
+photo's `tzOffsetMin` — the same rule the Android grid groups its date headers by. A
+histogram keyed on UTC would file a photo taken at 22:40Z at +02:00 under the previous
+day and disagree with the header drawn above it.
+
+**`version` is the ETag.** It exists so revalidation is cheap: a conditional request
+that matches costs one read of `#META` and returns 304, instead of reading the whole
+partition. `total` rides along on the same item so a client can size a scrollbar
+without summing the day map. A day emptied by trashing everything on it keeps a
+zero-valued item — deleting it would need a read to know when, which is the thing
+counters exist to avoid — and the read filters zeroes out.
+
+**Pre-existing data needs a one-time backfill.** The counters only move on a
+create/trash/restore transaction, so a photo already in `timeline_gsi` before this
+feature shipped was never counted — confirmed live against the `dev` instance, whose
+histogram read `total: 0` despite a fully populated timeline. `tools/backfill-histogram.mjs`
+(`make backfill-histogram-dev OWNER_ID=... EXECUTE=1`, or `make backfill-histogram` for
+prod, or `ALL=1` for every owner)
+rebuilds an owner's histogram from `timeline_gsi` directly and overwrites rather than
+adds, so it's safe to re-run.
 
 ## facet_gsi (queries 4, 5)
 

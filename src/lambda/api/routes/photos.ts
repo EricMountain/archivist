@@ -4,12 +4,13 @@ import { ApiError } from "@archivist/core/errors";
 import { toIsoUtc } from "@archivist/core/time";
 import { getAssetPartition } from "@archivist/core/repo/media";
 import { timelineBounds, timelinePage, trashPage } from "@archivist/core/repo/timeline";
+import { histogramVersion, readHistogram } from "@archivist/core/repo/histogram";
 import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
 import { getHashPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
 import { timelineEntryDto } from "../dto";
-import { noContent, ok, parseJsonBody } from "../http";
-import type { ApiRequest, RouteHandler } from "../http";
+import { ifNoneMatch, noContent, notModified, ok, okCacheable, parseJsonBody } from "../http";
+import type { ApiRequest, ApiResponse, RouteHandler } from "../http";
 
 const MAX_LIMIT = 200;
 
@@ -41,13 +42,42 @@ export const getPhotos: RouteHandler = async (req: ApiRequest) => {
   return ok({ items: page.items.map(timelineEntryDto), cursor: page.cursor });
 };
 
+/**
+ * The histogram version, quoted as an ETag. Shared by `/photos/bounds` and
+ * `/photos/histogram` because both answers are functions of the same thing — which
+ * photos are live — and that is exactly what the version counts changes to. A client
+ * revalidating either pays one `GetItem`.
+ */
+function timelineEtag(version: number): string {
+  return `"tl-${version}"`;
+}
+
+/**
+ * Answers a conditional request, or tells the caller to build the body.
+ *
+ * Both cacheable routes have the same shape: read the version, compare, and only do
+ * the expensive read on a miss. Written once so the cheap path can't accidentally
+ * diverge between them.
+ */
+async function revalidate(
+  req: ApiRequest,
+  build: () => Promise<unknown>,
+): Promise<ApiResponse> {
+  const etag = timelineEtag(await histogramVersion(req.auth!.ownerId));
+  if (ifNoneMatch(req) === etag) return notModified(etag);
+  return okCacheable(await build(), etag);
+}
+
 /** The fast-scroll range: oldest/newest `takenAt` in the owner's live timeline —
  * `GET /photos/bounds` (api.md), pattern 14 in design.md. */
-export const getPhotosBounds: RouteHandler = async (req: ApiRequest) => {
-  const ownerId = req.auth!.ownerId;
-  const bounds = await timelineBounds(ownerId);
-  return ok(bounds);
-};
+export const getPhotosBounds: RouteHandler = async (req: ApiRequest) =>
+  revalidate(req, () => timelineBounds(req.auth!.ownerId));
+
+/** How many live photos fall on each local day — `GET /photos/histogram` (api.md),
+ * pattern 15 in design.md. What lets a client weight its scrollbar by how much is
+ * actually there rather than by elapsed time, and name only dates that have photos. */
+export const getPhotosHistogram: RouteHandler = async (req: ApiRequest) =>
+  revalidate(req, () => readHistogram(req.auth!.ownerId));
 
 export const getPhoto: RouteHandler = async (req: ApiRequest) => {
   const ownerId = req.auth!.ownerId;

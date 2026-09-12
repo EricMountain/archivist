@@ -15,17 +15,63 @@ export interface ApiRequest {
   identity?: JwtIdentity;
   requestId: string;
   rawBody: string | undefined;
+  /** Lower-cased by API Gateway v2. Only conditional-request headers are read so
+   * far — see [ifNoneMatch]. */
+  headers?: Record<string, string>;
 }
 
 export interface ApiResponse {
   statusCode: number;
   body?: unknown;
+  /** Merged over the default `content-type` in `index.ts`. Only caching headers use
+   * this so far — see [okCacheable]. */
+  headers?: Record<string, string>;
 }
 
 export type RouteHandler = (req: ApiRequest) => Promise<ApiResponse>;
 
 export function ok(body?: unknown): ApiResponse {
   return { statusCode: 200, body };
+}
+
+/**
+ * A response a client may cache and later revalidate.
+ *
+ * `must-revalidate` with `max-age=0` rather than a duration: the answer is derived
+ * from DynamoDB and can change the moment a photo is uploaded or trashed, so there is
+ * no interval over which serving it blind is safe. What this buys is not skipped
+ * requests but cheap ones — a revalidation that matches costs a single `GetItem` on
+ * the version item and returns 304 with no body, instead of reading a whole partition
+ * and serialising it.
+ *
+ * `private` because every byte of it is one owner's data; no shared cache may hold it.
+ */
+export function okCacheable(body: unknown, etag: string): ApiResponse {
+  return {
+    statusCode: 200,
+    body,
+    headers: { etag, "cache-control": "private, max-age=0, must-revalidate" },
+  };
+}
+
+/** The other half of [okCacheable]: what a matching `if-none-match` gets. Carries no
+ * body by definition, and repeats the etag so a client can keep revalidating. */
+export function notModified(etag: string): ApiResponse {
+  return {
+    statusCode: 304,
+    headers: { etag, "cache-control": "private, max-age=0, must-revalidate" },
+  };
+}
+
+/**
+ * The client's `if-none-match`, if any. Case-insensitively looked up because API
+ * Gateway v2 lower-cases header names but nothing in the type says so, and compared
+ * loosely: a cache may return a weak validator (`W/"3"`) for a strong one, and both
+ * mean the same thing here since the version either matches or it doesn't.
+ */
+export function ifNoneMatch(req: ApiRequest): string | undefined {
+  const raw = req.headers?.["if-none-match"] ?? req.headers?.["If-None-Match"];
+  return raw?.replace(/^W\//, "").trim();
 }
 
 export function created(body?: unknown): ApiResponse {
@@ -73,6 +119,7 @@ export function toApiRequest(
     auth,
     identity,
     requestId,
+    headers: stripUndefined(event.headers),
     rawBody:
       event.body === undefined
         ? undefined

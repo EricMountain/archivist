@@ -5,24 +5,19 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Carries a fast-scroll jump's landing point from [TimelineRemoteMediator] (which knows
- * which photo sits at the requested instant) to [TimelinePagingSource] (which decides
- * where the next generation starts).
+ * Carries a fast-scroll jump's landing photo from whoever resolved it — the mediator's
+ * reseed, or the repository answering from Room — to the paging source that has to start
+ * there.
  *
- * Staging a *key* rather than scrolling to an index afterwards is the whole point. The
- * first version searched the presented list for the landing photo and scrolled to its
- * index — but a jump's target usually overlaps the window already on screen, so the
- * search found that photo in the **outgoing** list and scrolled to an index that meant
- * something else entirely once the reseeded window arrived (confirmed live: index 127 of
- * a 332-item stale list, for a window that was only ~215 items). Landing deep in the
- * list then triggered repeated appends, walking further into the past — the "lots of
- * stepping, ending nowhere near the date I picked" this feature shipped with twice.
- *
- * Making the new generation *start* at the landing photo means the correct position is
- * index 0, which no amount of asynchronous loading can invalidate.
- *
- * In-memory only, and consumed exactly once: a replayed value would pin a later,
- * unrelated refresh to a stale key.
+ * Two readers, two lifetimes. [consumeLanding] is one-shot, for
+ * [TimelinePagingSource.getRefreshKey]: the next generation after a jump starts at the
+ * landing, but every generation after that must go back to following the user's own
+ * anchor, or scrolling away would keep snapping back. [isLanding] is sticky, for
+ * [TimelinePagingSource.load]: a refresh *at* the landing loads from it exactly rather
+ * than around it, so the landing is index 0 and "go to the top" lands on it. It has to be
+ * sticky because two pagers can each run that refresh — the outgoing one, invalidated by
+ * the reseed's own write, and the rebuilt one — and whichever runs second would otherwise
+ * find the flag already spent.
  */
 @Singleton
 class TimelineJumpCoordinator
@@ -30,12 +25,16 @@ class TimelineJumpCoordinator
     constructor() {
         @Volatile private var landOn: TimelineKey? = null
 
-        /** Called by [TimelineRemoteMediator.reseedAt] immediately before its write. */
+        /** The most recent landing, for [isLanding]. Not cleared by [consumeLanding]. */
+        @Volatile var landing: TimelineKey? = null
+            private set
+
         fun stageLanding(key: TimelineKey?) {
             landOn = key
+            landing = key
         }
 
-        /** [TimelinePagingSource.getRefreshKey]: get-and-clear. A null result means this
-         * is an ordinary refresh, which re-anchors on the previous scroll position. */
         fun consumeLanding(): TimelineKey? = landOn.also { landOn = null }
+
+        fun isLanding(key: TimelineKey): Boolean = key == landing
     }
