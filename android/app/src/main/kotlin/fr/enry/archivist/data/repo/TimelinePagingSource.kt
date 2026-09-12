@@ -58,9 +58,18 @@ class TimelinePagingSource(
      * cache and are reached by scrolling up, via this source's own `Prepend`. */
     override fun getRefreshKey(state: PagingState<TimelineKey, PhotoEntity>): TimelineKey? {
         jumpCoordinator.consumeLanding()?.let { return it }
-        return state.anchorPosition?.let { anchor ->
-            state.closestItemToPosition(anchor)?.let { TimelineKey(it.takenAt, it.photoId) }
-        }
+        val anchorKey =
+            state.anchorPosition?.let { anchor ->
+                state.closestItemToPosition(anchor)?.let { TimelineKey(it.takenAt, it.photoId) }
+            }
+        // Falling back to the last resolved key rather than `null` when `anchorPosition`
+        // isn't available yet is [TimelineJumpCoordinator.recordResolvedKey]'s own fix --
+        // see its doc for the "climbs forward on its own" bug a bare `null` caused here:
+        // it skips `refreshAround`'s protection entirely and reloads the newest page in
+        // the table, discarding whatever the grid was actually showing. A genuine cold
+        // start (nothing ever resolved) is unaffected -- lastResolvedKey() is null then
+        // too, so this still falls through to the newest page, same as before.
+        return (anchorKey ?: jumpCoordinator.lastResolvedKey())?.also(jumpCoordinator::recordResolvedKey)
     }
 
     override suspend fun load(params: LoadParams<TimelineKey>): LoadResult<TimelineKey, PhotoEntity> =

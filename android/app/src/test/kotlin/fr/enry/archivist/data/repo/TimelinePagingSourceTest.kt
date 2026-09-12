@@ -220,6 +220,41 @@ class TimelinePagingSourceTest {
     private fun emptyRefreshState() =
         PagingState<TimelineKey, PhotoEntity>(pages = emptyList(), anchorPosition = null, config = config, leadingPlaceholderCount = 0)
 
+    /**
+     * The "climbs forward on its own" bug (STATUS.md, plan step 2.11): after a jump
+     * lands, `PREPEND`'s own writes restart this generation repeatedly with no
+     * scrolling at all. A restart with no `anchorPosition` established yet used to fall
+     * through to `null`, which `load` turns into `pageFromStart` — the newest page in
+     * the table, with none of `refreshAround`'s protection — snapping the grid forward
+     * to whatever had just been prefetched. Falling back to the last resolved key
+     * instead keeps it where it actually was.
+     */
+    @Test
+    fun `getRefreshKey falls back to the last resolved key when anchorPosition is unavailable`() =
+        runTest {
+            val resolvedState =
+                PagingState(
+                    pages = listOf(PagingSource.LoadResult.Page<TimelineKey, PhotoEntity>(data = listOf(p3), prevKey = null, nextKey = null)),
+                    anchorPosition = 0,
+                    config = config,
+                    leadingPlaceholderCount = 0,
+                )
+            assertEquals(TimelineKey("2024-01-03T00:00:00.000Z", "p3"), source.getRefreshKey(resolvedState))
+
+            // A later restart with no anchorPosition yet (a `PREPEND` write invalidated
+            // this generation before the grid reported one) must not fall back to the
+            // newest page -- it should re-center on the same item as before.
+            assertEquals(TimelineKey("2024-01-03T00:00:00.000Z", "p3"), source.getRefreshKey(emptyRefreshState()))
+        }
+
+    /** A genuine cold start -- nothing ever resolved -- is unaffected by the fallback
+     * above: it still falls through to `null`, which `load` turns into the newest page. */
+    @Test
+    fun `getRefreshKey falls through to null when nothing has ever been resolved`() =
+        runTest {
+            assertNull(source.getRefreshKey(emptyRefreshState()))
+        }
+
     /** The actual regression this class exists to fix: a `RemoteMediator`-triggered
      * generation restart re-anchors on the item the user was actually viewing even
      * after new rows were inserted *ahead* of it (exactly what
