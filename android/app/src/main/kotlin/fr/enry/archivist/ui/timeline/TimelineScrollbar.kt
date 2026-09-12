@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -68,22 +69,30 @@ import kotlinx.coroutines.withTimeoutOrNull
  * otherwise, so it means the same thing whether the library is dense or sparse there.
  *
  * Peeking: scrolling the grid by hand — an ordinary swipe or fling, not touching the
- * rail at all — surfaces the current day as a label next to an enlarged thumb, for as
+ * rail at all — surfaces the full labelled rail ([RailScale.ticks]), an enlarged thumb,
+ * a date label, and a [PositionCursor] marking the current position on the rail, for as
  * long as the scroll is moving plus a short linger afterwards ([PEEK_LINGER_MS]). This
  * used to be the one thing a long press was needed for, which was actively misleading:
  * the very first frame of a long press named whatever day the touch's raw Y happened to
  * land on along the narrow hit-strip — unrelated to wherever the user was actually
  * scrolled to in the grid, since the strip runs the full height of the screen
  * regardless of scroll position. The idle thumb already computed the *correct* day for
- * its own position; peeking just means showing it without requiring a touch at all.
+ * its own position; peeking just means showing it, and everything else the rail can
+ * show about it, without requiring a touch at all.
  *
- * Held: a long press turns the rail into a labelled synthesis of the whole library
- * ([RailScale.ticks]) so the target date is visible *before* the finger gets there, and
- * the thumb tracks the finger **absolutely** — the y it is touched at is the point in
- * time it selects, independent of and layered on top of the passive peek above. The
- * first version accumulated per-frame deltas through a velocity-dependent gain instead,
- * which meant a full-height drag moved the selection a fraction of the range and the
- * thumb visibly lagged the finger; direct mapping is what "follow my finger" actually
+ * Peeking is also what lets grabbing the rail skip the long press entirely — see
+ * [detectFastScrollGesture]'s `skipConfirmation`. The cursor drawn across the touch
+ * strip during a peek is the point of the whole thing: it gives a finger something
+ * specific to aim at, so putting it down there and starting to drag continues smoothly
+ * from wherever the grid already was, rather than the long-press gesture's old
+ * behaviour of snapping straight to whatever arbitrary height the finger first touched.
+ *
+ * Held: a long press (or, while peeking, any touch on the strip at all) turns the rail
+ * into this same labelled synthesis with the thumb now tracking the finger
+ * **absolutely** — the y it is touched at is the point in time it selects. The first
+ * version accumulated per-frame deltas through a velocity-dependent gain instead, which
+ * meant a full-height drag moved the selection a fraction of the range and the thumb
+ * visibly lagged the finger; direct mapping is what "follow my finger" actually
  * requires, and magnifying around the touch point is a separate concern layered on top
  * later, not a substitute for getting this right.
  */
@@ -161,7 +170,7 @@ fun TimelineScrollbar(
     // four lines). Only the strip inside it takes pointer input — the rest of this is
     // transparent and non-interactive, so photos underneath stay tappable.
     Box(modifier.fillMaxHeight().width(RAIL_WIDTH)) {
-        if (held != null) {
+        if (peeking) {
             TimelineRail(scale = scale, trackHeightPx = trackHeightPx)
         }
 
@@ -173,6 +182,13 @@ fun TimelineScrollbar(
                 .onSizeChanged { trackHeightPx = it.height.toFloat() }
                 .pointerInput(scale) {
                     detectFastScrollGesture(
+                        // A touch during a peek is landing on a rail that's already on
+                        // screen, cursor and all — there's nothing left to disambiguate
+                        // from an ordinary swipe the way an invisible strip needs the
+                        // long press for, so it can be grabbed immediately. `held` isn't
+                        // part of this check: it can't be true yet, this decides whether
+                        // a *new* gesture becomes one.
+                        skipConfirmation = { scrollPeekVisible && idlePhoto != null },
                         onStart = { y ->
                             heldFraction = fractionAt(y, trackHeightPx)
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -191,6 +207,14 @@ fun TimelineScrollbar(
                     )
                 },
         )
+
+        if (peeking) {
+            PositionCursor(
+                fraction = thumbFraction,
+                trackHeightPx = trackHeightPx,
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
+        }
 
         ScrollbarThumb(
             fraction = thumbFraction,
@@ -308,6 +332,34 @@ private fun SelectedDateLabel(
     }
 }
 
+/**
+ * A guide line across the full touch strip at the current position — the thing a finger
+ * actually has to find. The thumb alone ([ScrollbarThumb]) is a 10dp bar tucked against
+ * the very edge of the screen; this spans the whole [HIT_TARGET_WIDTH] strip instead, so
+ * there's a wide, easy target rather than a sliver to land a thumb on precisely. It's
+ * also the reason grabbing the rail during a peek can skip the long press at all: the
+ * cursor marks exactly the y [detectFastScrollGesture] would treat as "here", so a touch
+ * on it starts a drag with nothing to jump to — it's already where the finger is.
+ */
+@Composable
+private fun PositionCursor(
+    fraction: Float,
+    trackHeightPx: Float,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val y = with(density) { (fraction * trackHeightPx).toDp() }
+    Box(
+        modifier
+            .offset(y = y - CURSOR_HEIGHT / 2)
+            .width(HIT_TARGET_WIDTH)
+            .height(CURSOR_HEIGHT)
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+    )
+}
+
+private val CURSOR_HEIGHT = 2.dp
+
 @Composable
 private fun ScrollbarThumb(
     fraction: Float,
@@ -332,8 +384,10 @@ private val SELECTED_DATE_FORMATTER = DateTimeFormatter.ofPattern("d MMM yyyy")
 private const val LONG_PRESS_MS = 250L
 
 /**
- * Long-press on the rail, then drag. Nothing is consumed until the press is confirmed,
- * so an ordinary swipe that happens to start on the rail scrolls the grid normally —
+ * Long-press on the rail, then drag — unless [skipConfirmation] says the rail is already
+ * visible (a peek), in which case a touch on the strip is unambiguous and starts the
+ * drag immediately. Nothing is consumed until one or the other confirms, so an ordinary
+ * swipe that happens to start on the rail scrolls the grid normally —
  * [LazyGridState]'s own `scrollable` modifier sees the same unconsumed events, and this
  * detector just times out having claimed nothing. Everything after confirmation *is*
  * consumed, which is what stops the grid reacting to the same drag.
@@ -342,6 +396,7 @@ private const val LONG_PRESS_MS = 250L
  * track. There is deliberately no delta accumulation and no gain here.
  */
 private suspend fun PointerInputScope.detectFastScrollGesture(
+    skipConfirmation: () -> Boolean,
     onStart: (y: Float) -> Unit,
     onDrag: (y: Float) -> Unit,
     onEnd: () -> Unit,
@@ -350,19 +405,21 @@ private suspend fun PointerInputScope.detectFastScrollGesture(
         val down = awaitFirstDown(requireUnconsumed = false)
         val downPosition = down.position
 
-        // Times out (returns null) only if the pointer stayed down, within touch slop,
-        // for the full duration — that is the long press. Any early return means the
-        // gesture resolved as something else and this must not claim it.
-        val abortedEarly =
-            withTimeoutOrNull(LONG_PRESS_MS) {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull
-                    if (!change.pressed) return@withTimeoutOrNull
-                    if ((change.position - downPosition).getDistance() > viewConfiguration.touchSlop) return@withTimeoutOrNull
-                }
-            } != null
-        if (abortedEarly) return@awaitEachGesture
+        if (!skipConfirmation()) {
+            // Times out (returns null) only if the pointer stayed down, within touch
+            // slop, for the full duration — that is the long press. Any early return
+            // means the gesture resolved as something else and this must not claim it.
+            val abortedEarly =
+                withTimeoutOrNull(LONG_PRESS_MS) {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull
+                        if (!change.pressed) return@withTimeoutOrNull
+                        if ((change.position - downPosition).getDistance() > viewConfiguration.touchSlop) return@withTimeoutOrNull
+                    }
+                } != null
+            if (abortedEarly) return@awaitEachGesture
+        }
 
         onStart(downPosition.y)
         while (true) {
