@@ -48,6 +48,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -62,13 +63,24 @@ import kotlinx.coroutines.withTimeoutOrNull
  * average height of whichever rows happen to be on screen, which a grid mixing
  * full-width date headers with square photo cells never gives a stable answer to.
  *
- * Idle: a thin thumb whose position is the first visible photo's `takenAt` as a fraction
- * of [TimelineBounds.oldest]..[TimelineBounds.newest] — time, not item count, so it means
- * the same thing whether the library is dense or sparse at that point.
+ * Idle: a thin thumb whose position is the first visible photo's own local day, per
+ * [RailScale] — density-weighted once a histogram is cached, linear in elapsed time
+ * otherwise, so it means the same thing whether the library is dense or sparse there.
  *
- * Held: the rail expands into a labelled synthesis of the whole library ([timelineTicks])
- * so the target date is visible *before* the finger gets there, and the thumb tracks the
- * finger **absolutely** — the y it is touched at is the point in time it selects. The
+ * Peeking: scrolling the grid by hand — an ordinary swipe or fling, not touching the
+ * rail at all — surfaces the current day as a label next to an enlarged thumb, for as
+ * long as the scroll is moving plus a short linger afterwards ([PEEK_LINGER_MS]). This
+ * used to be the one thing a long press was needed for, which was actively misleading:
+ * the very first frame of a long press named whatever day the touch's raw Y happened to
+ * land on along the narrow hit-strip — unrelated to wherever the user was actually
+ * scrolled to in the grid, since the strip runs the full height of the screen
+ * regardless of scroll position. The idle thumb already computed the *correct* day for
+ * its own position; peeking just means showing it without requiring a touch at all.
+ *
+ * Held: a long press turns the rail into a labelled synthesis of the whole library
+ * ([RailScale.ticks]) so the target date is visible *before* the finger gets there, and
+ * the thumb tracks the finger **absolutely** — the y it is touched at is the point in
+ * time it selects, independent of and layered on top of the passive peek above. The
  * first version accumulated per-frame deltas through a velocity-dependent gain instead,
  * which meant a full-height drag moved the selection a fraction of the range and the
  * thumb visibly lagged the finger; direct mapping is what "follow my finger" actually
@@ -93,15 +105,37 @@ fun TimelineScrollbar(
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
     var heldFraction by remember { mutableStateOf<Float?>(null) }
 
-    val idleFraction by remember(items, scale) {
-        derivedStateOf {
-            nearestPhoto(items, gridState.firstVisibleItemIndex)
-                ?.let { scale.fractionOfDay(it.localDate()) }
-        }
+    // Both derived from one photo lookup, not two separate ones, so the label and the
+    // thumb's position can never disagree about which photo they're describing.
+    val idlePhoto by remember(items, scale) {
+        derivedStateOf { nearestPhoto(items, gridState.firstVisibleItemIndex) }
     }
+    val idleDay = idlePhoto?.localDate()
+    val idleFraction = idlePhoto?.let { scale.fractionOfDay(it.localDate()) }
 
     val held = heldFraction
     val thumbFraction = held ?: idleFraction ?: 0f
+
+    // Peeking: visible while a long press is held (unchanged), or while the grid itself
+    // is scrolling by hand, for [PEEK_LINGER_MS] after it stops. `LazyGridState`'s own
+    // `isScrollInProgress` covers both a drag and the fling it releases into — a fling
+    // is still "scrolling by hand" as far as this is concerned, it just has no finger on
+    // it anymore. Keyed directly on that boolean rather than collected as a flow: a
+    // `LaunchedEffect` restarting on every key change is exactly "cancel the pending
+    // hide and show immediately" when scrolling resumes mid-linger, with no explicit
+    // cancellation logic to get wrong.
+    var scrollPeekVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(gridState.isScrollInProgress) {
+        if (gridState.isScrollInProgress) {
+            scrollPeekVisible = true
+        } else {
+            delay(PEEK_LINGER_MS)
+            scrollPeekVisible = false
+        }
+    }
+    // Gated on idleFraction being non-null too: an enlarged thumb pinned at the top with
+    // a label reading nothing would-be-misleading before the first photo has loaded.
+    val peeking = held != null || (scrollPeekVisible && idleFraction != null)
 
     // Scrolling the grid along with the finger, as fast as the network allows and no
     // faster. The whole library is on the rail but only the visited window is in Room, so
@@ -161,17 +195,31 @@ fun TimelineScrollbar(
         ScrollbarThumb(
             fraction = thumbFraction,
             trackHeightPx = trackHeightPx,
-            expanded = held != null,
+            expanded = peeking,
             modifier = Modifier.align(Alignment.TopEnd),
         )
 
-        if (held != null) {
-            SelectedDateLabel(
-                day = scale.dayAt(held),
-                fraction = held,
-                trackHeightPx = trackHeightPx,
-                modifier = Modifier.align(Alignment.TopStart),
-            )
+        // Two branches rather than one merged "day", because the two null cases mean
+        // different things: held at the very top of the rail means "back to the
+        // present" (scale.dayAt returns null on purpose, see its own doc), which
+        // SelectedDateLabel renders as "Latest" — a real answer. Peeking from an
+        // ordinary scroll with no day yet just means nothing has loaded to report,
+        // which `peeking`'s own idleFraction != null guard already excludes.
+        when {
+            held != null ->
+                SelectedDateLabel(
+                    day = scale.dayAt(held),
+                    fraction = held,
+                    trackHeightPx = trackHeightPx,
+                    modifier = Modifier.align(Alignment.TopStart),
+                )
+            peeking ->
+                SelectedDateLabel(
+                    day = idleDay,
+                    fraction = idleFraction ?: 0f,
+                    trackHeightPx = trackHeightPx,
+                    modifier = Modifier.align(Alignment.TopStart),
+                )
         }
     }
 }
@@ -185,6 +233,11 @@ private val HIT_TARGET_WIDTH = 48.dp
 private val RAIL_WIDTH = 96.dp
 private val IDLE_THUMB = 4.dp to 40.dp
 private val HELD_THUMB = 10.dp to 40.dp
+
+/** How long the peek stays visible after the grid stops scrolling. Long enough to
+ * actually read a date, short enough that it reads as "while scrolling" rather than a
+ * fixture that's just always there. */
+private const val PEEK_LINGER_MS = 1200L
 
 /** The whole library laid out along the track, so the drag has something to aim at. */
 @Composable
