@@ -2,7 +2,9 @@ package fr.enry.archivist.ui.detail
 
 import android.app.Activity
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -51,6 +53,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.exifinterface.media.ExifInterface
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -58,6 +61,7 @@ import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.RenditionSummary
+import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -432,7 +436,7 @@ private fun OriginalOverlay(
                     val isVideo = state.mime.startsWith("video/")
                     val bitmap =
                         remember(state.bytes, isVideo) {
-                            if (isVideo) null else BitmapFactory.decodeByteArray(state.bytes, 0, state.bytes.size)
+                            if (isVideo) null else decodeOrientedBitmap(state.bytes)
                         }
                     var scale by remember { mutableFloatStateOf(1f) }
                     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -502,6 +506,53 @@ private fun OriginalOverlay(
             }
         }
     }
+}
+
+/** The geometric transform that undoes a given EXIF `Orientation` tag value, as plain
+ * rotation/flip data rather than an `android.graphics.Matrix` -- keeps [exifTransform]
+ * itself testable on a bare JVM with no Android framework involved, same convention as
+ * [DetailFormattingTest]'s pure helpers. Null for [ExifInterface.ORIENTATION_NORMAL]/
+ * [ExifInterface.ORIENTATION_UNDEFINED], i.e. "no correction needed". */
+internal data class ExifTransform(
+    val rotationDegrees: Float,
+    val flipHorizontal: Boolean = false,
+    val flipVertical: Boolean = false,
+)
+
+internal fun exifTransform(orientation: Int): ExifTransform? =
+    when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> ExifTransform(rotationDegrees = 90f)
+        ExifInterface.ORIENTATION_ROTATE_180 -> ExifTransform(rotationDegrees = 180f)
+        ExifInterface.ORIENTATION_ROTATE_270 -> ExifTransform(rotationDegrees = 270f)
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> ExifTransform(rotationDegrees = 0f, flipHorizontal = true)
+        ExifInterface.ORIENTATION_FLIP_VERTICAL -> ExifTransform(rotationDegrees = 0f, flipVertical = true)
+        ExifInterface.ORIENTATION_TRANSPOSE -> ExifTransform(rotationDegrees = 90f, flipHorizontal = true)
+        ExifInterface.ORIENTATION_TRANSVERSE -> ExifTransform(rotationDegrees = 270f, flipHorizontal = true)
+        else -> null
+    }
+
+/** [BitmapFactory] decodes strictly in on-disk pixel order and never consults EXIF, so
+ * a photo whose sensor was rotated relative to storage (the common case for a phone
+ * held in portrait) comes back sideways or upside down unless the `Orientation` tag is
+ * applied by hand -- this is that step, run once on the full-size original the same way
+ * `androidx.exifinterface` is already used for capture-time metadata in
+ * [fr.enry.archivist.domain.ExifExtractor]. Coil/[AsyncImage] (the grid/pager
+ * thumbnails) apply this for you; `BitmapFactory` alone does not, which is what made
+ * this overlay -- the one place still calling it directly -- the one place orientation
+ * needed handling explicitly. */
+private fun decodeOrientedBitmap(bytes: ByteArray): Bitmap? {
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+    val orientation =
+        ExifInterface(ByteArrayInputStream(bytes))
+            .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    val transform = exifTransform(orientation) ?: return bitmap
+    val matrix =
+        Matrix().apply {
+            postRotate(transform.rotationDegrees)
+            if (transform.flipHorizontal) postScale(-1f, 1f)
+            if (transform.flipVertical) postScale(1f, -1f)
+        }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
 }
 
 /** [MetadataPanel]'s fixed footprint: its height in portrait (stacked below the pager),
