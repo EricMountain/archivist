@@ -95,6 +95,19 @@ fun TimelineScreen(
     val bounds by viewModel.bounds.collectAsStateWithLifecycle()
     val histogram by viewModel.histogram.collectAsStateWithLifecycle()
 
+    // LazyPagingItems starts at NotLoading(false)/itemCount==0 -- the same shape a
+    // verified-empty library has -- until the LaunchedEffect inside
+    // collectAsLazyPagingItems actually begins collecting the Flow, so without this the
+    // "No photos yet." text flashed on every cold start before the real load began (see
+    // timelineContentState's own doc). Hoisted at this level, same reasoning as
+    // gridState just below: a Settings or Detail round trip un-mounts TimelineGrid, and
+    // a `remember` scoped there would forget a real Loading was already observed and
+    // get stuck re-showing the spinner forever instead of resolving to "No photos yet."
+    // once the genuinely-empty result already arrived. One-way by construction: it only
+    // ever reads the current LoadState and latches true, never resets to false.
+    var hasStartedLoading by remember { mutableStateOf(false) }
+    if (items.loadState.refresh is LoadState.Loading) hasStartedLoading = true
+
     // Hoisted above the selectedPhotoId branch below (rather than left for
     // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so it
     // survives a round trip through DetailScreen: a composable that leaves composition
@@ -143,6 +156,7 @@ fun TimelineScreen(
             gridState = gridState,
             bounds = bounds,
             histogram = histogram,
+            hasStartedLoading = hasStartedLoading,
             onPhotoClick = { selectedPhotoId = it },
             onScrub = viewModel::onScrubTo,
             onCommit = viewModel::onJumpCommitted,
@@ -151,6 +165,14 @@ fun TimelineScreen(
     }
 }
 
+/** What [TimelineGrid] should render for the current combination of item count, refresh
+ * state, and whether a real load has ever actually started. Pulled out as a pure
+ * function — mirrors [fr.enry.archivist.ui.timeline.TimelineScale]/`queueIdleReason`'s
+ * own "testable decision table with no Compose in the loop" convention — because this
+ * repo has no Compose UI test harness (see `TimelineViewModelTest`'s own gap note in
+ * STATUS.md), so the branching itself has to be verifiable without one. */
+internal enum class TimelineContentState { LOADING, ERROR, EMPTY, CONTENT }
+
 /**
  * A brand-new library (nothing uploaded yet — the ordinary state right after signing in
  * on a fresh device, per this session's own live check against the `dev` instance's
@@ -158,7 +180,29 @@ fun TimelineScreen(
  * `RemoteMediator` unless the three are told apart explicitly. `LazyPagingItems.loadState.refresh`
  * is the only signal that distinguishes "still loading page one" from "loaded, and
  * there's truly nothing" from "the fetch failed" — `itemCount == 0` alone can't.
+ *
+ * `refresh` itself isn't enough on its own, though: [LazyPagingItems] starts life at
+ * `NotLoading(false)` — the same shape a genuinely empty, already-resolved library has
+ * — for however long it takes the underlying `Flow<PagingData>` to actually start being
+ * collected (a `LaunchedEffect`, so at least one frame after first composition, longer
+ * if the ViewModel/Hilt graph is slow to spin up). Without [hasStartedLoading] gating
+ * that window too, a cold app start flashed "No photos yet." before the real load ever
+ * began — reported live, this pass's actual fix. [hasStartedLoading] only ever flips
+ * true (never back), because it's a one-way "has a real load state update arrived yet",
+ * not a live reflection of the current one.
  */
+internal fun timelineContentState(
+    itemCount: Int,
+    refresh: LoadState,
+    hasStartedLoading: Boolean,
+): TimelineContentState =
+    when {
+        itemCount > 0 -> TimelineContentState.CONTENT
+        refresh is LoadState.Loading || !hasStartedLoading -> TimelineContentState.LOADING
+        refresh is LoadState.Error -> TimelineContentState.ERROR
+        else -> TimelineContentState.EMPTY
+    }
+
 @Composable
 private fun TimelineGrid(
     items: LazyPagingItems<TimelineItem>,
@@ -166,17 +210,17 @@ private fun TimelineGrid(
     gridState: LazyGridState,
     bounds: TimelineBounds?,
     histogram: TimelineHistogram?,
+    hasStartedLoading: Boolean,
     onPhotoClick: (String) -> Unit,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val refreshState = items.loadState.refresh
-    when {
-        items.itemCount == 0 && refreshState is LoadState.Loading ->
+    when (timelineContentState(items.itemCount, items.loadState.refresh, hasStartedLoading)) {
+        TimelineContentState.LOADING ->
             Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
 
-        items.itemCount == 0 && refreshState is LoadState.Error ->
+        TimelineContentState.ERROR ->
             Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Couldn't load your photos", style = MaterialTheme.typography.titleMedium)
@@ -189,7 +233,7 @@ private fun TimelineGrid(
                 }
             }
 
-        items.itemCount == 0 ->
+        TimelineContentState.EMPTY ->
             Box(modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
                     "No photos yet. Back up a folder in Settings to get started.",
@@ -198,7 +242,7 @@ private fun TimelineGrid(
                 )
             }
 
-        else ->
+        TimelineContentState.CONTENT ->
             Box(modifier.fillMaxSize()) {
                 // The host view draws its own fading scroll indicator over any scrollable
                 // content, which has nothing to do with (and doesn't agree with) the
