@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,10 +33,12 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.paging.compose.LazyPagingItems
@@ -556,7 +557,18 @@ private fun declutterTicks(
 }
 
 /** The precise date at the touch point, placed clear to the *left* of the rail: sitting
- * beside the finger it was simply covered by it and unreadable. */
+ * beside the finger it was simply covered by it and unreadable.
+ *
+ * A custom [Layout] rather than [wrapContentSize] + [onSizeChanged] + remembered state:
+ * the latter only learns the pill's width *after* a layout pass has already happened, so
+ * the offset it computes always applies one frame late — the first frame (and every
+ * frame the text changes width, e.g. "9 Jan 2026" to "24 Aug 2026") briefly draws at the
+ * old offset, which is exactly the initial flash to the wrong side this replaced. Measuring
+ * the pill and placing it in the same pass has no such lag: by the time anything is drawn,
+ * [placeable] already knows its own width, so the offset that puts its right edge
+ * [LABEL_RAIL_GAP] short of the rail's left edge (x = 0, where this composable is anchored
+ * via `Alignment.TopStart`) is correct from frame one.
+ */
 @Composable
 private fun SelectedDateLabel(
     day: LocalDate?,
@@ -565,31 +577,46 @@ private fun SelectedDateLabel(
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
-    val y = with(density) { (fraction * trackHeightPx).toDp() }
-    Box(
-        modifier
-            // Unbounded, or the pill is measured against the rail's width and the date
-            // wraps one character per line.
-            .wrapContentSize(align = Alignment.TopEnd, unbounded = true)
-            .offset(x = -(RAIL_WIDTH + 12.dp), y = y - 18.dp),
-    ) {
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = MaterialTheme.colorScheme.primary,
-            shadowElevation = 4.dp,
-        ) {
-            Text(
-                // Null is the top of the rail, which means "back to the present" rather
-                // than any particular date — so it says that instead of naming one.
-                text = day?.let(SELECTED_DATE_FORMATTER::format) ?: "Latest",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onPrimary,
-                maxLines = 1,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+    val gapPx = with(density) { LABEL_RAIL_GAP.toPx() }
+    val centerYPx = fraction * trackHeightPx
+
+    Layout(
+        modifier = modifier,
+        content = {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.primary,
+                shadowElevation = 4.dp,
+            ) {
+                Text(
+                    // Null is the top of the rail, which means "back to the present"
+                    // rather than any particular date — so it says that instead of
+                    // naming one.
+                    text = day?.let(SELECTED_DATE_FORMATTER::format) ?: "Latest",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        },
+    ) { measurables, _ ->
+        // Unbounded, or the pill is measured against the rail's own width and the date
+        // wraps one character per line. This Layout claims zero size of its own (it
+        // isn't part of the rail's flow, just an anchor point for placement), so the
+        // incoming constraints are irrelevant to it anyway.
+        val placeable = measurables[0].measure(Constraints())
+        layout(0, 0) {
+            placeable.placeRelative(
+                x = -(placeable.width + gapPx).roundToInt(),
+                y = (centerYPx - placeable.height / 2f).roundToInt(),
             )
         }
     }
 }
+
+/** Gap between the pill's right edge and the rail's left edge — see [SelectedDateLabel]. */
+private val LABEL_RAIL_GAP = 4.dp
 
 /**
  * A guide line across the full touch strip at the current position — the thing a finger
