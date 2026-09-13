@@ -121,6 +121,22 @@ import kotlinx.coroutines.withTimeoutOrNull
  * rail's own tick layout reflows continuously too, but via `railAnchor`, a separate
  * cosmetic anchor that trails [lensAnchor] rather than being driven by it directly — see
  * `railAnchor`'s own doc.
+ *
+ * Release: a touchscreen's own reported position is not trustworthy in the last few
+ * samples before liftoff — as a fingertip peels off the glass its contact patch shrinks
+ * asymmetrically, which on real hardware measurably drags the reported centroid, and at
+ * this magnifier's own near-anchor zoom a drag of even a couple of raw pixels can select
+ * a meaningfully different day. Committing straight off the final `onDrag` sample (what
+ * the first version of this did) meant that sensor artifact, not the finger's actual
+ * last deliberate position, decided where the grid jumped to on release — read by a user
+ * as "the timeline jumps off to a random place the instant I lift my finger." Every
+ * `onDrag`/`onStart` sample is timestamped and kept in `releaseHistory`; [onEnd] commits
+ * whatever [settledSample] resolves to — the most recent sample old enough to have sat
+ * there for [RELEASE_SETTLE_MS] without being immediately followed by release — rather
+ * than the raw last sample. Nothing about what's *drawn* changes: `heldRaw` is still
+ * always-absolute, and the thumb/cursor/pill track the finger with zero added latency
+ * the whole time this is filtering — only which day a release actually commits to is
+ * affected, and only in the case a naive implementation gets wrong.
  */
 @Composable
 fun TimelineScrollbar(
@@ -169,6 +185,14 @@ fun TimelineScrollbar(
     // never the other way around.
     var railAnchor by remember { mutableStateOf<Float?>(null) }
     var lastDragNanos by remember { mutableLongStateOf(0L) }
+
+    // Timestamped (nanoTime, selectedFraction) samples for the current drag, oldest
+    // first — what [onEnd] uses via [settledSample] to commit to, instead of the raw
+    // final sample, to filter out a touchscreen's own liftoff jitter. Plain `remember`
+    // (not State-backed) is enough: it's a stable reference mutated in place, read only
+    // from within the same `pointerInput` coroutine that writes it, never from
+    // `derivedStateOf` elsewhere — same reasoning as any other mutable collection here.
+    val releaseHistory = remember { ArrayDeque<Pair<Long, Float>>() }
 
     // Both derived from one photo lookup, not two separate ones, so the label and the
     // thumb's position can never disagree about which photo they're describing.
@@ -296,6 +320,8 @@ fun TimelineScrollbar(
                             // why the rendering can afford this lag when selection can't.
                             railAnchor = idleFraction ?: f
                             lastDragNanos = System.nanoTime()
+                            releaseHistory.clear()
+                            releaseHistory.addLast(lastDragNanos to f)
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         },
                         onDrag = { y ->
@@ -306,6 +332,10 @@ fun TimelineScrollbar(
                             lastDragNanos = now
                             lensAnchor = chaseAnchor(lensAnchor ?: f, f, elapsedMs)
                             railAnchor = chaseAnchor(railAnchor ?: lensAnchor!!, lensAnchor!!, elapsedMs)
+                            releaseHistory.addLast(now to lensUnwarp(f, lensAnchor!!))
+                            while (releaseHistory.size > 1 && now - releaseHistory.first().first > RELEASE_HISTORY_WINDOW_NS) {
+                                releaseHistory.removeFirst()
+                            }
                         },
                         onEnd = {
                             // Always commits, even when the finger settled here long
@@ -314,11 +344,17 @@ fun TimelineScrollbar(
                             // PREPEND's latched end-of-pagination so the timeline can be
                             // scrolled back toward the present. The repository skips the
                             // refetch when the day is unchanged, so that costs nothing.
-                            heldSelected?.let { onCommit(scale.dayAt(it)) }
+                            //
+                            // Uses settledSample rather than heldSelected directly — see
+                            // this composable's own doc, "Release" paragraph, for why the
+                            // raw final sample can't be trusted on its own.
+                            val settled = settledSample(releaseHistory, System.nanoTime(), RELEASE_SETTLE_MS) ?: heldSelected
+                            settled?.let { onCommit(scale.dayAt(it)) }
                             heldRaw = null
                             lensAnchor = null
                             railAnchor = null
                             lastDragNanos = 0L
+                            releaseHistory.clear()
                         },
                     )
                 },
@@ -605,6 +641,39 @@ private fun ScrollbarThumb(
 private val SELECTED_DATE_FORMATTER = DateTimeFormatter.ofPattern("d MMM yyyy")
 
 private const val LONG_PRESS_MS = 250L
+
+/** How long a sample has to have sat in `releaseHistory` before [settledSample] will
+ * commit to it — long enough to clear a touchscreen's own liftoff-jitter window (which
+ * on real hardware shows up in the last one to three reported samples, roughly 10–50ms
+ * at typical 60–120Hz touch sampling), short enough that no user could perceive it as
+ * added latency; this only changes what a release commits to, never anything drawn in
+ * real time. See `TimelineScrollbar`'s own doc, "Release" paragraph. */
+private const val RELEASE_SETTLE_MS = 50L
+private const val RELEASE_SETTLE_NS = RELEASE_SETTLE_MS * 1_000_000L
+
+/** How far back `releaseHistory` is kept before old samples are pruned — several times
+ * [RELEASE_SETTLE_MS] so a settled sample is always available, with no significance
+ * beyond that (a drag can run for seconds; this just keeps the buffer from growing
+ * unbounded rather than tuning any actual behaviour). */
+private const val RELEASE_HISTORY_WINDOW_NS = RELEASE_SETTLE_NS * 5
+
+/**
+ * The most recent entry in [history] — timestamped in [System.nanoTime]-comparable
+ * nanoseconds, oldest first — old enough as of [nowNanos] to have survived
+ * [RELEASE_SETTLE_MS] without being immediately followed by release. Falls back to the
+ * oldest entry when nothing qualifies (an entire drag shorter than the settle window —
+ * essentially a tap — reasonably commits to wherever it started), and to `null` only
+ * when [history] is itself empty.
+ */
+internal fun settledSample(
+    history: List<Pair<Long, Float>>,
+    nowNanos: Long,
+    settleMs: Long = RELEASE_SETTLE_MS,
+): Float? {
+    val settleNanos = settleMs * 1_000_000L
+    return history.lastOrNull { nowNanos - it.first >= settleNanos }?.second
+        ?: history.firstOrNull()?.second
+}
 
 /**
  * Long-press on the rail, then drag — unless [skipConfirmation] says the rail is already

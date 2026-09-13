@@ -359,4 +359,42 @@ class TimelineScrollbarTest {
         val result = chaseAnchor(anchor = 0.1f, target = 0.9f, elapsedMs = 8f)
         assertTrue(result < 0.2f, "expected the anchor to have barely moved, got $result")
     }
+
+    // ---- settledSample: filtering a touchscreen's own release jitter ----------------
+
+    private fun sampleAt(vararg msAndValue: Pair<Long, Float>): List<Pair<Long, Float>> =
+        msAndValue.map { (ms, v) -> (ms * 1_000_000L) to v }
+
+    /** The whole point: a spurious jump reported only in the last few ms before release
+     * must not be what gets committed. */
+    @Test
+    fun `settledSample discards a sample too recent to have survived the settle window`() {
+        val history = sampleAt(0L to 0.30f, 40L to 0.31f, 95L to 0.90f) // liftoff jitter at 95ms
+        val now = 100L * 1_000_000L
+
+        assertEquals(0.31f, settledSample(history, now, settleMs = 50L))
+    }
+
+    @Test
+    fun `settledSample returns the latest sample once it has genuinely settled`() {
+        val history = sampleAt(0L to 0.30f, 60L to 0.55f)
+        val now = 200L * 1_000_000L // well past the settle window since the last move
+
+        assertEquals(0.55f, settledSample(history, now, settleMs = 50L))
+    }
+
+    /** A tap-and-release shorter than the settle window has nothing old enough to
+     * qualify — falls back to where the gesture started rather than returning null. */
+    @Test
+    fun `settledSample falls back to the oldest sample for a drag shorter than the settle window`() {
+        val history = sampleAt(0L to 0.42f, 10L to 0.44f)
+        val now = 15L * 1_000_000L
+
+        assertEquals(0.42f, settledSample(history, now, settleMs = 50L))
+    }
+
+    @Test
+    fun `settledSample is null for an empty history`() {
+        assertNull(settledSample(emptyList(), nowNanos = 0L, settleMs = 50L))
+    }
 }

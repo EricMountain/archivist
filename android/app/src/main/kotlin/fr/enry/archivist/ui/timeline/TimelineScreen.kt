@@ -43,6 +43,7 @@ import androidx.paging.compose.itemKey
 import coil3.compose.AsyncImage
 import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
+import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.ui.detail.DetailScreen
@@ -53,19 +54,14 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import androidx.compose.runtime.snapshotFlow
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** The rung shown in the grid — matches [fr.enry.archivist.sync.Thumbnailer]'s smallest
  * rung, per android.md's "load the 256 thumbnail for instant paint". */
 private const val GRID_THUMB_SIZE = 256
-
-/** How long a burst of `itemCount` changes has to go quiet before the `jumpCompleted`
- * collector reasserts `scrollToItem(0)` again — short enough that several reasserts
- * during a fast page-load burst don't read as separate, visible scroll events. */
-private const val JUMP_SCROLL_DEBOUNCE_MS = 80L
 
 /** How long after a jump the `jumpCompleted` collector keeps reasserting the scroll
  * position at all. Bounded so it stops fighting the user's own scrolling once real
@@ -136,29 +132,42 @@ fun TimelineScreen(
     val gridState = rememberLazyGridState()
 
     // A jumped-to window *starts* at the requested instant (TimelineJumpCoordinator), so
-    // landing on it is just "go to the top" once the window is committed to Room --
-    // deliberately not a search for the photo's index, which resolved against the
-    // outgoing list and scrolled somewhere unrelated. Deliberately a one-shot event
-    // rather than a LaunchedEffect keyed on load state, too: keying on items.itemCount
-    // re-ran this on every page that loaded afterwards, yanking the grid back mid-scroll.
+    // landing on it used to just mean "go to index 0" once the window was committed to
+    // Room. That stopped being true once `TimelineRemoteMediator.loadNewerThanCache`
+    // (PREPEND) is taken into account: it inserts newer content *ahead* of the landing by
+    // design (so a jumped-to position can be scrolled back out of toward the present, per
+    // that mediator's own doc), and — confirmed live, 2026-09-13 — it can start doing so
+    // within a couple of hundred milliseconds of the landing committing, sometimes before
+    // the very first `scrollToItem` here even runs. "Index 0" is a moving target once
+    // that's happening; the landing's *own* identity isn't. [landingIndex] finds where
+    // the landing photo currently sits (a bounded `peek`-only scan, never triggers a
+    // load) and this scrolls there instead of blindly to 0 — so PREPEND growing the
+    // window ahead of it no longer matters at all, rather than being raced against.
+    //
+    // Deliberately a one-shot event rather than a LaunchedEffect keyed on load state,
+    // too: keying on items.itemCount re-ran this on every page that loaded afterwards,
+    // yanking the grid back mid-scroll.
     LaunchedEffect(Unit) {
         viewModel.jumpCompleted.collect { landing ->
-            gridState.scrollToItem(0)
+            gridState.scrollToItem(landingIndex(items, landing) ?: 0)
             // One reassert isn't enough: a jump's fresh PagingData generation streams in
             // over several subsequent page loads, not one shot, and *each* one can
             // retrigger LazyVerticalGrid's own key-based position-preservation, nudging
-            // the scroll a row past the top again — confirmed live via instrumentation,
+            // the scroll away from the landing again — confirmed live via instrumentation,
             // itemCount still growing (168 -> 257 -> 258) well after an earlier reassert
-            // had already reported reaching index 0, with the position drifting again on
-            // the next page. Reported as "Latest doesn't quite get me to the top... I
-            // can't scroll to the top date label itself".
+            // had already reported reaching the landing, with the position drifting again
+            // on the next page. Reported as "Latest doesn't quite get me to the top... I
+            // can't scroll to the top date label itself", and later (2026-09-13) as "the
+            // timeline jumps off to a random place" the instant a rail drag is released.
             //
-            // So this keeps reasserting on every itemCount change (debounced, so a burst
-            // of loads gets one reassert per lull rather than one per page) for a bounded
-            // window after the jump, rather than trusting a single delayed retry. Bounded
-            // so it stops fighting the user's own scrolling once real browsing resumes —
-            // an APPEND from an ordinary scroll also changes itemCount, and this must not
-            // snap that back to the top.
+            // So this keeps reasserting on every single itemCount change — no debounce:
+            // `PREPEND`'s own local (network-free) round trips land in ~30-90ms each, well
+            // inside what a "wait for a lull" debounce would have waited out, so a
+            // debounce meant letting a whole burst run before the very first check ever
+            // got a chance to catch it — for a bounded window after the jump, rather than
+            // trusting a single delayed retry. Bounded so it stops fighting the user's own
+            // scrolling once real browsing resumes — an APPEND from an ordinary scroll
+            // also changes itemCount, and this must not snap that back to the landing.
             //
             // Launched as its own coroutine, deliberately not awaited inline: this
             // collector is also what `_jumpCompleted.emit(...)` suspends on in
@@ -167,42 +176,24 @@ fun TimelineScreen(
             // scrub behind this one's own settle time, which — confirmed live — was
             // enough to stall a continuous drag almost completely; several seconds of a
             // finger sweeping across the rail rendered as the grid barely moving.
-            // Reasserting "index 0" from several overlapping launches at once is
+            // Reasserting to the same index from several overlapping launches at once is
             // harmless (they agree on the target), so nothing here needs the ordering
             // that awaiting would have provided anyway.
             //
-            // `takeWhile` on the *landing photo itself still being at index 0*, not just
-            // a bare itemCount-changed signal: `TimelineRemoteMediator.loadNewerThanCache`
-            // (PREPEND, so a jumped-to position can be scrolled back out of toward the
-            // present) inserts newer content *ahead* of the landing, which changes
-            // itemCount exactly the same way a late-arriving page of the landing's own
-            // settling does — and both used to reassert scrollToItem(0) identically.
-            // Confirmed live: after a jump lands, PREPEND can autonomously fetch its way
-            // to the true present within about a second with no scroll input at all, and
-            // this loop faithfully followed it there, index 0 meaning something new every
-            // time. Once index 0 is no longer the photo the jump actually landed on, this
-            // stops reasserting rather than chasing whatever content PREPEND is
-            // autonomously adding — that reassertion was never the point; only catching
-            // the *landing's own* still-streaming-in pages was.
-            //
-            // Compared against `landing` (the key `jumpCompleted` itself carries), not a
-            // fresh `items.peek(0)` read taken here: PREPEND's own local, network-free
-            // burst can already be mid-flight — or entirely finished — by the time this
-            // line runs at all, since it's racing a background coroutine chain that
-            // started the instant the mediator's write committed, well before this
-            // collector got scheduled. A `peek(0)`-derived baseline can therefore already
-            // be the *drifted* position, not the true landing, which quietly defeated the
-            // whole guard: every later reassert "matched" that wrong baseline and kept
-            // going. The key from the jump itself has no such race.
+            // `mapNotNull`/`distinctUntilChanged` rather than a `takeWhile`-guarded
+            // `scrollToItem(0)`: the old version gave up reasserting entirely the instant
+            // index 0 stopped being the landing, unable to tell "still catching up to my
+            // own landing's settling pages" apart from "chasing content PREPEND is
+            // autonomously adding" — since both changed itemCount and moved whatever was
+            // at 0 identically. Tracking the landing's own index sidesteps the ambiguity
+            // outright: there's nothing to give up on, since PREPEND changing the
+            // landing's index *is* the correct new answer, not a signal to stop.
             launch {
                 withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
                     snapshotFlow { items.itemCount }
-                        .debounce(JUMP_SCROLL_DEBOUNCE_MS)
-                        .takeWhile {
-                            landing == null ||
-                                (items.peek(0) as? TimelineItem.Photo)?.photo?.photoId == landing.photoId
-                        }
-                        .collect { gridState.scrollToItem(0) }
+                        .mapNotNull { landingIndex(items, landing) }
+                        .distinctUntilChanged()
+                        .collect { gridState.scrollToItem(it) }
                 }
             }
         }
@@ -272,6 +263,30 @@ internal enum class TimelineContentState { LOADING, ERROR, EMPTY, CONTENT }
  * true (never back), because it's a one-way "has a real load state update arrived yet",
  * not a live reflection of the current one.
  */
+/**
+ * Where [landing] currently sits in [items] — a bounded [LazyPagingItems.peek] scan, so
+ * it never triggers a page load. `null` for [landing] means "back to the present", which
+ * always resolves to `0`, not a search (there's no photo identity to look for). A real
+ * `landing` that isn't found at all (fell out of the loaded window entirely — shouldn't
+ * happen in practice, but the caller must not misbehave if it does) also returns `null`,
+ * distinct from index `0` on purpose.
+ *
+ * Exists because `TimelineRemoteMediator.loadNewerThanCache` (`PREPEND`) inserts newer
+ * content *ahead* of the landing by design — see [jumpCompleted]'s own collector, which
+ * scrolls to whatever this resolves to rather than hardcoding index `0`.
+ */
+private fun landingIndex(
+    items: LazyPagingItems<TimelineItem>,
+    landing: TimelineKey?,
+): Int? {
+    if (landing == null) return 0
+    for (i in 0 until items.itemCount) {
+        val item = items.peek(i)
+        if (item is TimelineItem.Photo && item.photo.photoId == landing.photoId) return i
+    }
+    return null
+}
+
 internal fun timelineContentState(
     itemCount: Int,
     refresh: LoadState,
