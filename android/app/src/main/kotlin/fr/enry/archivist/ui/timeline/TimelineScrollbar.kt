@@ -420,9 +420,6 @@ private val HIT_TARGET_WIDTH = 48.dp
 // font scale) comfortably clears 96dp, which is what this used to be before tick labels
 // were moved to grow outward from the strip instead of being clipped/wrapped against it.
 private val RAIL_WIDTH = 168.dp
-private val IDLE_THUMB = 4.dp to 40.dp
-private val HELD_THUMB = 10.dp to 40.dp
-
 // Gap between the touch strip's own left edge and where tick labels are drawn (they grow
 // further left from there, unbounded — see TimelineRail). Fine ticks get noticeably more
 // clearance than coarse: they're the ruler a finger is actually trying to read while
@@ -430,6 +427,9 @@ private val HELD_THUMB = 10.dp to 40.dp
 // would otherwise cover.
 private val COARSE_TICK_GAP = 4.dp
 private val FINE_TICK_GAP = 20.dp
+
+private val IDLE_THUMB = 4.dp to 40.dp
+private val HELD_THUMB = RAIL_WIDTH - (COARSE_TICK_GAP * 2) to 2.dp
 
 /** How long the peek stays visible after the grid stops scrolling. Long enough to
  * actually read a date, short enough that it reads as "while scrolling" rather than a
@@ -631,7 +631,7 @@ private fun ScrollbarThumb(
     val y = (fraction * trackHeightPx - heightPx / 2f).coerceIn(0f, (trackHeightPx - heightPx).coerceAtLeast(0f))
     Box(
         modifier
-            .padding(end = 4.dp)
+            .padding(horizontal = COARSE_TICK_GAP)
             .offset { IntOffset(0, y.roundToInt()) }
             .size(width = widthDp, height = heightDp)
             .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(50)),
