@@ -362,6 +362,48 @@ private const val LENS_EDGE_EPSILON = 0.0001f
 private const val LENS_EXPONENT = 6f
 
 /**
+ * Moves [anchor] toward [target] by the fraction of the gap that [elapsedMs] of dwelling
+ * closes, at time constant [tauMs] — an exponential "chase": ~63% of the remaining gap
+ * closes every [tauMs], ~95% every 3×[tauMs], asymptotically approaching but never
+ * exactly reaching [target] in finite time (barring float rounding).
+ *
+ * This is what makes the lens follow the finger instead of being fixed for a whole drag:
+ * called from every `onDrag`, with [target] the finger's current raw position. Because it
+ * only *approaches* the target rather than snapping to it, the anchor and the raw position
+ * stay apart by an amount that depends on how fast the finger has been moving — which is
+ * exactly the "fine when slow, fast when quick" split the lens exists for, but now live
+ * throughout the drag rather than fixed at whichever point it started:
+ *
+ * - A finger held still, or crawling slowly, gives the anchor time to close most of the
+ *   gap between events (small [elapsedMs] each, but many of them) — it stays close behind
+ *   the raw position, so the finger keeps operating in the warp's steep, de-amplifying
+ *   region right at the anchor: small raw movements keep selecting small underlying steps,
+ *   continuously, whichever part of the track the finger has wandered to.
+ * - A fast flick covers a lot of raw distance before much *time* passes, so the anchor
+ *   barely moves per event even though the finger has — it falls behind, leaving the raw
+ *   position out in the warp's shallow far side, where the same movement selects a lot of
+ *   underlying ground. A single continuous flick from one part of the track to a distant
+ *   one is exactly this case throughout its own short duration.
+ *
+ * Deliberately time-based, not event- or distance-based: touch sampling rate varies by
+ * device, and chaining this per input event still integrates out to the same time-based
+ * exponential regardless of how finely the events are sliced, so behaviour doesn't change
+ * with sampling rate the way a fixed per-event step would.
+ */
+internal fun chaseAnchor(
+    anchor: Float,
+    target: Float,
+    elapsedMs: Float,
+    tauMs: Float = ANCHOR_CHASE_TAU_MS,
+): Float {
+    if (elapsedMs <= 0f) return anchor
+    val rate = (1f - kotlin.math.exp(-elapsedMs / tauMs)).coerceIn(0f, 1f)
+    return anchor + (target - anchor) * rate
+}
+
+private const val ANCHOR_CHASE_TAU_MS = 120f
+
+/**
  * The scale the rail should use: density when the histogram has arrived and has anything
  * in it, elapsed time otherwise.
  *

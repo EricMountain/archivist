@@ -54,6 +54,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -141,7 +142,7 @@ fun TimelineScreen(
     // rather than a LaunchedEffect keyed on load state, too: keying on items.itemCount
     // re-ran this on every page that loaded afterwards, yanking the grid back mid-scroll.
     LaunchedEffect(Unit) {
-        viewModel.jumpCompleted.collect {
+        viewModel.jumpCompleted.collect { landing ->
             gridState.scrollToItem(0)
             // One reassert isn't enough: a jump's fresh PagingData generation streams in
             // over several subsequent page loads, not one shot, and *each* one can
@@ -160,7 +161,7 @@ fun TimelineScreen(
             // snap that back to the top.
             //
             // Launched as its own coroutine, deliberately not awaited inline: this
-            // collector is also what `_jumpCompleted.emit(Unit)` suspends on in
+            // collector is also what `_jumpCompleted.emit(...)` suspends on in
             // `TimelineViewModel.applyJump`, which runs under the same lock every scrub
             // in a drag shares. Awaiting the full window here serialised every later
             // scrub behind this one's own settle time, which — confirmed live — was
@@ -169,10 +170,38 @@ fun TimelineScreen(
             // Reasserting "index 0" from several overlapping launches at once is
             // harmless (they agree on the target), so nothing here needs the ordering
             // that awaiting would have provided anyway.
+            //
+            // `takeWhile` on the *landing photo itself still being at index 0*, not just
+            // a bare itemCount-changed signal: `TimelineRemoteMediator.loadNewerThanCache`
+            // (PREPEND, so a jumped-to position can be scrolled back out of toward the
+            // present) inserts newer content *ahead* of the landing, which changes
+            // itemCount exactly the same way a late-arriving page of the landing's own
+            // settling does — and both used to reassert scrollToItem(0) identically.
+            // Confirmed live: after a jump lands, PREPEND can autonomously fetch its way
+            // to the true present within about a second with no scroll input at all, and
+            // this loop faithfully followed it there, index 0 meaning something new every
+            // time. Once index 0 is no longer the photo the jump actually landed on, this
+            // stops reasserting rather than chasing whatever content PREPEND is
+            // autonomously adding — that reassertion was never the point; only catching
+            // the *landing's own* still-streaming-in pages was.
+            //
+            // Compared against `landing` (the key `jumpCompleted` itself carries), not a
+            // fresh `items.peek(0)` read taken here: PREPEND's own local, network-free
+            // burst can already be mid-flight — or entirely finished — by the time this
+            // line runs at all, since it's racing a background coroutine chain that
+            // started the instant the mediator's write committed, well before this
+            // collector got scheduled. A `peek(0)`-derived baseline can therefore already
+            // be the *drifted* position, not the true landing, which quietly defeated the
+            // whole guard: every later reassert "matched" that wrong baseline and kept
+            // going. The key from the jump itself has no such race.
             launch {
                 withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
                     snapshotFlow { items.itemCount }
                         .debounce(JUMP_SCROLL_DEBOUNCE_MS)
+                        .takeWhile {
+                            landing == null ||
+                                (items.peek(0) as? TimelineItem.Photo)?.photo?.photoId == landing.photoId
+                        }
                         .collect { gridState.scrollToItem(0) }
                 }
             }

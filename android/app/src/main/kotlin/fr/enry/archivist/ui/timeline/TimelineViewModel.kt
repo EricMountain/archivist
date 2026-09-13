@@ -162,13 +162,19 @@ class TimelineViewModel
         val histogram: StateFlow<TimelineHistogram?> =
             photoRepository.histogram().stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-        /** Emitted once a jump's new window is committed to Room. The window itself
-         * starts at the requested instant (see [TimelineJumpCoordinator]), so the grid
-         * only has to go to the top. A `SharedFlow` with no replay on purpose: it's a
-         * one-shot "this just happened", and a replayed value would re-scroll the grid
-         * on the next recomposition that happens to re-collect it. */
-        private val _jumpCompleted = MutableSharedFlow<Unit>()
-        val jumpCompleted: SharedFlow<Unit> = _jumpCompleted.asSharedFlow()
+        /** Emitted once a jump's new window is committed to Room, carrying the landing
+         * key the grid should hold on — see `TimelineScreen`'s own doc for why this needs
+         * to be the actual key, not inferred later from whatever `items.peek(0)` happens
+         * to show by the time the collector runs: `PREPEND` (`loadNewerThanCache`) can
+         * already be mid-burst, autonomously inserting newer content ahead of the landing,
+         * by the time that read happens, which silently substitutes the wrong baseline.
+         * The window itself starts at the requested instant (see
+         * [TimelineJumpCoordinator]), so the grid only has to go to the top. A
+         * `SharedFlow` with no replay on purpose: it's a one-shot "this just happened",
+         * and a replayed value would re-scroll the grid on the next recomposition that
+         * happens to re-collect it. */
+        private val _jumpCompleted = MutableSharedFlow<TimelineKey?>()
+        val jumpCompleted: SharedFlow<TimelineKey?> = _jumpCompleted.asSharedFlow()
 
         /** Jumps run one at a time. A drag issues a stream of scrubs and then a commit,
          * and two reseeds overlapping would leave the cache on whichever finished last
@@ -229,7 +235,7 @@ class TimelineViewModel
                 livePagerKey = outcome.landing
                 pagerGeneration.update { PagerSeed(it.generation + 1, outcome.landing) }
             }
-            _jumpCompleted.emit(Unit)
+            _jumpCompleted.emit(outcome.landing)
         }
 
         private fun refreshBounds() {

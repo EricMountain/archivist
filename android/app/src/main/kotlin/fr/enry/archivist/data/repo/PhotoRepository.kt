@@ -144,9 +144,31 @@ class PhotoRepository
             if (completeThrough != null && completeThrough < boundIso) return null
             val candidates = db.photoDao().pageAtOrBefore(boundIso, LOCAL_LANDING_SCAN)
             val landing = candidates.firstOrNull { it.localDate() <= day } ?: return null
-            // A scan that filled up without a match can't prove the landing isn't further
-            // down; a match inside it is the newest candidate, so it is the landing.
-            return TimelineKey(landing.takenAt, landing.photoId).also(jumpCoordinator::stageLanding)
+            val key = TimelineKey(landing.takenAt, landing.photoId)
+            // Skipped, not re-staged, when this is already the live landing — the fix for
+            // the "grid drifts forward through time on its own after a jump lands" bug
+            // (see TimelineRemoteMediator's own "ran away" doc for the earlier, related
+            // incident). jumpTo is called on every scrub during a drag and again on the
+            // commit, and once the drag's very first (network) landing has cached the
+            // day, every later call for the same day — the common case, since a drag
+            // lingers on or returns to the same day repeatedly, and the release almost
+            // always lands exactly where the last scrub already put things — resolves
+            // locally right back to the identical key. Restaging it anyway used to force
+            // the *next* invalidation-triggered PagingSource generation to reload from
+            // scratch at that key via pageFromKey (no lead, unlike refreshAround) and then
+            // eagerly walk forward through however much is cached in the PREPEND direction
+            // to satisfy Paging's own internal prefetch bookkeeping — network round trips
+            // included once local supply ran out, each writing more rows and therefore
+            // invalidating again. One such reload after a genuine jump is normal and
+            // wanted; the same reload repeating on every scrub event compounded it into
+            // exactly the observed "walks forward through months of content by itself"
+            // symptom, still running seconds after the finger had already lifted because
+            // the last scrub and the commit each queued up one more redundant round. A key
+            // that hasn't changed needs no restage: the paging source is already correctly
+            // anchored there, or will settle there on its own from the one restage that
+            // already happened.
+            if (key != jumpCoordinator.landing) jumpCoordinator.stageLanding(key)
+            return key
         }
 
         /**

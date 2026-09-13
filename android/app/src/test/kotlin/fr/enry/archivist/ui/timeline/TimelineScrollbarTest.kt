@@ -317,4 +317,46 @@ class TimelineScrollbarTest {
         assertTrue(fine.size <= 5)
         assertTrue(fine.any { it.major })
     }
+
+    // ---- chaseAnchor: the lens following the finger, not fixed for the whole drag ----
+
+    @Test
+    fun `zero elapsed time leaves the anchor exactly where it was`() {
+        assertEquals(0.2f, chaseAnchor(0.2f, 0.8f, elapsedMs = 0f))
+    }
+
+    @Test
+    fun `the anchor always moves toward the target, never past it`() {
+        val result = chaseAnchor(anchor = 0.2f, target = 0.8f, elapsedMs = 50f)
+        assertTrue(result > 0.2f && result < 0.8f, "expected 0.2 < $result < 0.8")
+    }
+
+    @Test
+    fun `a long dwell closes the gap to effectively the target, never past it`() {
+        val result = chaseAnchor(anchor = 0.2f, target = 0.8f, elapsedMs = 5000f)
+        assertTrue(result <= 0.8f, "must never overshoot the target")
+        assertEquals(0.8f, result, 0.001f, "but should be effectively there")
+    }
+
+    @Test
+    fun `chaining short dwells integrates out to the same result as one long dwell`() {
+        val tau = 120f
+        var chained = 0.2f
+        repeat(10) { chained = chaseAnchor(chained, 0.8f, elapsedMs = 30f, tauMs = tau) }
+        val single = chaseAnchor(0.2f, 0.8f, elapsedMs = 300f, tauMs = tau)
+        assertEquals(single, chained, 0.001f, "time-based decay shouldn't depend on how finely it's sliced")
+    }
+
+    @Test
+    fun `already at the target, the anchor stays there`() {
+        assertEquals(0.5f, chaseAnchor(0.5f, 0.5f, elapsedMs = 200f), 0.0001f)
+    }
+
+    @Test
+    fun `a fast flick — little elapsed time despite a big jump — leaves the anchor mostly behind`() {
+        // Models a flick: the target (raw touch) has already jumped a long way, but only
+        // a few milliseconds of wall-clock time have passed since the anchor last moved.
+        val result = chaseAnchor(anchor = 0.1f, target = 0.9f, elapsedMs = 8f)
+        assertTrue(result < 0.2f, "expected the anchor to have barely moved, got $result")
+    }
 }

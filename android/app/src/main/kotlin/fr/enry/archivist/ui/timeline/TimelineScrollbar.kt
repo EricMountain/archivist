@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +23,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -80,6 +82,15 @@ import kotlinx.coroutines.withTimeoutOrNull
  * its own position; peeking just means showing it, and everything else the rail can
  * show about it, without requiring a touch at all.
  *
+ * The rail is magnified while just peeking too, centred on the current idle position —
+ * not a flat, unwarped layout that only turns into a lens once a finger lands. A touch
+ * can start anywhere on the strip, though, often well away from that idle position — so
+ * grabbing the rail doesn't snap its rendering straight to the touch point (see
+ * `railAnchor`'s own doc for why that's a separate, purely cosmetic anchor from the one
+ * driving selection): it eases toward the touch from wherever it was already showing,
+ * the same continuous chase used everywhere else in this file, so nothing about the
+ * rail's own rendering ever jumps.
+ *
  * Peeking is also what lets grabbing the rail skip the long press entirely — see
  * [detectFastScrollGesture]'s `skipConfirmation`. The cursor drawn across the touch
  * strip during a peek is the point of the whole thing: it gives a finger something
@@ -97,11 +108,19 @@ import kotlinx.coroutines.withTimeoutOrNull
  * What the touched position *selects*, though, is no longer the same thing it is drawn
  * at, once [lensAnchor] is engaged: the magnifier (`lensWarp`/`lensUnwarp`'s own doc)
  * warps the *rail* — where each tick is drawn, and what underlying position a given
- * touch position resolves to — around a fixed point set the instant the drag begins, so
- * a small movement near where the drag started selects a small step (fine adjustment)
- * while the same movement far from it still covers a lot of ground (fast travel stays
- * fast). The thumb, cursor and pill are still drawn exactly where the finger physically
- * is; only *which day that is* changes.
+ * touch position resolves to — around [lensAnchor], which continuously *chases* the
+ * finger ([chaseAnchor]) rather than sitting fixed where the drag began: a finger moving
+ * slowly gives it time to keep up, so the touch point keeps operating in the warp's
+ * steep near-anchor region wherever it currently is (continuous fine adjustment, not
+ * just near the drag's starting point); a fast flick outruns it, leaving the touch point
+ * out in the shallow far side where the same movement covers a lot of ground (fast
+ * travel stays fast). The thumb, cursor and pill are still drawn exactly where the
+ * finger physically is; only *which day that is* changes — see [lensAnchor]'s own doc
+ * for why a lens fixed for the whole drag instead reads as static and unresponsive to
+ * slow, deliberate movement, which is exactly what a magnifier exists to serve. The
+ * rail's own tick layout reflows continuously too, but via `railAnchor`, a separate
+ * cosmetic anchor that trails [lensAnchor] rather than being driven by it directly — see
+ * `railAnchor`'s own doc.
  */
 @Composable
 fun TimelineScrollbar(
@@ -121,17 +140,35 @@ fun TimelineScrollbar(
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
 
     // heldRaw is where the finger physically is — always what the thumb, cursor and
-    // pill are drawn at. lensAnchor is fixed the instant a drag starts (onStart) and
-    // never moves again until release; it's what makes the magnifier a *fine-tune*
-    // tool rather than a no-op. A lens that re-centred on the live touch position every
-    // frame would make "exactly where the finger already is" a fixed point on every
-    // single frame — and a fixed point's local slope is always 1, so the one thing that
-    // would actually help disappears exactly where it's needed. Anchoring once means
-    // small movements *near where the drag began* stay fine, while dragging away from
-    // that anchor moves through the lens's compressed far side and covers ground fast —
-    // see `lensWarp`'s own doc for why this needs no explicit velocity threshold at all.
+    // pill are drawn at. lensAnchor starts there too (onStart) but then *chases* it
+    // ([chaseAnchor]) rather than sitting fixed for the whole drag: snapping the anchor
+    // to match heldRaw exactly, every single frame, would make "exactly where the
+    // finger already is" a fixed point on every frame — and a fixed point's local slope
+    // is always 1, so the one thing that would actually help disappears entirely. A
+    // *fixed-for-the-whole-drag* anchor avoids that trap but trades it for a different
+    // one, found live: the rail's tick layout (which is what [lensAnchor] actually
+    // drives — see `TimelineRail`) then never reflows again for the rest of the drag,
+    // which for a slow, deliberate drag away from wherever the finger first landed reads
+    // as the whole rail having frozen solid rather than as a magnifier tracking the
+    // finger. Chasing splits the difference without an explicit velocity threshold: it
+    // never fully catches up to a moving finger (so there's always *some* gap left to
+    // give the near-anchor region its de-amplifying effect), but a finger moving slowly
+    // gives it enough time to stay close, keeping fine control live at wherever the
+    // finger currently is rather than only right where the drag began.
     var heldRaw by remember { mutableStateOf<Float?>(null) }
     var lensAnchor by remember { mutableStateOf<Float?>(null) }
+    // A second, purely cosmetic anchor for what TimelineRail actually draws around — see
+    // visualAnchor below for why this can't just be lensAnchor itself: selection needs
+    // lensAnchor seeded exactly at the touch point every time (anything else measurably
+    // mis-selects relative to the finger from frame one), but that seed is often nowhere
+    // near the idle position the rail was just showing, and rendering that same jump
+    // would reintroduce the "rail lurches the instant a finger lands" complaint. railAnchor
+    // is seeded from the idle position instead and chases lensAnchor exactly like lensAnchor
+    // chases heldRaw, so the rail's own layout always eases toward the real anchor rather
+    // than snapping to it — cosmetic lag layered on top of the correctness-critical value,
+    // never the other way around.
+    var railAnchor by remember { mutableStateOf<Float?>(null) }
+    var lastDragNanos by remember { mutableLongStateOf(0L) }
 
     // Both derived from one photo lookup, not two separate ones, so the label and the
     // thumb's position can never disagree about which photo they're describing.
@@ -139,7 +176,13 @@ fun TimelineScrollbar(
         derivedStateOf { nearestPhoto(items, gridState.firstVisibleItemIndex) }
     }
     val idleDay = idlePhoto?.localDate()
-    val idleFraction = idlePhoto?.let { scale.fractionOfDay(it.localDate()) }
+
+    // Also must be a State, not a plain val, for the same reason as heldSelected below:
+    // onStart reads it to seed the lens anchor, from inside a pointerInput coroutine that
+    // doesn't restart every recomposition.
+    val idleFraction by remember(scale) {
+        derivedStateOf { idlePhoto?.let { scale.fractionOfDay(it.localDate()) } }
+    }
 
     val thumbFraction = heldRaw ?: idleFraction ?: 0f
     // The *selected* fraction: what heldRaw actually names once the lens is applied.
@@ -177,6 +220,17 @@ fun TimelineScrollbar(
     // a label reading nothing would-be-misleading before the first photo has loaded.
     val peeking = heldRaw != null || (scrollPeekVisible && idleFraction != null)
 
+    // What TimelineRail actually warps around: idleFraction while just peeking (so the
+    // rail is *already* magnified around wherever the grid currently is, before any
+    // finger has touched it — see TimelineRail's own doc for why this matters), railAnchor
+    // once held — not lensAnchor directly, which is seeded at the touch point (for
+    // selection accuracy) and can be far from idleFraction. railAnchor starts at
+    // idleFraction and chases lensAnchor, so this switch is seamless — the rail's own
+    // rendering eases toward the new anchor rather than snapping to it — while heldRaw
+    // (drawn separately, always absolute) and heldSelected (driven by lensAnchor, not
+    // railAnchor) are both correct from the very first frame regardless.
+    val visualAnchor = if (heldRaw != null) railAnchor else idleFraction
+
     // Scrolling the grid along with the finger, as fast as the network allows and no
     // faster. The whole library is on the rail but only the visited window is in Room, so
     // a fetch per frame is not available; `conflate` is what makes that a pacing problem
@@ -206,7 +260,7 @@ fun TimelineScrollbar(
     // transparent and non-interactive, so photos underneath stay tappable.
     Box(modifier.fillMaxHeight().width(RAIL_WIDTH)) {
         if (peeking) {
-            TimelineRail(scale = scale, trackHeightPx = trackHeightPx, lensAnchor = lensAnchor)
+            TimelineRail(scale = scale, trackHeightPx = trackHeightPx, anchor = visualAnchor)
         }
 
         Box(
@@ -227,13 +281,32 @@ fun TimelineScrollbar(
                         onStart = { y ->
                             val f = fractionAt(y, trackHeightPx)
                             heldRaw = f
-                            // The lens anchors here and stays put for the whole drag —
-                            // see the field's own doc for why re-centring every frame
-                            // would defeat the entire point.
+                            // lensAnchor is seeded exactly at the touch point — not
+                            // idleFraction — so the very first frame's selection matches
+                            // where the finger actually is; anything else measurably
+                            // mis-selects (a touch far from the idle position would
+                            // otherwise select whatever the lens's compressed far side,
+                            // centred on the old idle spot, happens to map it to, rather
+                            // than the touched day itself) until the chase below caught
+                            // up, which for a short drag might not happen at all.
                             lensAnchor = f
+                            // railAnchor, by contrast, starts from wherever the rail was
+                            // already showing (idleFraction) and chases lensAnchor exactly
+                            // like lensAnchor chases heldRaw — see its own doc above for
+                            // why the rendering can afford this lag when selection can't.
+                            railAnchor = idleFraction ?: f
+                            lastDragNanos = System.nanoTime()
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         },
-                        onDrag = { y -> heldRaw = fractionAt(y, trackHeightPx) },
+                        onDrag = { y ->
+                            val f = fractionAt(y, trackHeightPx)
+                            heldRaw = f
+                            val now = System.nanoTime()
+                            val elapsedMs = (now - lastDragNanos) / 1_000_000f
+                            lastDragNanos = now
+                            lensAnchor = chaseAnchor(lensAnchor ?: f, f, elapsedMs)
+                            railAnchor = chaseAnchor(railAnchor ?: lensAnchor!!, lensAnchor!!, elapsedMs)
+                        },
                         onEnd = {
                             // Always commits, even when the finger settled here long
                             // enough that the window is already loaded: the commit is
@@ -244,6 +317,8 @@ fun TimelineScrollbar(
                             heldSelected?.let { onCommit(scale.dayAt(it)) }
                             heldRaw = null
                             lensAnchor = null
+                            railAnchor = null
+                            lastDragNanos = 0L
                         },
                     )
                 },
@@ -301,9 +376,24 @@ fun TimelineScrollbar(
 private data class Scrub(val day: LocalDate?)
 
 private val HIT_TARGET_WIDTH = 48.dp
-private val RAIL_WIDTH = 96.dp
+// Wide enough that a tick label — drawn growing left from just past the touch strip,
+// see TimelineRail — fits entirely within the rail's own background rather than
+// spilling out past its left edge onto plain, untinted screen: HIT_TARGET_WIDTH (48dp)
+// + the larger of the two tick gaps (FINE_TICK_GAP, 20dp) + a generous label-width
+// allowance (a labelSmall "24 Aug 2026"-ish string, plus headroom for a larger system
+// font scale) comfortably clears 96dp, which is what this used to be before tick labels
+// were moved to grow outward from the strip instead of being clipped/wrapped against it.
+private val RAIL_WIDTH = 168.dp
 private val IDLE_THUMB = 4.dp to 40.dp
 private val HELD_THUMB = 10.dp to 40.dp
+
+// Gap between the touch strip's own left edge and where tick labels are drawn (they grow
+// further left from there, unbounded — see TimelineRail). Fine ticks get noticeably more
+// clearance than coarse: they're the ruler a finger is actually trying to read while
+// dragging, so they're the ones a real fingertip (wider than the nominal touch strip)
+// would otherwise cover.
+private val COARSE_TICK_GAP = 4.dp
+private val FINE_TICK_GAP = 20.dp
 
 /** How long the peek stays visible after the grid stops scrolling. Long enough to
  * actually read a date, short enough that it reads as "while scrolling" rather than a
@@ -313,22 +403,34 @@ private const val PEEK_LINGER_MS = 1200L
 /**
  * The whole library laid out along the track, so the drag has something to aim at.
  *
- * [lensAnchor], when engaged, warps where every tick is *drawn* — [lensWarp]'s own doc —
- * and adds a run of day-level [RailScale.fineTicks] around it: [scale]'s ordinary
+ * [anchor], when non-null, warps where every tick is *drawn* — [lensWarp]'s own doc — and
+ * adds a run of day-level [RailScale.fineTicks] around it: [scale]'s ordinary
  * [RailScale.ticks] are a sparse, whole-library set of ~14 month/year labels, nowhere
  * near fine enough to show what the magnifier has just made room for. The coarse ticks
  * keep drawing everywhere else (also warped, so the whole rail stays one continuous,
  * consistent picture rather than a magnified island stitched onto an unmagnified one).
+ *
+ * The caller passes an anchor whenever the rail is shown at all, not only while a finger
+ * is down — see `TimelineScrollbar`'s own `visualAnchor` (idleFraction while peeking,
+ * `railAnchor` — deliberately not the selection-driving `lensAnchor`, see its own doc for
+ * why — once held) — so this is magnified around the current idle position even during a
+ * plain scroll-triggered peek, not a flat layout that only becomes a lens once held.
+ *
+ * Tick labels are drawn growing left from just past the touch strip's own edge
+ * ([wrapContentWidth]-unbounded, not a fixed-width box), rather than measured against
+ * [RAIL_WIDTH] and left to run rightward under the strip: text sized to fit its own box
+ * either clips or wraps, and the strip is exactly where a real finger sits, so anything
+ * drawn under or near it is unreadable while it's actually in use.
  */
 @Composable
 private fun TimelineRail(
     scale: RailScale,
     trackHeightPx: Float,
-    lensAnchor: Float? = null,
+    anchor: Float? = null,
 ) {
     val density = LocalDensity.current
     val ticks = remember(scale) { scale.ticks() }
-    val fineTicks = remember(scale, lensAnchor) { lensAnchor?.let { scale.fineTicks(it) } ?: emptyList() }
+    val fineTicks = remember(scale, anchor) { anchor?.let { scale.fineTicks(it) } ?: emptyList() }
 
     // Coarse ticks are spaced evenly along the *unwarped* track, which is exactly what
     // the lens's compressed far side ruins: several months' worth of ticks can warp into
@@ -336,13 +438,13 @@ private fun TimelineRail(
     // the unwarped layout already has each tick its own room — so this is computed once
     // per anchor rather than folded into the loop below.
     val visibleTicks =
-        remember(ticks, lensAnchor, trackHeightPx) {
-            val anchor = lensAnchor
-            if (anchor == null) {
+        remember(ticks, anchor, trackHeightPx) {
+            val a = anchor
+            if (a == null) {
                 ticks.map { it to it.fraction }
             } else {
                 val minGapPx = with(density) { 16.dp.toPx() } / trackHeightPx.coerceAtLeast(1f)
-                declutterTicks(ticks, minGapPx) { lensWarp(it, anchor) }
+                declutterTicks(ticks, minGapPx) { lensWarp(it, a) }
             }
         }
 
@@ -363,15 +465,17 @@ private fun TimelineRail(
                     ),
                 modifier =
                     Modifier
-                        .align(Alignment.TopStart)
-                        .offset(x = 8.dp, y = y - 8.dp),
+                        .align(Alignment.TopEnd)
+                        .wrapContentWidth(Alignment.End, unbounded = true)
+                        .offset(x = -(HIT_TARGET_WIDTH + COARSE_TICK_GAP), y = y - 8.dp),
             )
         }
-        // Drawn after (so visually on top of) the coarse ticks, and indented further in,
-        // so a fine label landing at the same height as a coarse one is still legible
-        // rather than overprinted.
+        // Drawn after (so visually on top of) the coarse ticks, and given *more*
+        // clearance from the touch strip, not less: these are the labels a finger is
+        // actually trying to read while dragging, so they're the ones that most need to
+        // sit clear of it rather than tucked in close where a real fingertip covers them.
         for (tick in fineTicks) {
-            val y = with(density) { (lensWarp(tick.fraction, lensAnchor!!) * trackHeightPx).toDp() }
+            val y = with(density) { (lensWarp(tick.fraction, anchor!!) * trackHeightPx).toDp() }
             Text(
                 text = tick.label,
                 style = MaterialTheme.typography.labelSmall,
@@ -381,8 +485,9 @@ private fun TimelineRail(
                         .copy(alpha = if (tick.major) 1f else 0.7f),
                 modifier =
                     Modifier
-                        .align(Alignment.TopStart)
-                        .offset(x = 36.dp, y = y - 8.dp),
+                        .align(Alignment.TopEnd)
+                        .wrapContentWidth(Alignment.End, unbounded = true)
+                        .offset(x = -(HIT_TARGET_WIDTH + FINE_TICK_GAP), y = y - 8.dp),
             )
         }
     }
