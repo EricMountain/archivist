@@ -411,7 +411,7 @@ fun TimelineScrollbar(
  * dragging". */
 private data class Scrub(val day: LocalDate?)
 
-private val HIT_TARGET_WIDTH = 48.dp
+private val HIT_TARGET_WIDTH = 148.dp
 // Wide enough that a tick label — drawn growing left from just past the touch strip,
 // see TimelineRail — fits entirely within the rail's own background rather than
 // spilling out past its left edge onto plain, untinted screen: HIT_TARGET_WIDTH (48dp)
