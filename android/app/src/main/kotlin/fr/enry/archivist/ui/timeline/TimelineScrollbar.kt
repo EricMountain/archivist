@@ -501,9 +501,9 @@ private fun TimelineRail(
                     ),
                 modifier =
                     Modifier
-                        .align(Alignment.TopEnd)
-                        .wrapContentWidth(Alignment.End, unbounded = true)
-                        .offset(x = -(HIT_TARGET_WIDTH + COARSE_TICK_GAP), y = y - 8.dp),
+                        .align(Alignment.TopStart)
+                        .wrapContentWidth(Alignment.Start, unbounded = true)
+                        .offset(x = COARSE_TICK_GAP, y = y - 8.dp),
             )
         }
         // Drawn after (so visually on top of) the coarse ticks, and given *more*
@@ -521,9 +521,9 @@ private fun TimelineRail(
                         .copy(alpha = if (tick.major) 1f else 0.7f),
                 modifier =
                     Modifier
-                        .align(Alignment.TopEnd)
-                        .wrapContentWidth(Alignment.End, unbounded = true)
-                        .offset(x = -(HIT_TARGET_WIDTH + FINE_TICK_GAP), y = y - 8.dp),
+                        .align(Alignment.TopStart)
+                        .wrapContentWidth(Alignment.Start, unbounded = true)
+                        .offset(x = FINE_TICK_GAP, y = y - 8.dp),
             )
         }
     }
