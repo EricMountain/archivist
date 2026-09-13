@@ -360,13 +360,13 @@ fun TimelineScrollbar(
                 },
         )
 
-        if (peeking) {
-            PositionCursor(
-                fraction = thumbFraction,
-                trackHeightPx = trackHeightPx,
-                modifier = Modifier.align(Alignment.TopEnd),
-            )
-        }
+//        if (peeking) {
+//            PositionCursor(
+//                fraction = thumbFraction,
+//                trackHeightPx = trackHeightPx,
+//                modifier = Modifier.align(Alignment.TopEnd),
+//            )
+//        }
 
         ScrollbarThumb(
             fraction = thumbFraction,
