@@ -11,6 +11,8 @@ import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.PhotoDetailRepository
 import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.RenditionSummary
+import fr.enry.archivist.data.repo.RepairOutcome
+import fr.enry.archivist.data.repo.RepairRepository
 import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.launch
@@ -42,6 +44,18 @@ sealed interface DeleteUiState {
     data object Done : DeleteUiState
 
     data class Error(val message: String) : DeleteUiState
+}
+
+/** The "Repair thumbnails" menu action's state, keyed by nothing — same reasoning as
+ * [DeleteUiState]: only one repair is ever in flight at a time from this menu. */
+sealed interface RepairUiState {
+    data object Idle : RepairUiState
+
+    data object InProgress : RepairUiState
+
+    data object Done : RepairUiState
+
+    data class Error(val message: String) : RepairUiState
 }
 
 /** One photo's detail fetch/decrypt, keyed by photoId in [DetailViewModel.details] —
@@ -85,6 +99,7 @@ class DetailViewModel
         photoRepository: PhotoRepository,
         private val photoDetailRepository: PhotoDetailRepository,
         private val deleteRepository: DeleteRepository,
+        private val repairRepository: RepairRepository,
         instanceStore: InstanceStore,
     ) : ViewModel() {
         val photos: StateFlow<List<PhotoEntity>> =
@@ -188,5 +203,29 @@ class DetailViewModel
 
         fun dismissDelete() {
             _deleteState.value = DeleteUiState.Idle
+        }
+
+        private val _repairState = MutableStateFlow<RepairUiState>(RepairUiState.Idle)
+        val repairState: StateFlow<RepairUiState> = _repairState.asStateFlow()
+
+        /** [primaryRenditionId] is [PhotoDetail.primaryRend] when the detail fetch has
+         * resolved by the time the user taps "Repair" — see [RepairRepository]'s own
+         * doc for how a null one is handled. */
+        fun repairPhoto(
+            photo: PhotoEntity,
+            primaryRenditionId: String?,
+        ) {
+            _repairState.value = RepairUiState.InProgress
+            viewModelScope.launch {
+                _repairState.value =
+                    when (val outcome = repairRepository.repairThumbnails(photo.photoId, primaryRenditionId, photo.encDek)) {
+                        RepairOutcome.Done -> RepairUiState.Done
+                        is RepairOutcome.Error -> RepairUiState.Error(outcome.message)
+                    }
+            }
+        }
+
+        fun dismissRepair() {
+            _repairState.value = RepairUiState.Idle
         }
     }

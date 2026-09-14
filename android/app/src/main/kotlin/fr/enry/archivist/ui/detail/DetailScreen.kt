@@ -30,6 +30,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -93,6 +95,15 @@ fun DetailScreen(
     val originals by viewModel.originals.collectAsStateWithLifecycle()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
     val deleteState by viewModel.deleteState.collectAsStateWithLifecycle()
+    val repairState by viewModel.repairState.collectAsStateWithLifecycle()
+
+    // DetailViewModel is retained across opens (hiltViewModel() resolves to the
+    // Activity's own ViewModelStore — see the deleteState reset below for the same
+    // gotcha), so a Done/Error left over from repairing a *previous* photo would
+    // otherwise still be showing the moment this screen opens on a different one.
+    // Unlike deleteState, nothing else here ever transitions repairState back to
+    // Idle on its own (repair doesn't navigate away), so this has to do it explicitly.
+    LaunchedEffect(Unit) { viewModel.dismissRepair() }
 
     if (photos.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -106,6 +117,7 @@ fun DetailScreen(
     val initialPage = remember { photos.indexOfFirst { it.photoId == initialPhotoId }.coerceAtLeast(0) }
     val pagerState = rememberPagerState(initialPage = initialPage) { photos.size }
     val currentPhoto = photos.getOrNull(pagerState.currentPage.coerceIn(0, photos.lastIndex))
+    val currentDetail = currentPhoto?.let { photo -> (details[photo.photoId] as? PhotoDetailUiState.Loaded)?.detail }
 
     LaunchedEffect(pagerState.currentPage, photos.size) {
         photos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
@@ -157,8 +169,27 @@ fun DetailScreen(
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = onBack) { Text("← Back") }
-            TextButton(onClick = { showDeleteDialog = true }, enabled = deleteState !is DeleteUiState.InProgress) {
-                Text("Delete")
+            var showMenu by remember { mutableStateOf(false) }
+            Box {
+                TextButton(onClick = { showMenu = true }) { Text("⋮") }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Repair thumbnails") },
+                        enabled = repairState !is RepairUiState.InProgress,
+                        onClick = {
+                            showMenu = false
+                            currentPhoto?.let { viewModel.repairPhoto(it, currentDetail?.primaryRend) }
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        enabled = deleteState !is DeleteUiState.InProgress,
+                        onClick = {
+                            showMenu = false
+                            showDeleteDialog = true
+                        },
+                    )
+                }
             }
         }
 
@@ -169,6 +200,29 @@ fun DetailScreen(
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
+        }
+
+        when (repairState) {
+            is RepairUiState.Error ->
+                Text(
+                    "Couldn't repair: ${(repairState as RepairUiState.Error).message}",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            RepairUiState.Done ->
+                Text(
+                    "Thumbnails repaired.",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            RepairUiState.InProgress ->
+                Text(
+                    "Repairing…",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            RepairUiState.Idle -> {}
         }
 
         if (isLandscape) {
@@ -212,7 +266,6 @@ fun DetailScreen(
         }
     }
 
-    val currentDetail = currentPhoto?.let { photo -> (details[photo.photoId] as? PhotoDetailUiState.Loaded)?.detail }
     val activeOriginal = currentDetail?.renditions?.firstNotNullOfOrNull { r -> originals[r.renditionId] }
     if (activeOriginal != null) {
         // Keyed on orientation: a Dialog opens its own separate Android Window (see the
@@ -409,7 +462,7 @@ private fun MetadataPanel(
  * above the gesture bar) but wide in landscape, where a 3-button nav bar can occupy an
  * entire side and the gap read as "the image is offset". `false` here makes the dialog
  * genuinely edge-to-edge like the rest of the app, matching window insets rather than
- * avoiding them -- see the `Close` button below for the one place that then needs its
+ * avoiding them -- see the `← Back` button below for the one place that then needs its
  * own inset padding back.
  */
 @Composable
@@ -430,7 +483,7 @@ private fun OriginalOverlay(
                 is OriginalUiState.Error ->
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Couldn't load the original: ${state.message}")
-                        TextButton(onClick = onDismiss) { Text("Close") }
+                        TextButton(onClick = onDismiss) { Text("← Back") }
                     }
                 is OriginalUiState.Ready -> {
                     val isVideo = state.mime.startsWith("video/")
@@ -440,17 +493,17 @@ private fun OriginalOverlay(
                         }
                     var scale by remember { mutableFloatStateOf(1f) }
                     var offset by remember { mutableStateOf(Offset.Zero) }
-                    // A Box, not a Column with Close stacked above the image: a Column
+                    // A Box, not a Column with ← Back stacked above the image: a Column
                     // gives each unweighted child the parent's full incoming height, so
                     // the image (fillMaxSize) got the *whole* screen height stacked below
-                    // the Close row instead of the remainder -- its layout bounds ran
-                    // past the bottom of the screen by the Close row's height, and since
+                    // the back row instead of the remainder -- its layout bounds ran
+                    // past the bottom of the screen by the back row's height, and since
                     // ContentScale.Fit centers within those (too-tall, too-low) bounds,
                     // the visible image ended up offset and clipped. Confirmed live,
                     // exactly matching the reported bug -- barely visible in portrait
-                    // (the Close row is a small fraction of a tall screen) but obvious in
+                    // (the back row is a small fraction of a tall screen) but obvious in
                     // landscape, where it's a much bigger fraction of the short screen.
-                    // A Box with the image filling it and Close layered on top as an
+                    // A Box with the image filling it and ← Back layered on top as an
                     // overlay gives the image the true full-screen bounds either way.
                     Box(Modifier.fillMaxSize()) {
                         if (isVideo) {
@@ -495,12 +548,15 @@ private fun OriginalOverlay(
                         }
                         // decorFitsSystemWindows = false above means this window no
                         // longer clears the status bar for free (see the class doc) --
-                        // without this, Close renders under the clock/battery icons
+                        // without this, ← Back renders under the clock/battery icons
                         // again, the same problem the pre-Dialog Box overlay had.
+                        // TopStart, not TopEnd: consistency with DetailScreen's and
+                        // TimelineScreen's own top bars, both of which put back
+                        // navigation on the left.
                         TextButton(
                             onClick = onDismiss,
-                            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding(),
-                        ) { Text("Close") }
+                            modifier = Modifier.align(Alignment.TopStart).statusBarsPadding(),
+                        ) { Text("← Back") }
                     }
                 }
             }

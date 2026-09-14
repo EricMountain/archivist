@@ -15,6 +15,7 @@ import {
   getPhotosHistogram,
   getTrash,
   patchRendition,
+  postPhotoThumbs,
   postRestore,
 } from "./routes/photos";
 import { getFacetPage, getFacets } from "./routes/facets";
@@ -63,6 +64,7 @@ export const routes: Record<string, RouteEntry> = {
     authMode: "owner",
   },
   "POST /photos/{photoId}/restore": { handler: postRestore, authMode: "owner" },
+  "POST /photos/{photoId}/thumbs": { handler: postPhotoThumbs, authMode: "owner" },
 
   "GET /trash": { handler: getTrash, authMode: "owner" },
 

@@ -84,6 +84,7 @@ authorization model in one sentence.
 | `DELETE /photos/{photoId}` | Trashes an asset (soft delete, tombstone). | Owner |
 | `DELETE /photos/{photoId}/renditions/{renditionId}` | Trashes one rendition; trashing the last rendition trashes the asset. | Owner |
 | `POST /photos/{photoId}/restore` | Restores a trashed asset before it's purged. | Owner |
+| `POST /photos/{photoId}/thumbs` | Repairs one or more thumbnail rungs on an already-uploaded asset: same "descriptors in, presigned PUT URLs out" shape as `POST /uploads`' thumbnail handling, reused directly — see "Changing the ladder later" in design.md for why this has to be client-driven (the server never holds plaintext pixels). Merges into the existing `#META.thumbs` map rather than replacing it, so resending just the broken size(s) never erases a still-good one. | Owner |
 | `GET /trash` | Lists trashed assets pending purge, including any blocked-re-upload-attempt counters. | Owner |
 | `GET /facets` | Facet vocabulary (labels, cameras, devices, years). | Owner |
 | `GET /facets/{type}/{value}` | Assets matching one facet value, paginated. | Owner |

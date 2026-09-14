@@ -18,6 +18,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -220,7 +222,22 @@ fun TimelineScreen(
 
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = { showSettings = true }) { Text("Settings") }
+            // A 3-dot menu rather than a bare "Settings" button — for consistency with
+            // DetailScreen's own top bar (plan step 2.12's repair/delete menu), even
+            // though Settings is currently its only entry.
+            var showMenu by remember { mutableStateOf(false) }
+            Box {
+                TextButton(onClick = { showMenu = true }) { Text("⋮") }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Settings") },
+                        onClick = {
+                            showMenu = false
+                            showSettings = true
+                        },
+                    )
+                }
+            }
         }
         TimelineGrid(
             items = items,

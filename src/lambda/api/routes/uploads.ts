@@ -32,13 +32,15 @@ import type { MetaItem, RenditionItem, TakenAtSrc, ThumbEntry, TzSrc } from "@ar
 import { ok, parseJsonBody } from "../http";
 import type { ApiRequest, ApiResponse, RouteHandler } from "../http";
 
-const THUMB_SIZES = [256, 1024, 2048] as const;
-type ThumbSize = (typeof THUMB_SIZES)[number];
+export const THUMB_SIZES = [256, 1024, 2048] as const;
+export type ThumbSize = (typeof THUMB_SIZES)[number];
 
-interface ThumbDescriptor {
+export interface ThumbDescriptor {
   bytes: number;
   iv: string;
 }
+
+export type ThumbDescriptorMap = Partial<Record<`${ThumbSize}`, ThumbDescriptor>>;
 
 interface UploadBody {
   path: string;
@@ -59,7 +61,7 @@ interface UploadBody {
   encKeyId: string;
   encIv: string;
   encChunkSize: number;
-  thumbs?: Partial<Record<`${ThumbSize}`, ThumbDescriptor>>;
+  thumbs?: ThumbDescriptorMap;
   reAddDeleted?: boolean;
   groupWith?: string;
   noGroup?: boolean;
@@ -163,10 +165,17 @@ function buildRendition(args: BuildRenditionArgs): Omit<RenditionItem, "pk" | "s
   };
 }
 
-async function presignedThumbs(
+/** Presigns a fresh PUT URL for each descriptor entry against this asset's
+ * deterministic thumbnail keys ([thumbKey] depends only on ownerId/photoId/size, so
+ * repairing or replacing a thumbnail never orphans the old object — it's overwritten
+ * in place) and builds the [ThumbEntry] map [setThumbs] persists. Shared by the
+ * create/attach/resume branches above and by `postPhotoThumbs` (`routes/photos.ts`) —
+ * the latter is the same "presign, then persist once the client confirms" shape, just
+ * without a rendition upload alongside it. */
+export async function presignedThumbs(
   ownerId: string,
   photoId: string,
-  descriptors: UploadBody["thumbs"],
+  descriptors: ThumbDescriptorMap | undefined,
 ): Promise<{ thumbs: Record<number, ThumbEntry>; uploads: Record<number, string> }> {
   const thumbs: Record<number, ThumbEntry> = {};
   const uploads: Record<number, string> = {};
@@ -545,7 +554,7 @@ async function resumeUpload(
 // Fills in thumbs on the just-created #META item. Kept out of the create
 // transaction because the thumbnail S3 keys depend on photoId, which the
 // transaction itself mints.
-async function setThumbs(
+export async function setThumbs(
   ownerId: string,
   photoId: string,
   thumbs: Record<number, ThumbEntry>,

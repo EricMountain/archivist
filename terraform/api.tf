@@ -115,6 +115,7 @@ locals {
     "DELETE /photos/{photoId}",
     "DELETE /photos/{photoId}/renditions/{renditionId}",
     "POST /photos/{photoId}/restore",
+    "POST /photos/{photoId}/thumbs",
     "GET /trash",
     "GET /facets",
     "GET /facets/{type}/{value}",

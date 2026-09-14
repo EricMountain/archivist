@@ -92,6 +92,31 @@ interface ArchivistApi {
         @Body body: PostUploadRequest,
     ): Response<PostUploadResponse>
 
+    /** The "repair a photo" action's server half — `POST /photos/{photoId}/thumbs`
+     * (api.md). Same shape as [postUpload]'s own thumbnail handling (descriptors in,
+     * presigned PUT URLs out), just without a rendition alongside it: this asset's
+     * original is already uploaded, only its derived thumbnails are being replaced.
+     * `Response<T>`, not a bare return type, for the same reason as [postUpload] — a
+     * `404` (unknown photoId) is an ordinary outcome [fr.enry.archivist.data.repo.RepairRepository]
+     * checks for via `isSuccessful`, not something that should throw on its own. */
+    @POST
+    suspend fun postPhotoThumbs(
+        @Url url: String,
+        @Body body: PostPhotoThumbsRequest,
+    ): Response<PostPhotoThumbsResponse>
+
+    /** The same `GET /photos/{photoId}` endpoint [getPhoto] calls, decoded instead as
+     * [TimelineEntryDto] — the shape [fr.enry.archivist.data.repo.PhotoRepository]'s Room
+     * cache actually needs (`thumbs`/`status` included, unlike [PhotoMetaDto]'s
+     * deliberately narrower subset). Used only after a repair: refetching this one row
+     * and upserting it directly is what makes the freshly-repaired thumbnails show up
+     * without waiting for [fr.enry.archivist.data.repo.UploadEvents]'s "newest end of
+     * the range" refresh, which a repaired-but-older photo would never fall inside. */
+    @GET
+    suspend fun getPhotoAsTimelineEntry(
+        @Url url: String,
+    ): PhotoAsTimelineEntryResponse
+
     /** Plan step 2.11's `RemoteMediator` calls this once per page — see
      * [fr.enry.archivist.data.repo.TimelineRemoteMediator]. [cursor] is the opaque
      * string `dto.ts`'s `GET /photos` returns, never constructed client-side. [from]/
@@ -418,6 +443,24 @@ data class RenditionDto(
 
 @Serializable
 data class PhotoDetailResponse(val meta: PhotoMetaDto, val renditions: List<RenditionDto>)
+
+/** `POST /photos/{photoId}/thumbs`'s body — one [ThumbDescriptorDto] per size being
+ * repaired, keyed the same string-size way as [PostUploadRequest.thumbs]. Only the
+ * sizes actually included are touched server-side; the rest of `#META.thumbs` is left
+ * alone (api.md). */
+@Serializable
+data class PostPhotoThumbsRequest(val thumbs: Map<String, ThumbDescriptorDto>)
+
+@Serializable
+data class PostPhotoThumbsResponse(val thumbUploads: Map<String, String>)
+
+/** `GET /photos/{photoId}`'s body, decoded as the same [TimelineEntryDto] shape `GET
+ * /photos` itself returns — see [ArchivistApi.getPhotoAsTimelineEntry]'s own doc for
+ * why. Ignoring the response's other top-level fields (`renditions`, `facets`) is
+ * exactly what `PhotoDetailResponse`/`PhotoMetaDto` already do for the reverse
+ * subset, just the other way around. */
+@Serializable
+data class PhotoAsTimelineEntryResponse(val meta: TimelineEntryDto)
 
 /** One `GET /trash` entry (`routes/photos.ts`'s `getTrash`) — the same shape as
  * [TimelineEntryDto] plus, when the asset's primary rendition has a `HASH` pointer with

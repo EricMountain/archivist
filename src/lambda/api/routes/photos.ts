@@ -2,12 +2,14 @@
 // and 1.12.
 import { ApiError } from "@archivist/core/errors";
 import { toIsoUtc } from "@archivist/core/time";
-import { getAssetPartition } from "@archivist/core/repo/media";
+import { getAssetPartition, getMetaItem } from "@archivist/core/repo/media";
 import { timelineBounds, timelinePage, trashPage } from "@archivist/core/repo/timeline";
 import { histogramVersion, readHistogram } from "@archivist/core/repo/histogram";
 import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
 import { getHashPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
+import { presignedThumbs, setThumbs } from "./uploads";
+import type { ThumbDescriptorMap } from "./uploads";
 import { timelineEntryDto } from "../dto";
 import { ifNoneMatch, noContent, notModified, ok, okCacheable, parseJsonBody } from "../http";
 import type { ApiRequest, ApiResponse, RouteHandler } from "../http";
@@ -183,4 +185,44 @@ export const postRestore: RouteHandler = async (req: ApiRequest) => {
 
   await restoreAsset(ownerId, photoId);
   return noContent();
+};
+
+interface PhotoThumbsBody {
+  thumbs?: ThumbDescriptorMap;
+}
+
+/**
+ * `POST /photos/{photoId}/thumbs` — regenerating a broken thumbnail. design.md's
+ * "Changing the ladder later" already establishes the model this reuses: thumbnails
+ * are client-generated, so fixing one requires a client that holds the original to
+ * regenerate and re-upload, not a server-side reprocess. This is that flow's one-photo
+ * counterpart — same "presign against deterministic keys, persist once the client
+ * confirms" shape [presignedThumbs]/[setThumbs] already implement for `POST /uploads`,
+ * reused here verbatim rather than duplicated. Deliberately does **not** touch
+ * `renditions` or any other `#META` field — a repair only ever replaces derived
+ * thumbnails, never the original bytes they were derived from.
+ */
+export const postPhotoThumbs: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const photoId = req.params["photoId"];
+  if (!photoId) throw ApiError.validation("photoId is required");
+
+  const meta = await getMetaItem(ownerId, photoId);
+  if (!meta) throw ApiError.notFound("photo not found");
+
+  const body = parseJsonBody<PhotoThumbsBody>(req);
+  if (!body.thumbs || Object.keys(body.thumbs).length === 0) {
+    throw ApiError.validation("thumbs is required");
+  }
+
+  // Merged with the existing map, not a bare replace: unlike POST /uploads (whose
+  // callers always send the full ladder together — see Thumbnailer's own "all three
+  // sizes are always produced together"), a repair might reasonably resend only the
+  // sizes that were actually missing/corrupt. setThumbs itself does a plain attribute
+  // SET, so a caller here that omitted a still-good size would otherwise silently
+  // erase it.
+  const { thumbs, uploads } = await presignedThumbs(ownerId, photoId, body.thumbs);
+  await setThumbs(ownerId, photoId, { ...meta.thumbs, ...thumbs });
+
+  return ok({ thumbUploads: uploads });
 };
