@@ -2,14 +2,17 @@
 // and 1.12.
 import { ApiError } from "@archivist/core/errors";
 import { toIsoUtc } from "@archivist/core/time";
+import { newUlid } from "@archivist/core/ids";
+import { derivedBucket, presignPut } from "@archivist/core/s3";
 import { getAssetPartition, getMetaItem } from "@archivist/core/repo/media";
 import { timelineBounds, timelinePage, trashPage } from "@archivist/core/repo/timeline";
 import { histogramVersion, readHistogram } from "@archivist/core/repo/histogram";
 import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
 import { getHashPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
-import { presignedThumbs, setThumbs } from "./uploads";
+import { setThumbs, THUMB_SIZES } from "./uploads";
 import type { ThumbDescriptorMap } from "./uploads";
+import type { ThumbEntry } from "@archivist/core/items";
 import { timelineEntryDto } from "../dto";
 import { ifNoneMatch, noContent, notModified, ok, okCacheable, parseJsonBody } from "../http";
 import type { ApiRequest, ApiResponse, RouteHandler } from "../http";
@@ -192,13 +195,53 @@ interface PhotoThumbsBody {
 }
 
 /**
+ * Presigns against a **fresh** key per repair call, deliberately *not* the plain
+ * `thumbKey(ownerId, photoId, size)` [presignedThumbs] (`uploads.ts`) uses for a
+ * first-time upload. `thumbKey`'s own doc calls those keys "ULID-derived and
+ * therefore immutable" — that's exactly what lets `terraform/cloudfront.tf`'s
+ * `thumbnails_immutable` cache policy cache `/thumbs/*` for a full year
+ * (`default_ttl = max_ttl = 31536000`) with no `Cache-Control` from S3 needed. A
+ * repair that overwrote that same key in place would still work at the S3 layer, but
+ * every CloudFront edge that had already cached the broken response — the whole
+ * reason a repair was needed — would keep serving it for up to a year, and so would
+ * any client-side image cache keyed on the same URL. **Found live**: a repair that did
+ * exactly this reported success (the S3 object and `#META.thumbs` were both genuinely
+ * fixed) but the app's own timeline kept showing a blank square, since nothing ever
+ * told CloudFront the cached response at that URL was stale. Minting a new key per
+ * repair — `th/<ownerId>/<photoId>/<generation>/<size>` — sidesteps the problem rather
+ * than solving cache invalidation: the URL has simply never been cached anywhere, by
+ * construction, so there's nothing stale to serve. The original object at the old key
+ * is left in place (orphaned, never deleted) rather than cleaned up here — S3 storage
+ * cost for one broken thumbnail's few hundred KB isn't worth the complexity of also
+ * deleting it in the same request.
+ */
+async function presignedRepairThumbs(
+  ownerId: string,
+  photoId: string,
+  descriptors: ThumbDescriptorMap,
+): Promise<{ thumbs: Record<number, ThumbEntry>; uploads: Record<number, string> }> {
+  const generation = newUlid();
+  const thumbs: Record<number, ThumbEntry> = {};
+  const uploads: Record<number, string> = {};
+  for (const size of THUMB_SIZES) {
+    const descriptor = descriptors[`${size}`];
+    if (!descriptor) continue;
+    const key = `th/${ownerId}/${photoId}/${generation}/${size}`;
+    thumbs[size] = { bucket: derivedBucket(), key, iv: descriptor.iv, bytes: descriptor.bytes };
+    uploads[size] = await presignPut(derivedBucket(), key);
+  }
+  return { thumbs, uploads };
+}
+
+/**
  * `POST /photos/{photoId}/thumbs` — regenerating a broken thumbnail. design.md's
  * "Changing the ladder later" already establishes the model this reuses: thumbnails
  * are client-generated, so fixing one requires a client that holds the original to
  * regenerate and re-upload, not a server-side reprocess. This is that flow's one-photo
- * counterpart — same "presign against deterministic keys, persist once the client
- * confirms" shape [presignedThumbs]/[setThumbs] already implement for `POST /uploads`,
- * reused here verbatim rather than duplicated. Deliberately does **not** touch
+ * counterpart — same "presign, persist once the client confirms" shape [setThumbs]
+ * already implements for `POST /uploads`, reused here — except the keys presigned
+ * against are fresh per call, not the deterministic ones a first-time upload uses; see
+ * [presignedRepairThumbs]'s own doc for why. Deliberately does **not** touch
  * `renditions` or any other `#META` field — a repair only ever replaces derived
  * thumbnails, never the original bytes they were derived from.
  */
@@ -221,7 +264,7 @@ export const postPhotoThumbs: RouteHandler = async (req: ApiRequest) => {
   // sizes that were actually missing/corrupt. setThumbs itself does a plain attribute
   // SET, so a caller here that omitted a still-good size would otherwise silently
   // erase it.
-  const { thumbs, uploads } = await presignedThumbs(ownerId, photoId, body.thumbs);
+  const { thumbs, uploads } = await presignedRepairThumbs(ownerId, photoId, body.thumbs);
   await setThumbs(ownerId, photoId, { ...meta.thumbs, ...thumbs });
 
   return ok({ thumbUploads: uploads });

@@ -128,6 +128,39 @@ describe.skipIf(!RUN)("POST /photos/{photoId}/thumbs", () => {
     expect(meta?.thumbs[1024]).toMatchObject({ iv: "first", bytes: 2 });
   });
 
+  it("mints a fresh S3 key per repair, never the deterministic upload-time key", async () => {
+    const { userId, ownerId } = await newOwner();
+    const photoId = await newAsset(ownerId, userId);
+
+    const response = await postPhotoThumbs(
+      thumbsReq(ownerId, userId, photoId, { thumbs: { "256": { bytes: 1, iv: "x" } } }),
+    );
+    const url = (response.body as { thumbUploads: Record<string, string> }).thumbUploads["256"]!;
+
+    const { meta } = await getAssetPartition(ownerId, photoId);
+    const key = meta?.thumbs[256]?.key;
+    expect(key).toBeDefined();
+    // The plain key POST /uploads would have used -- the whole point is this is never
+    // reused for a repair, since terraform/cloudfront.tf caches it for a year.
+    expect(key).not.toBe(`th/${ownerId}/${photoId}/256`);
+    expect(url).toContain(key!);
+  });
+
+  it("a second repair gets a different key than the first, proving CloudFront can never have it cached", async () => {
+    const { userId, ownerId } = await newOwner();
+    const photoId = await newAsset(ownerId, userId);
+
+    await postPhotoThumbs(thumbsReq(ownerId, userId, photoId, { thumbs: { "256": { bytes: 1, iv: "a" } } }));
+    const firstKey = (await getAssetPartition(ownerId, photoId)).meta?.thumbs[256]?.key;
+
+    await postPhotoThumbs(thumbsReq(ownerId, userId, photoId, { thumbs: { "256": { bytes: 2, iv: "b" } } }));
+    const secondKey = (await getAssetPartition(ownerId, photoId)).meta?.thumbs[256]?.key;
+
+    expect(firstKey).toBeDefined();
+    expect(secondKey).toBeDefined();
+    expect(secondKey).not.toBe(firstKey);
+  });
+
   it("rejects an unknown photoId", async () => {
     const { userId, ownerId } = await newOwner();
     await expect(
