@@ -49,12 +49,16 @@ import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.ui.detail.DetailScreen
+import fr.enry.archivist.ui.detail.DetailViewModel
+import fr.enry.archivist.ui.detail.RepairUiState
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.mapNotNull
@@ -207,7 +211,27 @@ fun TimelineScreen(
     var selectedPhotoId by remember { mutableStateOf<String?>(null) }
     val openPhotoId = selectedPhotoId
     if (openPhotoId != null) {
-        DetailScreen(initialPhotoId = openPhotoId, onBack = { selectedPhotoId = null }, modifier = modifier)
+        // Same Activity-scoped instance DetailScreen's own hiltViewModel() call resolves
+        // to (see MainActivity's/DetailViewModel's own doc on that) -- read here only for
+        // repairState, so a repair while DetailScreen is open can be detected on the way
+        // back out. See PhotoRepository.stageLandingOn's own doc for why that matters.
+        val detailViewModel: DetailViewModel = hiltViewModel()
+        val repairState by detailViewModel.repairState.collectAsStateWithLifecycle()
+        val scope = rememberCoroutineScope()
+        DetailScreen(
+            initialPhotoId = openPhotoId,
+            onBack = {
+                val repaired = repairState is RepairUiState.Done || repairState is RepairUiState.Warning
+                selectedPhotoId = null
+                if (repaired) {
+                    scope.launch {
+                        viewModel.stageLandingOn(openPhotoId)
+                        items.refresh()
+                    }
+                }
+            },
+            modifier = modifier,
+        )
         return
     }
 

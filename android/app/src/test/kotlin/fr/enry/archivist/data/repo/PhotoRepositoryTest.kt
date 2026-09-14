@@ -321,4 +321,30 @@ class PhotoRepositoryTest {
         runTest {
             assertEquals(null, repository.fetchTimelineBounds())
         }
+
+    @Test
+    fun `stageLandingOn primes the jump coordinator's landing from a cached row, with no network call`() =
+        runTest {
+            db.photoDao().upsertAll(
+                listOf(
+                    PhotoEntity(
+                        "p1", "2024-01-01T00:00:00.000Z", 0, "image/jpeg", 1, 1,
+                        AssetStatus.READY, emptyMap(), "dek", "mk-1",
+                    ),
+                ),
+            )
+
+            repository.stageLandingOn("p1")
+
+            assertEquals(TimelineKey("2024-01-01T00:00:00.000Z", "p1"), jumpCoordinator.landing)
+            assertEquals(0, server.requestCount)
+        }
+
+    @Test
+    fun `stageLandingOn for a photo not in the cache is a no-op`() =
+        runTest {
+            repository.stageLandingOn("unknown")
+
+            assertEquals(null, jumpCoordinator.landing)
+        }
 }
