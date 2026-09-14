@@ -78,18 +78,16 @@ import java.util.Locale
 @Composable
 fun DetailScreen(
     initialPhotoId: String,
-    onBack: () -> Unit,
+    // The photo actually on screen when the user leaves -- not necessarily
+    // [initialPhotoId], since swiping between the two can move it -- so a caller that
+    // needs to restore the grid to *exactly* where this screen leaves off (see
+    // TimelineScreen's own repair-landing doc) has it without guessing. Null only when
+    // [photos] never resolved anything to leave from (e.g. the delete-Done path below,
+    // where the photo departing is exactly why there's nothing left to land on).
+    onBack: (currentPhotoId: String?) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: DetailViewModel = hiltViewModel(),
 ) {
-    // The system back gesture/button has nothing else to consume here (see
-    // MainActivity's own doc: no nav library, no back stack) -- without this it falls
-    // through to the Activity default and exits the app instead of returning to the
-    // grid. OriginalOverlay's own Dialog owns back while it's showing (a platform
-    // Dialog window claims the back key ahead of the Activity), so this doesn't
-    // interfere with dismissing that.
-    BackHandler(onBack = onBack)
-
     val photos by viewModel.photos.collectAsStateWithLifecycle()
     val details by viewModel.details.collectAsStateWithLifecycle()
     val originals by viewModel.originals.collectAsStateWithLifecycle()
@@ -119,6 +117,18 @@ fun DetailScreen(
     val currentPhoto = photos.getOrNull(pagerState.currentPage.coerceIn(0, photos.lastIndex))
     val currentDetail = currentPhoto?.let { photo -> (details[photo.photoId] as? PhotoDetailUiState.Loaded)?.detail }
 
+    // The system back gesture/button has nothing else to consume here (see
+    // MainActivity's own doc: no nav library, no back stack) -- without this it falls
+    // through to the Activity default and exits the app instead of returning to the
+    // grid. OriginalOverlay's own Dialog owns back while it's showing (a platform
+    // Dialog window claims the back key ahead of the Activity), so this doesn't
+    // interfere with dismissing that. Below the `photos.isEmpty()` guard above (rather
+    // than at the top of the function, where onBack's whole point -- reporting
+    // currentPhoto -- isn't resolvable yet): the photo this screen was opened on is
+    // already in [photos] by construction (it was just tapped from the grid), so that
+    // guard is a cold-start formality, not a real gap in back-button coverage here.
+    BackHandler(onBack = { onBack(currentPhoto?.photoId) })
+
     LaunchedEffect(pagerState.currentPage, photos.size) {
         photos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
     }
@@ -138,7 +148,9 @@ fun DetailScreen(
     LaunchedEffect(deleteState) {
         if (deleteState is DeleteUiState.Done) {
             viewModel.dismissDelete()
-            onBack()
+            // null, not currentPhoto?.photoId: that photo is exactly what just got
+            // deleted, so there's nothing left to land the grid back on.
+            onBack(null)
         }
     }
 
@@ -168,7 +180,7 @@ fun DetailScreen(
 
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = onBack) { Text("← Back") }
+            TextButton(onClick = { onBack(currentPhoto?.photoId) }) { Text("← Back") }
             var showMenu by remember { mutableStateOf(false) }
             Box {
                 TextButton(onClick = { showMenu = true }) { Text("⋮") }

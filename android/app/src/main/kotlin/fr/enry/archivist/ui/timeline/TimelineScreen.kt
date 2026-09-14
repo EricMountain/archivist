@@ -220,12 +220,16 @@ fun TimelineScreen(
         val scope = rememberCoroutineScope()
         DetailScreen(
             initialPhotoId = openPhotoId,
-            onBack = {
+            onBack = { currentPhotoId ->
                 val repaired = repairState is RepairUiState.Done || repairState is RepairUiState.Warning
                 selectedPhotoId = null
-                if (repaired) {
+                // currentPhotoId -- wherever the pager actually ended up, which a swipe
+                // inside DetailScreen can have moved away from openPhotoId -- not the
+                // photo originally tapped, so the grid lands back exactly where the user
+                // left it rather than merely close to it.
+                if (repaired && currentPhotoId != null) {
                     scope.launch {
-                        viewModel.stageLandingOn(openPhotoId)
+                        viewModel.stageLandingOn(currentPhotoId)
                         items.refresh()
                     }
                 }
