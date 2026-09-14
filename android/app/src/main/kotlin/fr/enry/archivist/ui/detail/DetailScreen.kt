@@ -175,10 +175,13 @@ fun DetailScreen(
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                     DropdownMenuItem(
                         text = { Text("Repair thumbnails") },
-                        enabled = repairState !is RepairUiState.InProgress,
+                        // Needs the full detail (renditions/encDek), not just the grid's
+                        // own PhotoEntity -- briefly disabled right after opening, until
+                        // the LaunchedEffect above's ensureDetail() call resolves.
+                        enabled = repairState !is RepairUiState.InProgress && currentDetail != null,
                         onClick = {
                             showMenu = false
-                            currentPhoto?.let { viewModel.repairPhoto(it, currentDetail?.primaryRend) }
+                            currentDetail?.let { viewModel.repairPhoto(it) }
                         },
                     )
                     DropdownMenuItem(
@@ -213,6 +216,15 @@ fun DetailScreen(
             RepairUiState.Done ->
                 Text(
                     "Thumbnails repaired.",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            is RepairUiState.Warning ->
+                // Distinct from the Error color above: this repair *succeeded* --
+                // tertiary rather than error, since nothing here actually failed.
+                Text(
+                    (repairState as RepairUiState.Warning).message,
+                    color = MaterialTheme.colorScheme.tertiary,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
@@ -422,6 +434,7 @@ private fun MetadataPanel(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     detail.renditions.forEach { rendition ->
+                        Text(rendition.fileName(), style = MaterialTheme.typography.bodySmall)
                         val busy = originals[rendition.renditionId] is OriginalUiState.Loading
                         TextButton(
                             onClick = { onViewOriginal(rendition, detail.encDek) },
@@ -553,10 +566,13 @@ private fun OriginalOverlay(
                         // TopStart, not TopEnd: consistency with DetailScreen's and
                         // TimelineScreen's own top bars, both of which put back
                         // navigation on the left.
-                        TextButton(
-                            onClick = onDismiss,
+                        Row(
                             modifier = Modifier.align(Alignment.TopStart).statusBarsPadding(),
-                        ) { Text("← Back") }
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = onDismiss) { Text("← Back") }
+                            Text(state.fileName, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
@@ -619,6 +635,11 @@ private fun decodeOrientedBitmap(bytes: ByteArray): Bitmap? {
 internal val SummaryPanelSize = 200.dp
 
 internal fun RenditionSummary.label(): String = if (role == "raw") "RAW" else extensionLabels[ext.lowercase()] ?: ext.uppercase()
+
+/** [path] is `"<folderUri>/<displayName>"` (`UploadRepository`'s own `PostUploadRequest.path`)
+ * — the basename is the on-device file name a user actually recognizes, unlike the
+ * folder-qualified full path. */
+internal fun RenditionSummary.fileName(): String = path.substringAfterLast('/')
 
 internal val extensionLabels =
     mapOf(

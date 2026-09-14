@@ -1,5 +1,8 @@
 package fr.enry.archivist.data.repo
 
+import android.content.Context
+import android.net.Uri
+import dagger.hilt.android.qualifiers.ApplicationContext
 import fr.enry.archivist.crypto.Aad
 import fr.enry.archivist.crypto.EnvelopeCrypto
 import fr.enry.archivist.crypto.ImageLockedException
@@ -12,7 +15,9 @@ import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.PostPhotoThumbsRequest
 import fr.enry.archivist.data.remote.ThumbDescriptorDto
+import fr.enry.archivist.sync.Thumbnail
 import fr.enry.archivist.sync.Thumbnailer
+import java.io.File
 import java.io.IOException
 import java.util.Base64
 import javax.inject.Inject
@@ -31,24 +36,47 @@ import retrofit2.HttpException
 sealed interface RepairOutcome {
     data object Done : RepairOutcome
 
+    /** The repair itself succeeded, but not from the local file: nothing usable was
+     * found on this device (see [RepairRepository]'s own doc), so the primary
+     * rendition's already-uploaded ciphertext was downloaded from the instance and
+     * decrypted instead, exactly like "View original" does. Kept distinct from [Done]
+     * — worth surfacing, since it's a sign this device's own bookkeeping of "which
+     * local file produced this photo" was lost (app reinstall, the file itself moved
+     * or was deleted outside this app, ...), which repairing a *different* photo will
+     * likely hit again. */
+    data class Warning(val message: String) : RepairOutcome
+
     data class Error(val message: String) : RepairOutcome
 }
 
 /**
  * The "repair a photo" menu action: regenerates and re-uploads an asset's thumbnail
  * ladder when it came out blank — a device that died mid-thumbnail, an
- * [android.graphics.ImageDecoder] hiccup on one particular file, or similar. Deliberately
- * narrow, per design.md's "Changing the ladder later": thumbnails are client-generated,
- * so fixing one requires a client that still holds the original plaintext, not a
- * server-side reprocess (the server never holds pixels at all).
+ * [android.graphics.ImageDecoder] hiccup on one particular file, or similar. Per
+ * design.md's "Changing the ladder later", thumbnails are client-generated, so fixing
+ * one requires a client that holds the plaintext — the server never does — but that
+ * plaintext doesn't have to come from *this* local file specifically:
  *
- * That plaintext is [UploadQueueDao.getByPhotoId] — the same table [DeleteRepository]
- * already uses to map a `photoId` back to the local file(s) this device uploaded it
- * from. **Repair only works from the device that originally uploaded the photo, and
- * only while that local file still exists** (not deleted via "Remove from both", not
- * cleared by the user outside this app) — there is no fallback to re-downloading and
- * decrypting the original from S3 here; see this class's own STATUS.md note for why
- * that was scoped out rather than half-built.
+ * 1. **Local first**: [UploadQueueDao.getByPhotoId] — the same table [DeleteRepository]
+ *    already uses to map a `photoId` back to the local file(s) this device uploaded it
+ *    from — is tried first, since it needs no network round trip beyond the repair
+ *    upload itself.
+ * 2. **Server fallback**: when that comes up empty, or the file it points at can no
+ *    longer actually be opened (`IOException` from [Thumbnailer.generate]), the
+ *    primary rendition's already-uploaded original is downloaded and decrypted via
+ *    [PhotoDetailRepository.downloadOriginal] — the exact same "on demand, into a
+ *    `cacheDir` temp file, deleted right after" pattern [fr.enry.archivist.ui.detail.VideoPlayer]
+ *    already uses for playing a downloaded video original. This is squarely inside
+ *    design.md's own model, not an exception to it: the *client* still generates the
+ *    thumbnails from plaintext it holds, however briefly — the server is never asked
+ *    to reprocess anything.
+ *
+ * [UploadQueueDao] rows going stale (case 1 failing while the file is still genuinely
+ * on the device) is expected, not a bug to chase down per-occurrence: an Android app
+ * reinstall (e.g. switching signing keys between a debug and a release build) wipes
+ * Room — `upload_queue` included — while leaving `MediaStore`/the file itself
+ * completely untouched, since neither is owned by this app's own data. The fallback
+ * exists specifically so that common case still repairs cleanly instead of erroring.
  */
 @Singleton
 class RepairRepository
@@ -60,44 +88,58 @@ class RepairRepository
         private val photoDao: PhotoDao,
         private val thumbnailer: Thumbnailer,
         private val masterKeyHolder: MasterKeyHolder,
+        private val photoDetailRepository: PhotoDetailRepository,
         private val okHttpClient: OkHttpClient,
+        @ApplicationContext private val context: Context,
     ) {
-        /** [primaryRenditionId] picks which of this asset's local files to regenerate
-         * from when it has more than one (a RAW+JPEG pair) — the same file the grid/
-         * detail thumbnail is actually derived from server-side. Falls back to
-         * whichever uploaded local file this device has for the photo when the detail
-         * fetch hasn't resolved yet ([primaryRenditionId] null), which is right in the
-         * overwhelmingly common single-rendition case and only a guess for a
-         * not-yet-primary rendition on a multi-rendition asset. */
-        suspend fun repairThumbnails(
-            photoId: String,
-            primaryRenditionId: String?,
-            encDek: String,
-        ): RepairOutcome {
+        /** Regenerates from [PhotoDetail.primaryRend] — the same rendition the
+         * grid/detail thumbnail is actually derived from server-side — falling back to
+         * the first rendition listed when [PhotoDetail.primaryRend] is somehow absent. */
+        suspend fun repairThumbnails(detail: PhotoDetail): RepairOutcome {
             val masterKey = masterKeyHolder.current.value ?: return RepairOutcome.Error("locked — unlock to repair")
-            val candidates = uploadQueueDao.getByPhotoId(photoId).filter { it.state == UploadState.DONE && it.mime != null }
-            val row =
-                candidates.find { it.renditionId == primaryRenditionId } ?: candidates.firstOrNull()
-                    ?: return RepairOutcome.Error("original file not found on this device")
+            val rendition =
+                detail.renditions.find { it.renditionId == detail.primaryRend } ?: detail.renditions.firstOrNull()
+                    ?: return RepairOutcome.Error("this asset has no rendition to repair from")
 
             val instance = instanceStore.current.first() ?: return RepairOutcome.Error("no connected instance")
             val api = archivistApiFactory.create(instance.host, instance.document.region, instance.document.cognito.clientId)
             val apiBase = instance.document.apiBase
 
             return try {
-                val dek = masterKey.unwrapDek(decode(encDek))
-                val thumbnails = thumbnailer.generate(row.localUri, row.mime!!)
+                val dek = masterKey.unwrapDek(decode(detail.encDek))
+
+                val localRow =
+                    uploadQueueDao.getByPhotoId(detail.photoId)
+                        .find { it.state == UploadState.DONE && it.renditionId == rendition.renditionId && it.mime != null }
+
+                var usedFallback = false
+                val thumbnails =
+                    if (localRow != null) {
+                        try {
+                            thumbnailer.generate(localRow.localUri, localRow.mime!!)
+                        } catch (e: IOException) {
+                            // The row exists, but the file it points at can no longer be
+                            // opened (moved/deleted outside this app) -- fall through to
+                            // the server copy exactly as if the row hadn't been found.
+                            usedFallback = true
+                            generateFromServer(detail.photoId, detail.encDek, rendition)
+                        }
+                    } else {
+                        usedFallback = true
+                        generateFromServer(detail.photoId, detail.encDek, rendition)
+                    }
+
                 val encrypted =
                     thumbnails.map { t ->
                         val iv = EnvelopeCrypto.generateIv()
                         val ciphertext =
-                            WholeObjectCipher.encrypt(dek, iv, Aad.of(photoId, ObjectRef.Thumbnail(t.longestEdge)), t.bytes)
+                            WholeObjectCipher.encrypt(dek, iv, Aad.of(detail.photoId, ObjectRef.Thumbnail(t.longestEdge)), t.bytes)
                         EncryptedRepairThumb(t.longestEdge, iv, ciphertext)
                     }
                 val descriptors =
                     encrypted.associate { t -> t.size.toString() to ThumbDescriptorDto(t.ciphertext.size.toLong(), encode(t.iv)) }
 
-                val httpResponse = api.postPhotoThumbs(thumbsUrl(apiBase, photoId), PostPhotoThumbsRequest(descriptors))
+                val httpResponse = api.postPhotoThumbs(thumbsUrl(apiBase, detail.photoId), PostPhotoThumbsRequest(descriptors))
                 if (!httpResponse.isSuccessful) return RepairOutcome.Error("server rejected repair (HTTP ${httpResponse.code()})")
                 val body = httpResponse.body() ?: return RepairOutcome.Error("empty response body")
 
@@ -106,9 +148,16 @@ class RepairRepository
                     putBytes(url, t.ciphertext)
                 }
 
-                val refreshed = api.getPhotoAsTimelineEntry(photoUrl(apiBase, photoId))
+                val refreshed = api.getPhotoAsTimelineEntry(photoUrl(apiBase, detail.photoId))
                 photoDao.upsertAll(listOf(refreshed.meta.toEntity()))
-                RepairOutcome.Done
+
+                if (usedFallback) {
+                    RepairOutcome.Warning(
+                        "Repaired using the copy stored on the server — the original wasn't found on this device.",
+                    )
+                } else {
+                    RepairOutcome.Done
+                }
             } catch (e: ImageLockedException) {
                 RepairOutcome.Error("locked — unlock to repair")
             } catch (e: IOException) {
@@ -117,6 +166,31 @@ class RepairRepository
                 RepairOutcome.Error("HTTP ${e.code()}")
             } catch (e: Exception) {
                 RepairOutcome.Error(e.message ?: (e::class.simpleName ?: "couldn't regenerate the thumbnails"))
+            }
+        }
+
+        /** Downloads and decrypts [rendition]'s already-uploaded original (same call
+         * [fr.enry.archivist.ui.detail.DetailViewModel.viewOriginal] makes for "View
+         * original") into a `cacheDir` temp file, thumbnails it, and deletes the temp
+         * file immediately after — mirroring [fr.enry.archivist.ui.detail.VideoPlayer]'s
+         * own "decrypted plaintext never outlives this operation on disk" rule. A
+         * temp *file* rather than passing bytes directly: [Thumbnailer] only knows how
+         * to decode a content URI ([android.graphics.ImageDecoder]/
+         * [android.media.MediaMetadataRetriever] both need one), and writing a file is
+         * cheaper than teaching it a second, byte-array-based decode path for what's
+         * meant to be the uncommon fallback case. */
+        private suspend fun generateFromServer(
+            photoId: String,
+            encDek: String,
+            rendition: RenditionSummary,
+        ): List<Thumbnail> {
+            val bytes = photoDetailRepository.downloadOriginal(photoId, encDek, rendition)
+            val file = File.createTempFile("repair-", ".${rendition.ext}", context.cacheDir)
+            return try {
+                withContext(Dispatchers.IO) { file.writeBytes(bytes) }
+                thumbnailer.generate(Uri.fromFile(file).toString(), rendition.mime)
+            } finally {
+                file.delete()
             }
         }
 

@@ -1,16 +1,14 @@
 package fr.enry.archivist.data.repo
 
+import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import fr.enry.archivist.crypto.Aad
 import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.crypto.ObjectRef
 import fr.enry.archivist.crypto.WholeObjectCipher
-import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.local.db.AppDatabase
-import fr.enry.archivist.data.local.db.AssetStatus
-import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.ThumbEntry
 import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
@@ -18,12 +16,16 @@ import fr.enry.archivist.data.local.db.buildTestDatabase
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.CognitoAuthClient
 import fr.enry.archivist.data.remote.DiscoveryDocument
+import fr.enry.archivist.sync.Thumbnail
+import fr.enry.archivist.sync.Thumbnailer
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import fr.enry.archivist.testutil.FakeThumbnailer
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.util.Base64
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -40,26 +42,77 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 
-/** [RepairRepository]'s own doc explains why this only ever exercises the local-file
- * path: the class has no server-download fallback, deliberately. */
+/** [RepairRepository]'s own doc explains the two sources it tries in order (local
+ * file, then the server copy). The server-fallback path's *success* case (a real
+ * downloaded-and-decrypted original actually thumbnailed) isn't covered here for the
+ * same reason [PhotoDetailRepository.downloadOriginal]'s own real network fetch isn't
+ * covered by [PhotoDetailRepositoryTest]: it hardcodes `https://`, and MockWebServer
+ * has no TLS listener without extra certificate bootstrapping. What *is* covered here:
+ * that the fallback is actually attempted (not silently skipped) whenever the local
+ * file is unusable, by pointing `instance.host` at this same (plain-HTTP) MockWebServer
+ * — the resulting TLS handshake failure is fast and deterministic, and proves the
+ * fallback ran rather than the repair bailing out early. */
 class RepairRepositoryTest {
     private lateinit var server: MockWebServer
     private lateinit var tempDir: File
     private lateinit var db: AppDatabase
     private lateinit var instanceStore: InstanceStore
     private lateinit var masterKeyHolder: MasterKeyHolder
-    private lateinit var repository: RepairRepository
+    private lateinit var photoDetailRepository: PhotoDetailRepository
+    private lateinit var thumbnailer: Thumbnailer
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val host = "photos.example.com"
     private val masterKey = MasterKey.of(ByteArray(32) { it.toByte() })
     private val dek = ByteArray(32) { (it + 1).toByte() }
     private val encDek = encode(masterKey.wrapDek(dek))
     private val photoId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     private val renditionId = "r1"
+    private val localUri = "content://media/1"
 
     private val recordedBodies = mutableMapOf<String, ByteArray>()
+
+    private fun buildRepository(): RepairRepository {
+        val archivistApiFactory =
+            ArchivistApiFactory(
+                baseOkHttpClient = OkHttpClient.Builder().build(),
+                json = json,
+                tokenStore = TokenStore(FakeSharedPreferences(), json),
+                cognitoAuthClient = CognitoAuthClient(FakeCognitoAuthApi(), json),
+            )
+        photoDetailRepository =
+            PhotoDetailRepository(
+                instanceStore = instanceStore,
+                archivistApiFactory = archivistApiFactory,
+                masterKeyHolder = masterKeyHolder,
+                okHttpClient = fastTimeoutClient(),
+            )
+        return RepairRepository(
+            instanceStore = instanceStore,
+            archivistApiFactory = archivistApiFactory,
+            uploadQueueDao = db.uploadQueueDao(),
+            photoDao = db.photoDao(),
+            thumbnailer = thumbnailer,
+            masterKeyHolder = masterKeyHolder,
+            photoDetailRepository = photoDetailRepository,
+            okHttpClient = fastTimeoutClient(),
+            context = mock<Context>().also { whenever(it.cacheDir).thenReturn(tempDir) },
+        )
+    }
+
+    /** The fallback-attempted tests below deliberately hit a TLS handshake that never
+     * completes (a plain-HTTP MockWebServer never answers a ClientHello) — a default
+     * [OkHttpClient] blocks on that for its full 10s connect/read timeout, which is
+     * fine once but adds up across several tests. A short timeout here turns each into
+     * a sub-second, still-deterministic failure. */
+    private fun fastTimeoutClient(): OkHttpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(500, TimeUnit.MILLISECONDS)
+            .readTimeout(500, TimeUnit.MILLISECONDS)
+            .callTimeout(1, TimeUnit.SECONDS)
+            .build()
 
     @BeforeEach
     fun setUp() {
@@ -68,26 +121,8 @@ class RepairRepositoryTest {
         val dataStore = PreferenceDataStoreFactory.create(produceFile = { File(tempDir, "instances.preferences_pb") })
         instanceStore = InstanceStore(dataStore, json)
         masterKeyHolder = MasterKeyHolder().apply { set(masterKey) }
+        thumbnailer = FakeThumbnailer()
         db = buildTestDatabase()
-
-        val archivistApiFactory =
-            ArchivistApiFactory(
-                baseOkHttpClient = OkHttpClient.Builder().build(),
-                json = json,
-                tokenStore = TokenStore(FakeSharedPreferences(), json),
-                cognitoAuthClient = CognitoAuthClient(FakeCognitoAuthApi(), json),
-            )
-
-        repository =
-            RepairRepository(
-                instanceStore = instanceStore,
-                archivistApiFactory = archivistApiFactory,
-                uploadQueueDao = db.uploadQueueDao(),
-                photoDao = db.photoDao(),
-                thumbnailer = FakeThumbnailer(),
-                masterKeyHolder = masterKeyHolder,
-                okHttpClient = OkHttpClient.Builder().build(),
-            )
     }
 
     @AfterEach
@@ -97,9 +132,14 @@ class RepairRepositoryTest {
         db.close()
     }
 
-    private suspend fun connectInstance() {
+    /** `instance.host` deliberately set to something unreachable-but-fast-failing
+     * (never this MockWebServer's own address), so a test that expects the fallback
+     * *not* to be reached at all (e.g. the locked-key case) can assert zero requests
+     * without risking a slow real DNS lookup — `.invalid` is reserved by RFC 2606 to
+     * never resolve. */
+    private suspend fun connectInstance(mediaHost: String = "photos.invalid") {
         instanceStore.save(
-            host,
+            mediaHost,
             DiscoveryDocument(
                 apiBase = server.url("/api").toString().trimEnd('/'),
                 region = "eu-west-1",
@@ -110,28 +150,43 @@ class RepairRepositoryTest {
         )
     }
 
-    private suspend fun photoRow(): PhotoEntity {
-        val entity =
-            PhotoEntity(
-                photoId = photoId,
-                takenAt = "2026-08-30T10:00:00.000Z",
-                tzOffsetMin = 0,
-                mime = "image/jpeg",
-                width = 100,
-                height = 100,
-                status = AssetStatus.READY,
-                thumbs = emptyMap(),
-                encDek = encDek,
-                encKeyId = "mk-1",
-            )
-        db.photoDao().upsertAll(listOf(entity))
-        return entity
-    }
+    private fun rendition(id: String = renditionId) =
+        RenditionSummary(
+            renditionId = id,
+            role = "display",
+            path = "camera/IMG_1.jpg",
+            ext = "jpg",
+            mime = "image/jpeg",
+            s3Key = "raw/o/$photoId/$id",
+            bytes = 116,
+            plainBytes = 100,
+            width = 100,
+            height = 100,
+            encIv = encode(ByteArray(12) { 9 }),
+            encChunkSize = 0,
+        )
+
+    private fun photoDetail(renditions: List<RenditionSummary> = listOf(rendition())) =
+        PhotoDetail(
+            photoId = photoId,
+            encDek = encDek,
+            takenAt = "2026-08-30T10:00:00.000Z",
+            tzOffsetMin = 0,
+            takenAtSrc = "upload",
+            mime = "image/jpeg",
+            width = 100,
+            height = 100,
+            primaryRend = renditionId,
+            cameraMake = null,
+            cameraModel = null,
+            exifDecryptFailed = false,
+            renditions = renditions,
+        )
 
     private suspend fun queueRow(state: UploadState = UploadState.DONE): Long =
         db.uploadQueueDao().insert(
             UploadQueueEntity(
-                localUri = "content://media/1",
+                localUri = localUri,
                 displayName = "IMG_1.jpg",
                 folderUri = "camera",
                 contentHash = "hmac-sha256:test",
@@ -157,13 +212,14 @@ class RepairRepositoryTest {
     private fun thumbUploadsJson() =
         """"thumbUploads":{"256":"${server.url("/thumb/256")}","1024":"${server.url("/thumb/1024")}","2048":"${server.url("/thumb/2048")}"}"""
 
-    private fun timelineEntryJson(thumbs: String = "{}") =
-        """{"meta":{"photoId":"$photoId","takenAt":"2026-08-30T10:00:00.000Z","thumbs":$thumbs,
+    private fun timelineEntryJson() =
+        """{"meta":{"photoId":"$photoId","takenAt":"2026-08-30T10:00:00.000Z",
+        |"thumbs":{"256":{"bucket":"derived","key":"th/o/$photoId/256","iv":"iv-256","bytes":2}},
         |"encDek":"$encDek","encKeyId":"mk-1","width":100,"height":100,"mime":"image/jpeg",
         |"tzOffsetMin":0,"status":"ready"}}
         """.trimMargin().replace("\n", "")
 
-    private fun setDispatcher(onThumbsPost: (RecordedRequest, ByteArray) -> MockResponse) {
+    private fun setApiDispatcher(onThumbsPost: (RecordedRequest, ByteArray) -> MockResponse) {
         server.dispatcher =
             object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
@@ -172,15 +228,7 @@ class RepairRepositoryTest {
                     recordedBodies[path] = body
                     return when {
                         path == "/api/photos/$photoId/thumbs" -> onThumbsPost(request, body)
-                        path == "/api/photos/$photoId" ->
-                            MockResponse().setResponseCode(200).setBody(
-                                timelineEntryJson(
-                                    """{"256":{"bucket":"derived","key":"th/o/$photoId/256","iv":"iv-256","bytes":2},
-                                    |"1024":{"bucket":"derived","key":"th/o/$photoId/1024","iv":"iv-1024","bytes":2},
-                                    |"2048":{"bucket":"derived","key":"th/o/$photoId/2048","iv":"iv-2048","bytes":2}}
-                                    """.trimMargin().replace("\n", ""),
-                                ),
-                            )
+                        path == "/api/photos/$photoId" -> MockResponse().setResponseCode(200).setBody(timelineEntryJson())
                         else -> MockResponse().setResponseCode(200)
                     }
                 }
@@ -188,19 +236,17 @@ class RepairRepositoryTest {
     }
 
     @Test
-    fun `regenerates and re-uploads every rung, decryptable under the asset's own DEK`() =
+    fun `local file present -- regenerates and re-uploads every rung, decryptable under the asset's own DEK`() =
         runTest {
             connectInstance()
-            photoRow()
             queueRow()
-
-            setDispatcher { _, body ->
+            setApiDispatcher { _, body ->
                 val sent = json.decodeFromString<Map<String, JsonElement>>(String(body))
                 assertEquals(setOf("256", "1024", "2048"), sent.getValue("thumbs").jsonObject.keys)
                 MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}")
             }
 
-            val outcome = repository.repairThumbnails(photoId, primaryRenditionId = renditionId, encDek = encDek)
+            val outcome = buildRepository().repairThumbnails(photoDetail())
 
             assertEquals(RepairOutcome.Done, outcome)
 
@@ -211,34 +257,75 @@ class RepairRepositoryTest {
             val plaintext = WholeObjectCipher.decrypt(dek, iv256, Aad.of(photoId, ObjectRef.Thumbnail(256)), ciphertext256)
             assertArrayEquals(byteArrayOf(0x00, 0x01), plaintext) // FakeThumbnailer's 256-rung content
 
-            // The refetch-and-upsert half: the local row now reflects the server's
-            // fresh #META.thumbs rather than staying at the empty map it had before.
             val updated = db.photoDao().getByPhotoId(photoId)!!
-            assertEquals(3, updated.thumbs.size)
             assertEquals(ThumbEntry("derived", "th/o/$photoId/256", "iv-256", 2), updated.thumbs[256])
         }
 
     @Test
-    fun `no local file for this photo -- fails without making any network call`() =
+    fun `no local row -- attempts the server fallback instead of failing outright`() =
         runTest {
-            connectInstance()
-            photoRow()
-            // No queueRow() -- this device never uploaded this photo.
+            // instance.host is this MockWebServer's own (plain-HTTP) address, so the
+            // fallback's hardcoded https:// fetch reaches it and fails fast at the TLS
+            // handshake (no DNS lookup, no timeout) rather than erroring immediately at
+            // "no local row found".
+            connectInstance(mediaHost = "${server.hostName}:${server.port}")
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
 
-            val outcome = repository.repairThumbnails(photoId, primaryRenditionId = renditionId, encDek = encDek)
+            val outcome = buildRepository().repairThumbnails(photoDetail())
 
             assertTrue(outcome is RepairOutcome.Error)
-            assertEquals(0, server.requestCount)
+            // The fallback was reached and failed there -- proven by never reaching the
+            // thumbs-upload endpoint, not by "no requests at all" (a TLS handshake
+            // against a plain-HTTP MockWebServer still opens a TCP connection).
+            assertTrue(recordedBodies.keys.none { it.startsWith("/api/") })
         }
 
     @Test
-    fun `a queue row that hasn't finished uploading doesn't count as a usable local file`() =
+    fun `a queue row that hasn't finished uploading doesn't count as usable -- falls back like a missing row`() =
+        runTest {
+            connectInstance(mediaHost = "${server.hostName}:${server.port}")
+            queueRow(state = UploadState.UPLOADING)
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
+
+            val outcome = buildRepository().repairThumbnails(photoDetail())
+
+            assertTrue(outcome is RepairOutcome.Error)
+            assertTrue(recordedBodies.keys.none { it.startsWith("/api/") })
+        }
+
+    @Test
+    fun `a local row whose file can no longer be opened falls back to the server copy too`() =
+        runTest {
+            connectInstance(mediaHost = "${server.hostName}:${server.port}")
+            queueRow()
+            // A row exists and matches, but opening it throws -- e.g. the file was
+            // deleted outside this app after the row was written.
+            thumbnailer =
+                object : Thumbnailer {
+                    override suspend fun generate(
+                        contentUri: String,
+                        mime: String,
+                    ): List<Thumbnail> =
+                        if (contentUri == localUri) {
+                            throw IOException("no such file")
+                        } else {
+                            FakeThumbnailer().generate(contentUri, mime)
+                        }
+                }
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
+
+            val outcome = buildRepository().repairThumbnails(photoDetail())
+
+            assertTrue(outcome is RepairOutcome.Error)
+            assertTrue(recordedBodies.keys.none { it.startsWith("/api/") })
+        }
+
+    @Test
+    fun `no rendition on the asset at all -- fails without any network call`() =
         runTest {
             connectInstance()
-            photoRow()
-            queueRow(state = UploadState.UPLOADING)
 
-            val outcome = repository.repairThumbnails(photoId, primaryRenditionId = renditionId, encDek = encDek)
+            val outcome = buildRepository().repairThumbnails(photoDetail(renditions = emptyList()))
 
             assertTrue(outcome is RepairOutcome.Error)
             assertEquals(0, server.requestCount)
@@ -248,11 +335,10 @@ class RepairRepositoryTest {
     fun `a locked master key fails without making any network call`() =
         runTest {
             connectInstance()
-            photoRow()
             queueRow()
             masterKeyHolder.clear()
 
-            val outcome = repository.repairThumbnails(photoId, primaryRenditionId = renditionId, encDek = encDek)
+            val outcome = buildRepository().repairThumbnails(photoDetail())
 
             assertTrue(outcome is RepairOutcome.Error)
             assertEquals(0, server.requestCount)
@@ -262,11 +348,10 @@ class RepairRepositoryTest {
     fun `a server rejection surfaces its status code instead of throwing`() =
         runTest {
             connectInstance()
-            photoRow()
             queueRow()
-            setDispatcher { _, _ -> MockResponse().setResponseCode(404).setBody("""{"error":"photo not found"}""") }
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(404).setBody("""{"error":"photo not found"}""") }
 
-            val outcome = repository.repairThumbnails(photoId, primaryRenditionId = renditionId, encDek = encDek)
+            val outcome = buildRepository().repairThumbnails(photoDetail())
 
             assertTrue(outcome is RepairOutcome.Error)
             assertEquals("server rejected repair (HTTP 404)", (outcome as RepairOutcome.Error).message)

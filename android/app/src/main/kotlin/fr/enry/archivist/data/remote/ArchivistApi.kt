@@ -430,6 +430,7 @@ data class PhotoMetaDto(
 data class RenditionDto(
     val renditionId: String,
     val role: String,
+    val path: String,
     val ext: String,
     val mime: String,
     val s3Key: String,

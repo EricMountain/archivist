@@ -55,6 +55,11 @@ sealed interface RepairUiState {
 
     data object Done : RepairUiState
 
+    /** The repair itself succeeded, but [RepairOutcome.Warning]'s own doc applies: the
+     * local original wasn't found, so a temporary copy downloaded from the server was
+     * used instead. Distinct from [Error] on purpose — nothing actually failed. */
+    data class Warning(val message: String) : RepairUiState
+
     data class Error(val message: String) : RepairUiState
 }
 
@@ -75,11 +80,12 @@ sealed interface PhotoDetailUiState {
 sealed interface OriginalUiState {
     data object Loading : OriginalUiState
 
-    /** [mime]/[ext] come from the [RenditionSummary] this was downloaded for -- carried
-     * alongside the bytes (rather than looked up again from the rendition list at
-     * render time) so [fr.enry.archivist.ui.detail.OriginalOverlay] can tell a video
-     * rendition from an image one without needing the rendition itself in scope. */
-    data class Ready(val bytes: ByteArray, val mime: String, val ext: String) : OriginalUiState
+    /** [mime]/[ext]/[fileName] come from the [RenditionSummary] this was downloaded for
+     * -- carried alongside the bytes (rather than looked up again from the rendition
+     * list at render time) so [fr.enry.archivist.ui.detail.OriginalOverlay] can tell a
+     * video rendition from an image one, and show its file name, without needing the
+     * rendition itself in scope. */
+    data class Ready(val bytes: ByteArray, val mime: String, val ext: String, val fileName: String) : OriginalUiState
 
     data class Error(val message: String) : OriginalUiState
 }
@@ -150,7 +156,7 @@ class DetailViewModel
                 val state =
                     try {
                         val bytes = photoDetailRepository.downloadOriginal(photoId, encDek, rendition)
-                        OriginalUiState.Ready(bytes, mime = rendition.mime, ext = rendition.ext)
+                        OriginalUiState.Ready(bytes, mime = rendition.mime, ext = rendition.ext, fileName = rendition.fileName())
                     } catch (e: IOException) {
                         OriginalUiState.Error(e.message ?: "couldn't download the original")
                     } catch (e: HttpException) {
@@ -208,18 +214,17 @@ class DetailViewModel
         private val _repairState = MutableStateFlow<RepairUiState>(RepairUiState.Idle)
         val repairState: StateFlow<RepairUiState> = _repairState.asStateFlow()
 
-        /** [primaryRenditionId] is [PhotoDetail.primaryRend] when the detail fetch has
-         * resolved by the time the user taps "Repair" — see [RepairRepository]'s own
-         * doc for how a null one is handled. */
-        fun repairPhoto(
-            photo: PhotoEntity,
-            primaryRenditionId: String?,
-        ) {
+        /** Needs the full [PhotoDetail] (renditions, encDek), not just the grid's own
+         * [PhotoEntity] — [RepairRepository] picks which rendition to regenerate from
+         * ([PhotoDetail.primaryRend]) and needs its `s3Key`/`encIv` for the
+         * server-fallback download; see that class's own doc. */
+        fun repairPhoto(detail: PhotoDetail) {
             _repairState.value = RepairUiState.InProgress
             viewModelScope.launch {
                 _repairState.value =
-                    when (val outcome = repairRepository.repairThumbnails(photo.photoId, primaryRenditionId, photo.encDek)) {
+                    when (val outcome = repairRepository.repairThumbnails(detail)) {
                         RepairOutcome.Done -> RepairUiState.Done
+                        is RepairOutcome.Warning -> RepairUiState.Warning(outcome.message)
                         is RepairOutcome.Error -> RepairUiState.Error(outcome.message)
                     }
             }

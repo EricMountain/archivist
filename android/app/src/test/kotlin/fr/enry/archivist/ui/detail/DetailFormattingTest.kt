@@ -15,9 +15,11 @@ class DetailFormattingTest {
         role: String = "display",
         ext: String = "jpg",
         plainBytes: Long = 0,
+        path: String = "camera/IMG_1.$ext",
     ) = RenditionSummary(
         renditionId = renditionId,
         role = role,
+        path = path,
         ext = ext,
         mime = "image/jpeg",
         s3Key = "raw/owner/photo/$renditionId",
@@ -105,5 +107,15 @@ class DetailFormattingTest {
     @Test
     fun `primarySizeBytes is null with no renditions at all`() {
         assertNull(primarySizeBytes(detail(emptyList())))
+    }
+
+    @Test
+    fun `fileName strips the folder, keeping only the basename`() {
+        assertEquals("IMG_1.jpg", rendition("r1", path = "camera/IMG_1.jpg").fileName())
+    }
+
+    @Test
+    fun `fileName with no folder is unchanged`() {
+        assertEquals("IMG_1.jpg", rendition("r1", path = "IMG_1.jpg").fileName())
     }
 }

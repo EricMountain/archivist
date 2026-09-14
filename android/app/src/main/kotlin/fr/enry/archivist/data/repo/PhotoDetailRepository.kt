@@ -28,6 +28,7 @@ import okhttp3.Request
 data class RenditionSummary(
     val renditionId: String,
     val role: String,
+    val path: String,
     val ext: String,
     val mime: String,
     val s3Key: String,
@@ -176,6 +177,7 @@ private fun RenditionDto.toSummary() =
     RenditionSummary(
         renditionId = renditionId,
         role = role,
+        path = path,
         ext = ext,
         mime = mime,
         s3Key = s3Key,
