@@ -10,6 +10,7 @@ import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.local.db.AppDatabase
 import fr.enry.archivist.data.local.db.ThumbEntry
+import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.local.db.buildTestDatabase
@@ -63,6 +64,7 @@ class RepairRepositoryTest {
     private lateinit var masterKeyHolder: MasterKeyHolder
     private lateinit var photoDetailRepository: PhotoDetailRepository
     private lateinit var thumbnailer: Thumbnailer
+    private lateinit var jumpCoordinator: TimelineJumpCoordinator
 
     private val json = Json { ignoreUnknownKeys = true }
     private val masterKey = MasterKey.of(ByteArray(32) { it.toByte() })
@@ -97,6 +99,7 @@ class RepairRepositoryTest {
             thumbnailer = thumbnailer,
             masterKeyHolder = masterKeyHolder,
             photoDetailRepository = photoDetailRepository,
+            jumpCoordinator = jumpCoordinator,
             okHttpClient = fastTimeoutClient(),
             context = mock<Context>().also { whenever(it.cacheDir).thenReturn(tempDir) },
         )
@@ -122,6 +125,7 @@ class RepairRepositoryTest {
         instanceStore = InstanceStore(dataStore, json)
         masterKeyHolder = MasterKeyHolder().apply { set(masterKey) }
         thumbnailer = FakeThumbnailer()
+        jumpCoordinator = TimelineJumpCoordinator()
         db = buildTestDatabase()
     }
 
@@ -259,6 +263,32 @@ class RepairRepositoryTest {
 
             val updated = db.photoDao().getByPhotoId(photoId)!!
             assertEquals(ThumbEntry("derived", "th/o/$photoId/256", "iv-256", 2), updated.thumbs[256])
+        }
+
+    /** A plain refresh key, not a jump landing -- see
+     * [TimelineJumpCoordinator.stageExternalRefreshKey]'s own doc for why: a jump
+     * landing is `isLanding`-sticky and makes `TimelinePagingSource.load` start the
+     * page exactly at that key (and the grid explicitly scroll there), which for this
+     * case visibly repositioned the repaired photo to the top of the screen instead of
+     * leaving the timeline where it was -- found live, after the *previous* bug this
+     * same staging call originally fixed (no key at all, landing wherever a stale
+     * anchor happened to be). */
+    @Test
+    fun `stages a refresh key on the repaired photo, not a jump landing`() =
+        runTest {
+            connectInstance()
+            queueRow()
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
+
+            val expectedKey = TimelineKey("2026-08-30T10:00:00.000Z", photoId)
+            val outcome = buildRepository().repairThumbnails(photoDetail())
+
+            assertEquals(RepairOutcome.Done, outcome)
+            assertEquals(expectedKey, jumpCoordinator.consumeExternalRefreshKey())
+            // Not a jump landing: isLanding must stay false for this key, or
+            // TimelinePagingSource.load would start the page exactly at it (pageFromKey)
+            // instead of around it (refreshAround), which is what repositioned the grid.
+            assertTrue(!jumpCoordinator.isLanding(expectedKey))
         }
 
     @Test

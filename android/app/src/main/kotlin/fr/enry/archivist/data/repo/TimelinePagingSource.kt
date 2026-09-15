@@ -58,6 +58,13 @@ class TimelinePagingSource(
      * cache and are reached by scrolling up, via this source's own `Prepend`. */
     override fun getRefreshKey(state: PagingState<TimelineKey, PhotoEntity>): TimelineKey? {
         jumpCoordinator.consumeLanding()?.let { return it }
+        // Deliberately checked before anchorPosition, not after: this key exists
+        // precisely for a write that happens while the grid isn't composed (see
+        // TimelineJumpCoordinator.stageExternalRefreshKey's own doc), i.e. exactly when
+        // anchorPosition is unavailable -- checking it first is what makes this
+        // reliable rather than racing a still-possibly-stale anchor. recordResolvedKey
+        // below still runs on it via the shared `also`, same as any other resolution.
+        jumpCoordinator.consumeExternalRefreshKey()?.let { return it.also(jumpCoordinator::recordResolvedKey) }
         val anchorKey =
             state.anchorPosition?.let { anchor ->
                 state.closestItemToPosition(anchor)?.let { TimelineKey(it.takenAt, it.photoId) }

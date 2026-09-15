@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -198,6 +199,46 @@ class TimelinePagingSourceTest {
             // Loading from it puts the landing photo first, so "go to the top" is right.
             val result = source.load(PagingSource.LoadParams.Refresh(key = refreshKey, loadSize = 2, placeholdersEnabled = false))
             assertEquals(listOf("p3", "p2"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
+        }
+
+    /** [TimelineJumpCoordinator.stageExternalRefreshKey] is deliberately *not*
+     * [TimelineJumpCoordinator.stageLanding] — see its own doc. Unlike the jump-landing
+     * test above (which loads the target as page index 0, `pageFromKey`), this must
+     * come back through `refreshAround` and keep lead context ahead of it, or the
+     * caller (`RepairRepository`) visibly repositions whatever it just refreshed to
+     * the top of the grid — the live bug this key exists to avoid. */
+    @Test
+    fun `getRefreshKey consumes a staged external refresh key, but load still uses refreshAround for it`() =
+        runTest {
+            seed(p5, p4, p3, p2, p1)
+            jumpCoordinator.stageExternalRefreshKey(TimelineKey("2024-01-02T00:00:00.000Z", "p2"))
+            // p1 is where the user was before the write that staged this key -- same
+            // "stale anchor" setup as the jump-landing test, proving this key wins too.
+            val staleState =
+                PagingState(
+                    pages = listOf(PagingSource.LoadResult.Page<TimelineKey, PhotoEntity>(data = listOf(p1), prevKey = null, nextKey = null)),
+                    anchorPosition = 0,
+                    config = config,
+                    leadingPlaceholderCount = 0,
+                )
+
+            val refreshKey = source.getRefreshKey(staleState)
+            assertEquals(TimelineKey("2024-01-02T00:00:00.000Z", "p2"), refreshKey)
+            assertTrue(!jumpCoordinator.isLanding(refreshKey!!))
+
+            val result = source.load(PagingSource.LoadParams.Refresh(key = refreshKey, loadSize = 6, placeholdersEnabled = false))
+            // refreshAround, not pageFromKey: p2 is NOT first -- p4/p3 (newer, the lead)
+            // come before it, exactly like the plain keyed-refresh test above.
+            assertEquals(listOf("p4", "p3", "p2", "p1"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
+        }
+
+    @Test
+    fun `a staged external refresh key is consumed once`() =
+        runTest {
+            jumpCoordinator.stageExternalRefreshKey(TimelineKey("2024-01-05T00:00:00.000Z", "p5"))
+
+            assertEquals(TimelineKey("2024-01-05T00:00:00.000Z", "p5"), jumpCoordinator.consumeExternalRefreshKey())
+            assertNull(jumpCoordinator.consumeExternalRefreshKey())
         }
 
     @Test

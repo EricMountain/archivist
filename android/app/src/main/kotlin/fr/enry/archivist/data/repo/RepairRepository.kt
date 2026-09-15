@@ -10,6 +10,7 @@ import fr.enry.archivist.crypto.ObjectRef
 import fr.enry.archivist.crypto.WholeObjectCipher
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoDao
+import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.UploadQueueDao
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.remote.ArchivistApiFactory
@@ -89,6 +90,7 @@ class RepairRepository
         private val thumbnailer: Thumbnailer,
         private val masterKeyHolder: MasterKeyHolder,
         private val photoDetailRepository: PhotoDetailRepository,
+        private val jumpCoordinator: TimelineJumpCoordinator,
         private val okHttpClient: OkHttpClient,
         @ApplicationContext private val context: Context,
     ) {
@@ -149,6 +151,16 @@ class RepairRepository
                 }
 
                 val refreshed = api.getPhotoAsTimelineEntry(photoUrl(apiBase, detail.photoId))
+                // Staged *before* the write, not after: the write's own invalidation of
+                // TimelinePagingSource can fire asynchronously (Room dispatches it on its
+                // own executor, not synchronously with this call returning), and staging
+                // first is what guarantees that restart -- whenever it actually runs --
+                // finds the correct key already waiting rather than racing it. See
+                // TimelineJumpCoordinator.stageExternalRefreshKey's own doc for why this
+                // is a plain refresh key, not a jump landing -- a jump landing would (and
+                // did, until this was found live) visibly reposition the repaired photo
+                // to the top of the grid instead of leaving the timeline untouched.
+                jumpCoordinator.stageExternalRefreshKey(TimelineKey(refreshed.meta.takenAt, refreshed.meta.photoId))
                 photoDao.upsertAll(listOf(refreshed.meta.toEntity()))
 
                 if (usedFallback) {

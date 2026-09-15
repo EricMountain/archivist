@@ -220,32 +220,6 @@ class PhotoRepository
             return TimelineBounds(oldest, newest)
         }
 
-        /**
-         * Primes the *next* paging generation to land on [photoId], without any network
-         * round trip — for a caller that already knows the photo is cached, e.g. it was
-         * just shown in [fr.enry.archivist.ui.detail.DetailScreen]. Unlike [jumpTo], this
-         * never touches the mediator: the photo is already in Room by construction (it
-         * was just on screen), so there's nothing to fetch, only a key to stage.
-         *
-         * **Found live**: repairing a photo's thumbnails from `DetailScreen` writes the
-         * fresh `#META` straight into `photos` (`RepairRepository`) so the fix shows up
-         * without waiting on [refreshLatest]'s "newest end of the range" window, which an
-         * older repaired photo would never fall inside. That write invalidates
-         * [TimelinePagingSource] like any other — but it happens while `DetailScreen`
-         * covers the grid, i.e. `TimelineGrid` isn't composed and nothing is reporting an
-         * `anchorPosition` to page against. The eventual restart's `getRefreshKey` then
-         * falls back to whatever anchor was last recorded before `DetailScreen` opened,
-         * which has no particular relationship to where the grid was left — reported live
-         * as the timeline "shifting wildly" on the way back out. Explicitly staging a
-         * landing on the photo the user was actually looking at, right as they leave
-         * `DetailScreen`, sidesteps relying on that anchor for this one transition — the
-         * caller still has to force the restart itself (`LazyPagingItems.refresh()`),
-         * since only Compose owns the `Pager` this stages into.
-         */
-        suspend fun stageLandingOn(photoId: String) {
-            val photo = db.photoDao().getByPhotoId(photoId) ?: return
-            jumpCoordinator.stageLanding(TimelineKey(photo.takenAt, photo.photoId))
-        }
 
         /** Plan step 2.12: the plain (non-`Paging`) mirror of [timeline]'s own ordering,
          * for the detail screen's swipe-between-photos — index navigation over

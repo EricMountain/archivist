@@ -49,6 +49,41 @@ class TimelineJumpCoordinator
 
         fun isLanding(key: TimelineKey): Boolean = key == landing
 
+        /** A one-shot key for [TimelinePagingSource.getRefreshKey] to consume on its
+         * *next* call, deliberately **not** a [stageLanding]/[isLanding] "jump landing" —
+         * a jump wants its target to become index 0 (`load`'s `pageFromKey` branch) and
+         * the grid explicitly scrolled there, both correct for "the user asked to go
+         * here" but wrong for this case. This is for a write that disrupts the grid from
+         * *outside* the normal jump flow — currently only
+         * [fr.enry.archivist.data.repo.RepairRepository] — where nothing about the
+         * user's own position should change; only the stale data underneath it needs
+         * replacing. Consuming it still routes through `getRefreshKey`'s ordinary
+         * `refreshAround` path (not `isLanding`'s `pageFromKey`), so the reload keeps
+         * lead context above the key and `LazyVerticalGrid`'s own key-based position
+         * restoration holds the viewport still — exactly [TimelinePagingSource.refreshAround]'s
+         * documented "the view stays exactly where it was" guarantee, just fed a key
+         * that's correct despite the grid being unmounted (not composed, therefore
+         * reporting no `anchorPosition`) when the write actually happened.
+         *
+         * **Found live, in two stages.** First: with nothing staged here at all, the
+         * write's restart fell back to whatever anchor was last recorded *before*
+         * `DetailScreen` opened — reported as the grid "shifting wildly" on the way
+         * back out. Fixed by staging via [stageLanding] instead — but that reused the
+         * jump-landing path wholesale, including `pageFromKey` and an explicit
+         * scroll-to-index-0, which visibly repositioned the repaired photo to the top
+         * of the screen — correct for a jump, wrong here, reported as "positions the
+         * photo that was repaired at the top of the screen" instead of leaving the
+         * timeline exactly where it was. This key exists so the *data* gets the
+         * accurate anchor a jump-landing gives it without inheriting either of the
+         * jump-specific behaviors that came bundled with it. */
+        @Volatile private var externalRefreshKey: TimelineKey? = null
+
+        fun stageExternalRefreshKey(key: TimelineKey) {
+            externalRefreshKey = key
+        }
+
+        fun consumeExternalRefreshKey(): TimelineKey? = externalRefreshKey.also { externalRefreshKey = null }
+
         /**
          * Reproduced live: after a jump lands correctly, leaving the grid untouched for a
          * few seconds still walks it forward through time on its own, with `PREPEND`

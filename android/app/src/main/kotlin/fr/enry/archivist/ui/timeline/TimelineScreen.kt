@@ -49,16 +49,12 @@ import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.ui.detail.DetailScreen
-import fr.enry.archivist.ui.detail.DetailViewModel
-import fr.enry.archivist.ui.detail.RepairUiState
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.mapNotNull
@@ -211,31 +207,11 @@ fun TimelineScreen(
     var selectedPhotoId by remember { mutableStateOf<String?>(null) }
     val openPhotoId = selectedPhotoId
     if (openPhotoId != null) {
-        // Same Activity-scoped instance DetailScreen's own hiltViewModel() call resolves
-        // to (see MainActivity's/DetailViewModel's own doc on that) -- read here only for
-        // repairState, so a repair while DetailScreen is open can be detected on the way
-        // back out. See PhotoRepository.stageLandingOn's own doc for why that matters.
-        val detailViewModel: DetailViewModel = hiltViewModel()
-        val repairState by detailViewModel.repairState.collectAsStateWithLifecycle()
-        val scope = rememberCoroutineScope()
-        DetailScreen(
-            initialPhotoId = openPhotoId,
-            onBack = { currentPhotoId ->
-                val repaired = repairState is RepairUiState.Done || repairState is RepairUiState.Warning
-                selectedPhotoId = null
-                // currentPhotoId -- wherever the pager actually ended up, which a swipe
-                // inside DetailScreen can have moved away from openPhotoId -- not the
-                // photo originally tapped, so the grid lands back exactly where the user
-                // left it rather than merely close to it.
-                if (repaired && currentPhotoId != null) {
-                    scope.launch {
-                        viewModel.stageLandingOn(currentPhotoId)
-                        items.refresh()
-                    }
-                }
-            },
-            modifier = modifier,
-        )
+        // A repair's own effect on the grid (re-settling on the repaired photo) is
+        // handled independently of this navigation -- see
+        // TimelineJumpCoordinator.stageAndAnnounceLanding's own doc -- so this stays the
+        // plain "close the screen" it always was, with no repair-awareness needed here.
+        DetailScreen(initialPhotoId = openPhotoId, onBack = { selectedPhotoId = null }, modifier = modifier)
         return
     }
 

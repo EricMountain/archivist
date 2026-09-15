@@ -192,16 +192,6 @@ class TimelineViewModel
          */
         suspend fun onScrubTo(day: LocalDate?) = applyJump(day, scrub = true)
 
-        /** Primes the *next* paging generation to land on [photoId] — see
-         * [fr.enry.archivist.data.repo.PhotoRepository.stageLandingOn]'s own doc for why
-         * this is needed at all: a repair's `photoDao.upsertAll` write invalidates the
-         * grid's `PagingSource` while `DetailScreen` covers it (not composed, so not
-         * tracking an anchor position), and the eventual restart re-anchors somewhere
-         * essentially arbitrary. Callers must follow this with `LazyPagingItems.refresh()`
-         * themselves (only Compose owns the `Pager`) — this only primes the key that
-         * restart consumes. */
-        suspend fun stageLandingOn(photoId: String) = photoRepository.stageLandingOn(photoId)
-
         /**
          * The drag was released on [day] (null for the top of the rail, "back to the
          * present"). Usually free: the scrubs have already loaded this window, so the
