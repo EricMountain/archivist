@@ -9,6 +9,18 @@ This is the "third party" design.md's Interoperability section describes: "a
 script that authenticates, encrypts locally, and PUTs to presigned URLs -- the
 same path the Android app takes, with no privileged position." Nothing here calls
 DynamoDB or S3 directly except via presigned PUT URLs the API itself hands back.
+
+**Every `urlopen` call passes an explicit timeout.** Found the hard way: an
+unattended multi-hour run over a real network hit a connection that completed its
+TCP handshake and then went silent (a laptop sleep/wake, in that instance) --
+`urlopen` with no timeout blocks on a stalled `read()` forever, `socket`'s
+default. This is a socket-level *inactivity* timeout, not a cap on total request
+duration: a large streaming PUT that's genuinely still sending bytes never trips
+it, only a connection with zero progress in either direction for the whole
+window does. `Importer.run`'s existing per-file `try/except` already turns a
+raised timeout into one recorded error rather than aborting the run, so this
+alone is enough to keep an unattended run alive across a single bad connection
+-- no retry logic needed on top of that.
 """
 
 from __future__ import annotations
@@ -17,6 +29,13 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+
+# Inactivity timeout, seconds -- see the module docstring above. Long enough that
+# a slow-but-progressing large streaming PUT (a multi-hundred-MB video, a slow
+# connection) is never mistaken for a hang; short enough that a genuinely stalled
+# connection fails within a run's ordinary per-file cadence rather than sitting
+# there for hours.
+DEFAULT_TIMEOUT_SECONDS = 60
 
 
 class ApiError(Exception):
@@ -30,7 +49,7 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         raise ApiError(e.code, e.read().decode("utf-8", errors="replace")) from None
@@ -52,7 +71,7 @@ class Instance:
 def fetch_discovery(host: str) -> Instance:
     url = f"https://{host}/.well-known/archivist.json"
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
         doc = json.loads(resp.read().decode("utf-8"))
     if doc.get("cryptoVersion") != 1:
         raise RuntimeError(
@@ -189,7 +208,7 @@ class ArchivistApi:
             data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
@@ -256,7 +275,12 @@ def put_bytes(url: str, content_type: str, data: bytes) -> None:
     query-string auth baked into that URL")."""
     req = urllib.request.Request(url, data=data, headers={"Content-Type": content_type}, method="PUT")
     try:
-        with urllib.request.urlopen(req):
+        # A longer inactivity window than DEFAULT_TIMEOUT_SECONDS: this is an
+        # up-to-hundreds-of-MB body (the corpus this tool was built against tops
+        # out under 1 GB), and the timeout is per blocking send()/recv() call, not
+        # a cap on the whole transfer -- so this only ever fires on a genuinely
+        # stalled connection, never on a slow-but-progressing upload.
+        with urllib.request.urlopen(req, timeout=300):
             pass
     except urllib.error.HTTPError as e:
         raise ApiError(e.code, e.read().decode("utf-8", errors="replace")) from None
