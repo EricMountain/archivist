@@ -136,9 +136,21 @@ Matches on *any* rendition's filename, not just the primary, so an asset still
 turns up by its RAW sibling's own name. Same auth as the other two scripts, same
 "nothing here is encrypted, no master key needed" as `dedupe_by_filename.py`.
 
-**If you already know the exact path** (not just the filename) — from a
-`dedupe_by_filename.py` report, or from this tool's own previous `stem` output —
-`--path` skips the library entirely:
+**If you already have a `photoId`** — `dedupe_by_filename.py`'s own report prints
+one for every candidate — `--photo-id` skips straight to `GET /photos/{photoId}`,
+no pointer read, no listing, no cache:
+
+```sh
+.venv/bin/python3 inspect_photo.py \
+  --host photos.example.com \
+  --username someone@example.com \
+  --photo-id 01K5A2QB3HN7WYP2GKD4RVXM8C
+```
+
+**If you know the exact server path but not the id** — this tool's own previous
+`stem` output, say — `--path` resolves it via `GET /photos/by-path` (api.md): one
+`GetItem` against the PATH pointer, live or trashed, then the same detail read
+`--photo-id` does:
 
 ```sh
 .venv/bin/python3 inspect_photo.py \
@@ -147,12 +159,11 @@ turns up by its RAW sibling's own name. Same auth as the other two scripts, same
   --path -1739773001/IMG_1234.jpg
 ```
 
-This resolves via `GET /photos/by-path` (api.md) — one `GetItem` against the
-PATH pointer, live or trashed, no listing and no cache involved at all — instead
-of `--filename`'s cached-library search. `--contains`/`--live-only`/
-`--refresh-*` don't apply to it: there's no listing to filter or cache to
-refresh. Use it whenever the exact path is in hand; fall back to `--filename`
-when it isn't.
+Both skip the library and the cache entirely — instead of `--filename`'s
+cached-library search, they're one or two direct reads. `--contains`/
+`--live-only`/`--refresh-*` don't apply to either: there's no listing to filter
+or cache to refresh. Reach for `--photo-id` first when you have one, `--path`
+when you don't, and `--filename` only when you have neither.
 
 Add `--refresh-match` to bypass the cache for just what matched — after finding
 candidates (from the cache, by default), it re-fetches live detail for exactly

@@ -19,10 +19,12 @@ the ordinary `GET /photos`/`GET /photos/{photoId}`/`GET /trash` routes
 docs/design/api.md documents, with the same Cognito sign-in and no master key
 or recovery code (nothing here is encrypted).
 
-**`--path` resolves an exact server path directly** (`GET /photos/by-path`, one
-DynamoDB read, live or trashed) instead of loading or paging through the library at
-all -- use it whenever the exact path is already known (a dedupe report, this tool's
-own previous `stem` output). `--filename`/`--contains` are for when it isn't, and pay
+**`--photo-id`/`--path` resolve directly** -- `GET /photos/{photoId}` or
+`GET /photos/by-path` (one DynamoDB read either way, live or trashed) -- instead of
+loading or paging through the library at all. Use `--photo-id` when you already have
+one (straight from a `dedupe_by_filename.py` report, which prints it for every
+candidate), `--path` when you have the exact server path but not the id (this tool's
+own `stem` output). `--filename`/`--contains` are for when you have neither, and pay
 for a full cached-library search instead.
 
 Usage:
@@ -31,6 +33,9 @@ Usage:
 
     .venv/bin/python3 inspect_photo.py --host photos.example.com \\
         --username someone@example.com --path -1739773001/IMG_1234.jpg
+
+    .venv/bin/python3 inspect_photo.py --host photos.example.com \\
+        --username someone@example.com --photo-id 01K5A2QB3HN7WYP2GKD4RVXM8C
 """
 
 from __future__ import annotations
@@ -198,6 +203,13 @@ def main() -> int:
         "exact path (e.g. from a dedupe_by_filename.py report). --contains/--live-only/"
         "--refresh-* don't apply here: there's no listing to filter or cache to refresh.",
     )
+    target.add_argument(
+        "--photo-id",
+        help="a ULID already in hand -- straight to GET /photos/{photoId}, no pointer read, no "
+        "listing, no cache. The natural choice right after dedupe_by_filename.py's own report, "
+        "which prints each candidate's photo_id directly. --contains/--live-only/--refresh-* "
+        "don't apply here either.",
+    )
     parser.add_argument(
         "--contains",
         action="store_true",
@@ -245,6 +257,16 @@ def main() -> int:
     except cli_auth.AuthFailed as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+    if args.photo_id:
+        progress(f"Fetching {args.photo_id} directly (GET /photos/{{photoId}} -- one read, no listing)...")
+        detail = api.get_photo_detail(args.photo_id)
+        if detail is None:
+            print(f"\nNo asset with photoId {args.photo_id!r} (wrong id, or purged already).")
+            return 0
+        print(f"\nAsset {args.photo_id}:")
+        print_asset(args.photo_id, detail, set())
+        return 0
 
     if args.path:
         progress(f"Resolving {args.path!r} directly (GET /photos/by-path -- one read, no listing)...")
