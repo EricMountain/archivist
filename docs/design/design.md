@@ -66,6 +66,7 @@ wherever the two describe bytes.**
 | --- | --- | --- |
 | 1 | Get a photo by `photoId` | Base table, `GetItem` |
 | 1b | Get a photo by full path | `PATH` pointer → `GetItem` (2 reads) |
+| 1b' | Resolve a full path to a `photoId` only, no detail (`GET /photos/by-path`, api.md) — a caller wanting detail chains to pattern 1c itself | `PATH` pointer, one `GetItem` |
 | 1c | Get a photo *and* its renditions *and* its facets | Base table, `Query` on PK |
 | 1d | Find the asset owning a path stem, during ingest | `STEM` pointer, `GetItem` |
 | 2 | List photos, newest first, by owner (paginated) | `timeline_gsi`, `ScanIndexForward=false` |

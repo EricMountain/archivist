@@ -17,16 +17,29 @@ TCP handshake and then went silent (a laptop sleep/wake, in that instance) --
 default. This is a socket-level *inactivity* timeout, not a cap on total request
 duration: a large streaming PUT that's genuinely still sending bytes never trips
 it, only a connection with zero progress in either direction for the whole
-window does. `Importer.run`'s existing per-file `try/except` already turns a
-raised timeout into one recorded error rather than aborting the run, so this
-alone is enough to keep an unattended run alive across a single bad connection
--- no retry logic needed on top of that.
+window does.
+
+**Every call also retries a few times on a transient connection failure**
+(timeout, reset, DNS hiccup -- never a real HTTP response, `HTTPError` is
+never retried here) before giving up. Found the hard way too, the very next
+run after the timeout fix above: `dedupe_by_filename.py --execute` re-verifying
+2,242 duplicate groups live is thousands of sequential calls over one long
+run, and a single transient blip anywhere in that -- now correctly a raised
+exception instead of an infinite hang -- was enough to kill the whole process
+outright, since nothing downstream of a bare `api.get_photo_detail(...)` call
+was wrapping it. A caller (e.g. `Importer.run`'s per-file loop, or
+`dedupe_by_filename.py`'s per-group revalidation) should still expect this to
+raise and have its own `try/except` around a unit of work that must survive
+one failure -- retrying here only absorbs a blip *within* one call, it doesn't
+turn a sustained outage into a guarantee.
 """
 
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -36,6 +49,31 @@ from dataclasses import dataclass
 # connection fails within a run's ordinary per-file cadence rather than sitting
 # there for hours.
 DEFAULT_TIMEOUT_SECONDS = 60
+
+# Retry policy for a transient connection failure -- see the module docstring.
+# 3 attempts, 1s/2s backoff: enough to absorb a real blip without turning a
+# script that's actually offline into a multi-minute hang before it says so.
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 1.0
+
+# Never retried -- a real HTTP response (including an error one) is not a
+# connection failure, and 401/404/etc. already have their own defined meaning
+# to the caller. `HTTPError` is technically a `URLError`/`OSError` subclass,
+# which is exactly why this has to be excluded explicitly rather than relying
+# on catching "the opposite" of it.
+_TRANSIENT_ERRORS = (TimeoutError, ConnectionError, urllib.error.URLError, OSError)
+
+
+def _urlopen_with_retry(req: urllib.request.Request, timeout: float):
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError:
+            raise  # a real response, including an error one -- callers handle this themselves
+        except _TRANSIENT_ERRORS:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+            time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
 
 class ApiError(Exception):
@@ -49,7 +87,7 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
+        with _urlopen_with_retry(req, DEFAULT_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         raise ApiError(e.code, e.read().decode("utf-8", errors="replace")) from None
@@ -71,7 +109,7 @@ class Instance:
 def fetch_discovery(host: str) -> Instance:
     url = f"https://{host}/.well-known/archivist.json"
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
+    with _urlopen_with_retry(req, DEFAULT_TIMEOUT_SECONDS) as resp:
         doc = json.loads(resp.read().decode("utf-8"))
     if doc.get("cryptoVersion") != 1:
         raise RuntimeError(
@@ -208,7 +246,7 @@ class ArchivistApi:
             data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
+            with _urlopen_with_retry(req, DEFAULT_TIMEOUT_SECONDS) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
@@ -267,6 +305,55 @@ class ArchivistApi:
     def post_upload(self, body: dict) -> dict:
         return self._request("POST", "/uploads", body)
 
+    def get_photos_page(self, cursor: str | None = None, limit: int = 200) -> dict:
+        """One page of the live timeline (api.md `GET /photos`) -- `{items, cursor}`,
+        `cursor` absent once there's no more. Order doesn't matter for a full-library
+        walk, so this doesn't pass `order`/`from`/`to` at all."""
+        params = {"limit": str(limit)}
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", f"/photos?{urllib.parse.urlencode(params)}")
+
+    def get_photo_detail(self, photo_id: str) -> dict | None:
+        """`{meta, renditions, facets}` -- the raw items, not `dto.ts` DTOs (api.md:
+        `GET /photos/{photoId}`). None if the asset doesn't exist (or isn't this
+        owner's) rather than raising, since a caller walking a photoId list already
+        knows it existed a moment ago and 404 here is a real, meaningful answer.
+        Works identically for a trashed asset -- `getAssetPartition` server-side is
+        a plain Query with no `deletedAt`/status filter; trashed just means it's no
+        longer reachable via `GET /photos`'s own live-timeline listing."""
+        return self._request("GET", f"/photos/{photo_id}")
+
+    def get_photo_by_path(self, path: str) -> dict | None:
+        """Exact-path lookup (api.md `GET /photos/by-path`) -- one GetItem against
+        the PATH pointer, live or trashed (trashing never touches PATH pointers).
+        None on 404: nothing is filed under that exact path -- never uploaded,
+        the wrong path, or purged long ago. Returns `{photoId, renditionId}`, not
+        full detail -- chain to `get_photo_detail(photoId)` for that. The point
+        of this call is to *avoid* `get_photos_page`/`get_trash_page`: a single
+        GetItem instead of paging through the whole live-or-trashed listing to
+        find one file by name."""
+        params = {"path": path}
+        return self._request("GET", f"/photos/by-path?{urllib.parse.urlencode(params)}")
+
+    def get_trash_page(self, cursor: str | None = None, limit: int = 200) -> dict:
+        """One page of trashed assets (api.md `GET /trash`) -- same lean shape as
+        `get_photos_page`, plus `blockedAttempts`/`lastAttemptAt`/`lastAttemptBy`
+        when a source has tried to re-upload a trashed photo's content since."""
+        params = {"limit": str(limit)}
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", f"/trash?{urllib.parse.urlencode(params)}")
+
+    def delete_photo(self, photo_id: str, deleted_by: str | None = None) -> None:
+        """Trashes the whole asset -- every rendition, not just one -- via the same
+        soft-delete `DELETE /photos/{photoId}` route the app's own delete button
+        uses (design.md "Trash and deletion"): recoverable via `POST
+        .../restore` for `trashRetentionDays` (owner setting, default 30), after
+        which a daily sweep purges the S3 objects and most DynamoDB rows for real."""
+        body = {"deletedBy": deleted_by} if deleted_by else {}
+        self._request("DELETE", f"/photos/{photo_id}", body)
+
 
 def put_bytes(url: str, content_type: str, data: bytes) -> None:
     """PUTs to a presigned S3 URL -- SigV4 auth is baked into the query string, so
@@ -280,7 +367,7 @@ def put_bytes(url: str, content_type: str, data: bytes) -> None:
         # out under 1 GB), and the timeout is per blocking send()/recv() call, not
         # a cap on the whole transfer -- so this only ever fires on a genuinely
         # stalled connection, never on a slow-but-progressing upload.
-        with urllib.request.urlopen(req, timeout=300):
+        with _urlopen_with_retry(req, 300):
             pass
     except urllib.error.HTTPError as e:
         raise ApiError(e.code, e.read().decode("utf-8", errors="replace")) from None

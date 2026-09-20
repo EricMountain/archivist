@@ -23,20 +23,12 @@ See README.md for the full account of what this does and doesn't handle.
 from __future__ import annotations
 
 import argparse
-import getpass
 import os
 import sys
 
-import api_client
+import cli_auth
 import takenat_ladder as ladder
 from importer import EnrollmentError, Importer, enroll
-
-
-def _read_secret(env_var: str, prompt: str) -> str:
-    value = os.environ.get(env_var)
-    if value:
-        return value
-    return getpass.getpass(prompt)
 
 
 def main() -> int:
@@ -73,36 +65,15 @@ def main() -> int:
         print(f"error: --source {args.source!r} is not a directory", file=sys.stderr)
         return 2
 
-    print(f"Fetching discovery document from {args.host}...", file=sys.stderr)
     try:
-        instance = api_client.fetch_discovery(args.host)
-    except Exception as e:
-        print(f"error: could not fetch https://{args.host}/.well-known/archivist.json: {e}", file=sys.stderr)
+        session = cli_auth.authenticate(args.host, args.username)
+    except cli_auth.AuthFailed as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
-    print(f"  instance: {instance.instance_name} (region {instance.region})", file=sys.stderr)
-
-    password = _read_secret("ARCHIVIST_PASSWORD", f"Password for {args.username}: ")
-
-    print("Signing in...", file=sys.stderr)
-    try:
-        session = api_client.sign_in_with_password(instance.region, instance.client_id, args.username, password)
-    except api_client.NewPasswordRequired as challenge:
-        new_password = _read_secret(
-            "ARCHIVIST_NEW_PASSWORD",
-            "This account has a temporary password (docs/ops/create-user.md) -- choose a new one: ",
-        )
-        session = api_client.complete_new_password(
-            instance.region, instance.client_id, args.username, new_password, challenge.session
-        )
-        password = new_password
-    except api_client.ApiError as e:
-        print(f"error signing in: {e}", file=sys.stderr)
-        return 1
-
-    api = api_client.ArchivistApi(instance, session, args.username, password)
+    api = session.api
 
     print("Enrolling this run as a device via the account's recovery code...", file=sys.stderr)
-    recovery = _read_secret(
+    recovery = cli_auth.read_secret(
         "ARCHIVIST_RECOVERY_CODE", "Recovery code (XXXXX-XXXXX-XXXXX-XXXXX-XXXXXX): "
     )
     try:

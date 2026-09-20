@@ -152,7 +152,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("pages the timeline newest-first with a cursor, visiting each asset once", async () => {
-    const owner = `01TIMELINE${newUlid().slice(0, 16)}`;
+    const owner = `01TIMELINE${newUlid().slice(-16)}`;
     const created: string[] = [];
     for (let i = 0; i < 5; i++) {
       const takenAt = toIsoUtc(new Date(Date.UTC(2026, 0, i + 1)));
@@ -184,7 +184,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("returns a range oldest-first when ascending, so a client can load the page just newer than its cache", async () => {
-    const owner = `01ASCEND${newUlid().slice(0, 18)}`;
+    const owner = `01ASCEND${newUlid().slice(-18)}`;
     const takenAts = [
       toIsoUtc(new Date(Date.UTC(2024, 0, 1))),
       toIsoUtc(new Date(Date.UTC(2024, 0, 2))),
@@ -210,7 +210,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("finds the oldest and newest takenAt in the timeline", async () => {
-    const owner = `01BOUNDS${newUlid().slice(0, 18)}`;
+    const owner = `01BOUNDS${newUlid().slice(-18)}`;
     const takenAts = [
       toIsoUtc(new Date(Date.UTC(2019, 5, 1))),
       toIsoUtc(new Date(Date.UTC(2026, 0, 1))),
@@ -228,7 +228,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("counts each live photo on its own local day, and bumps the version each time", async () => {
-    const owner = `01HIST${newUlid().slice(0, 14)}`;
+    const owner = `01HIST${newUlid().slice(-14)}`;
     // Two on one local day and one on the next. The third is deliberately 22:40Z with
     // a +02:00 offset: that is still the 17th in UTC but the 18th to the photo, and
     // the grid headers it as the 18th — so the histogram has to as well.
@@ -250,7 +250,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("trashing decrements the day it was counted on, and restoring puts it back", async () => {
-    const owner = `01HISTTRASH${newUlid().slice(0, 8)}`;
+    const owner = `01HISTTRASH${newUlid().slice(-8)}`;
     const meta = baseMeta({ ownerId: owner, takenAt: "2025-11-17T09:00:00.000Z", tzOffsetMin: 0 });
     const rend = baseRendition();
     await createAsset({ stem: meta.stem, path: rend.path, hmac: rend.contentHash, meta, rendition: rend });
@@ -268,12 +268,12 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("an owner with no photos has an empty histogram at version zero", async () => {
-    const owner = `01HISTEMPTY${newUlid().slice(0, 8)}`;
+    const owner = `01HISTEMPTY${newUlid().slice(-8)}`;
     expect(await readHistogram(owner)).toEqual({ days: {}, total: 0, version: 0 });
   });
 
   it("rebuildHistogram recovers the correct counts for photos that predate the counters", async () => {
-    const owner = `01HISTBACKFILL${newUlid().slice(0, 6)}`;
+    const owner = `01HISTBACKFILL${newUlid().slice(-6)}`;
     // Simulate the gap this tool exists for: photos already in timeline_gsi that were
     // never counted, because createAsset's own histogramAdd only fires on the write
     // path — bypass it here the same way a pre-feature account's data would have.
@@ -306,7 +306,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("a takenAt improvement that crosses a local day boundary moves the count, not just timelineSk", async () => {
-    const owner = `01HISTMOVE${newUlid().slice(0, 8)}`;
+    const owner = `01HISTMOVE${newUlid().slice(-8)}`;
     const meta = baseMeta({ ownerId: owner, takenAt: "2025-11-17T09:00:00.000Z", tzOffsetMin: 0 });
     const rend = baseRendition({ role: "raw" });
     await createAsset({ stem: meta.stem, path: rend.path, hmac: rend.contentHash, meta, rendition: rend });
@@ -336,7 +336,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("a takenAt improvement that stays on the same local day leaves the histogram untouched", async () => {
-    const owner = `01HISTNOMOVE${newUlid().slice(0, 6)}`;
+    const owner = `01HISTNOMOVE${newUlid().slice(-6)}`;
     const meta = baseMeta({ ownerId: owner, takenAt: "2025-11-17T09:00:00.000Z", tzOffsetMin: 0 });
     const rend = baseRendition({ role: "raw" });
     await createAsset({ stem: meta.stem, path: rend.path, hmac: rend.contentHash, meta, rendition: rend });
@@ -362,7 +362,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("rebuildHistogram is idempotent: running it twice produces the same counts", async () => {
-    const owner = `01HISTIDEMPOTENT${newUlid().slice(0, 4)}`;
+    const owner = `01HISTIDEMPOTENT${newUlid().slice(-4)}`;
     const meta = baseMeta({ ownerId: owner, takenAt: "2026-01-01T00:00:00.000Z", tzOffsetMin: 0 });
     const rend = baseRendition();
     await createAsset({ stem: meta.stem, path: rend.path, hmac: rend.contentHash, meta, rendition: rend });
@@ -376,7 +376,7 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
   });
 
   it("returns no bounds for an owner with an empty timeline", async () => {
-    const owner = `01EMPTYBOUNDS${newUlid().slice(0, 12)}`;
+    const owner = `01EMPTYBOUNDS${newUlid().slice(-12)}`;
     const bounds = await timelineBounds(owner);
     expect(bounds.oldest).toBeUndefined();
     expect(bounds.newest).toBeUndefined();

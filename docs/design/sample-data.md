@@ -897,6 +897,18 @@ By path (pattern 1b) is two reads, pointer then item:
 which appear in this schema, so projections touching them need
 `ExpressionAttributeNames`.
 
+Pattern 1b' (`GET /photos/by-path`, api.md) is just the first of those two reads —
+callers that want detail make their own separate call to `GET /photos/{photoId}`
+(pattern 1c) rather than the server doing a second, lean-projection read on their
+behalf. Same pointer item, same key, no `ConditionExpression`/write involved:
+
+```js
+{ TableName: "archivist-media",
+  Key: { pk: "O#01J7X…#PATH#2026/07-japan/IMG_8123.CR3", sk: "#PTR" },
+  ConsistentRead: true }
+// → { photoId: "01K5A2QB3H…", renditionId: "01K5A2QB3H…" }
+```
+
 ### Identity and settings (patterns 6, 9, 10)
 
 ```js

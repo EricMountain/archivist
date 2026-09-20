@@ -111,6 +111,7 @@ locals {
     "GET /photos/bounds",
     "GET /photos/histogram",
     "GET /photos/{photoId}",
+    "GET /photos/by-path",
     "PATCH /photos/{photoId}/renditions/{renditionId}",
     "DELETE /photos/{photoId}",
     "DELETE /photos/{photoId}/renditions/{renditionId}",

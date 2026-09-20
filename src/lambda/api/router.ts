@@ -10,6 +10,7 @@ import {
   deletePhoto,
   deleteRendition,
   getPhoto,
+  getPhotoByPath,
   getPhotos,
   getPhotosBounds,
   getPhotosHistogram,
@@ -54,6 +55,7 @@ export const routes: Record<string, RouteEntry> = {
   "GET /photos/bounds": { handler: getPhotosBounds, authMode: "owner" },
   "GET /photos/histogram": { handler: getPhotosHistogram, authMode: "owner" },
   "GET /photos/{photoId}": { handler: getPhoto, authMode: "owner" },
+  "GET /photos/by-path": { handler: getPhotoByPath, authMode: "owner" },
   "PATCH /photos/{photoId}/renditions/{renditionId}": {
     handler: patchRendition,
     authMode: "owner",

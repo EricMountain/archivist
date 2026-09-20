@@ -4,11 +4,11 @@ import { ApiError } from "@archivist/core/errors";
 import { toIsoUtc } from "@archivist/core/time";
 import { newUlid } from "@archivist/core/ids";
 import { derivedBucket, presignPut } from "@archivist/core/s3";
-import { getAssetPartition, getMetaItem } from "@archivist/core/repo/media";
+import { getAssetPartition, getMetaItem, getRenditionItems } from "@archivist/core/repo/media";
 import { timelineBounds, timelinePage, trashPage } from "@archivist/core/repo/timeline";
 import { histogramVersion, readHistogram } from "@archivist/core/repo/histogram";
 import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
-import { getHashPointer } from "@archivist/core/repo/pointers";
+import { getHashPointer, getPathPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
 import { setThumbs, THUMB_SIZES } from "./uploads";
 import type { ThumbDescriptorMap } from "./uploads";
@@ -24,6 +24,37 @@ function parseLimit(raw: string | undefined): number | undefined {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) throw ApiError.validation("limit must be a positive number");
   return Math.min(n, MAX_LIMIT);
+}
+
+// getTrash's own per-entry enrichment fan-out — see that route's comment for
+// the live incident (Lambda timeout, HTTP socket pool exhaustion) this fixes.
+// 10 is conservative on purpose: it's a small multiple of what a *single*
+// enriched entry needs (2-3 DynamoDB calls), not a tuned-for-throughput
+// number, since the failure mode being avoided is a hard timeout, not slow
+// responses — a slower GET /trash page that finishes is a fine trade for a
+// fast one that doesn't. Raising this needs the same live numbers (page
+// size, per-entry call count, the 15s Lambda budget in terraform/api.tf)
+// checked again first, not just a larger constant.
+const MAX_CONCURRENT_ENRICHMENTS = 10;
+
+/** Runs `fn` over `items` with at most `limit` in flight at once, preserving
+ * result order. Deliberately not `Promise.all(items.map(fn))` — see callers
+ * for why that shape is a real production hazard once `items` gets long. */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 export const getPhotos: RouteHandler = async (req: ApiRequest) => {
@@ -95,6 +126,27 @@ export const getPhoto: RouteHandler = async (req: ApiRequest) => {
   return ok({ meta, renditions, facets });
 };
 
+/** Pattern 1b, exposed: resolve one exact path straight to the rendition it
+ * names — a single consistent GetItem against the PATH pointer, nothing else.
+ * Works for a trashed asset too: trashing (trash.ts) never touches PATH
+ * pointers. Deliberately doesn't also return detail — a caller wanting that
+ * chains to the existing `GET /photos/{photoId}`, which already answers the
+ * same for live or trashed. Added so a caller who already knows an exact path
+ * (a rename target, a local import tool's own computed path) never has to
+ * page through `GET /photos`/`GET /trash` just to turn it into a photoId —
+ * see the `GET /trash` timeout writeup in STATUS.md 1.12 for why that walk is
+ * expensive at any real trash size. */
+export const getPhotoByPath: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const path = req.query["path"];
+  if (!path) throw ApiError.validation("path is required");
+
+  const ptr = await getPathPointer(ownerId, path);
+  if (!ptr) throw ApiError.notFound("no asset at that path");
+
+  return ok({ photoId: ptr.photoId, renditionId: ptr.renditionId });
+};
+
 export const getTrash: RouteHandler = async (req: ApiRequest) => {
   const ownerId = req.auth!.ownerId;
   const page = await trashPage(ownerId, {
@@ -104,27 +156,40 @@ export const getTrash: RouteHandler = async (req: ApiRequest) => {
 
   // Each entry carries its primary rendition's HASH pointer blockedAttempts /
   // lastAttemptAt / lastAttemptBy when non-zero, so the client can warn that a
-  // source still holds the file — see plan step 1.12. Bounded by page size (max
-  // 200) and this is not a hot path, so the extra reads per entry are cheap
-  // relative to the warning being reachable at all.
-  const items = await Promise.all(
-    page.items.map(async (entry) => {
-      const dto = timelineEntryDto(entry);
-      const { meta, renditions } = await getAssetPartition(ownerId, dto.photoId);
-      const primary = renditions.find((r) => r.renditionId === meta?.primaryRend);
-      if (!primary) return dto;
+  // source still holds the file — see plan step 1.12.
+  //
+  // **Bounded concurrency, not Promise.all** — found live, not by inspection: a
+  // full page (MAX_LIMIT 200) firing 200 of these unbounded meant up to 400
+  // concurrent DynamoDB calls (getMetaItem/getRenditionItems below, plus
+  // getHashPointer), which blew straight through the SDK's default 50-socket
+  // HTTP pool ("socket usage at capacity=50 and 150 additional requests are
+  // enqueued", CloudWatch) and the Lambda's own 15s timeout (`terraform/api.tf`)
+  // — confirmed live against a real trash partition of ~2,200 items, a single
+  // GET /trash took the full 15000ms and API Gateway surfaced the timeout as a
+  // bare 500. mapWithConcurrency below caps it at MAX_CONCURRENT_ENRICHMENTS.
+  const items = await mapWithConcurrency(page.items, MAX_CONCURRENT_ENRICHMENTS, async (entry) => {
+    const dto = timelineEntryDto(entry);
+    // getMetaItem + getRenditionItems, not getAssetPartition: this only ever
+    // needs the primary rendition's contentHash, never the facet items
+    // getAssetPartition's full-partition Query would also pull back (up to
+    // ~20 more per photo, design.md's own cost estimate) — real waste at this
+    // volume, on top of the concurrency fix above.
+    const meta = await getMetaItem(ownerId, dto.photoId);
+    if (!meta?.primaryRend) return dto;
+    const renditions = await getRenditionItems(ownerId, dto.photoId);
+    const primary = renditions.find((r) => r.renditionId === meta.primaryRend);
+    if (!primary) return dto;
 
-      const ptr = await getHashPointer(ownerId, primary.contentHash);
-      if (!ptr?.blockedAttempts) return dto;
+    const ptr = await getHashPointer(ownerId, primary.contentHash);
+    if (!ptr?.blockedAttempts) return dto;
 
-      return {
-        ...dto,
-        blockedAttempts: ptr.blockedAttempts,
-        lastAttemptAt: ptr.lastAttemptAt,
-        lastAttemptBy: ptr.lastAttemptBy,
-      };
-    }),
-  );
+    return {
+      ...dto,
+      blockedAttempts: ptr.blockedAttempts,
+      lastAttemptAt: ptr.lastAttemptAt,
+      lastAttemptBy: ptr.lastAttemptBy,
+    };
+  });
 
   return ok({ items, cursor: page.cursor });
 };
