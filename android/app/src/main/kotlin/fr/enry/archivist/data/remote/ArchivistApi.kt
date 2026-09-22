@@ -105,6 +105,22 @@ interface ArchivistApi {
         @Body body: PostPhotoThumbsRequest,
     ): Response<PostPhotoThumbsResponse>
 
+    /** Replaces one rendition's stored bytes in place — `POST
+     * /photos/{photoId}/renditions/{renditionId}/replace` (api.md, design.md
+     * "Replacing a rendition's bytes"). For [fr.enry.archivist.data.repo.RotateRepository]:
+     * the original's own content needs correcting (a rotation), not just its derived
+     * thumbnails, which [postPhotoThumbs] is still a separate follow-up call for. Same
+     * S3 key as before comes back implicitly via [PostRenditionReplaceResponse.uploadUrl]
+     * — no fresh key to mint here, unlike thumbnail repair (the `media` CloudFront
+     * behavior is cache-disabled, see that route's own doc). `Response<T>` for the same reason
+     * as [postPhotoThumbs] — a validation failure or a content-hash collision is an
+     * ordinary outcome the caller checks for. */
+    @POST
+    suspend fun postRenditionReplace(
+        @Url url: String,
+        @Body body: PostRenditionReplaceRequest,
+    ): Response<PostRenditionReplaceResponse>
+
     /** The same `GET /photos/{photoId}` endpoint [getPhoto] calls, decoded instead as
      * [TimelineEntryDto] — the shape [fr.enry.archivist.data.repo.PhotoRepository]'s Room
      * cache actually needs (`thumbs`/`status` included, unlike [PhotoMetaDto]'s
@@ -467,6 +483,21 @@ data class PostPhotoThumbsRequest(val thumbs: Map<String, ThumbDescriptorDto>)
 
 @Serializable
 data class PostPhotoThumbsResponse(val thumbUploads: Map<String, String>)
+
+@Serializable
+data class PostRenditionReplaceRequest(
+    val contentHash: String,
+    val plainBytes: Long,
+    val bytes: Long,
+    val mime: String,
+    val width: Int,
+    val height: Int,
+    val encIv: String? = null,
+    val encChunkSize: Long,
+)
+
+@Serializable
+data class PostRenditionReplaceResponse(val uploadUrl: String)
 
 /** `GET /photos/{photoId}`'s body, decoded as the same [TimelineEntryDto] shape `GET
  * /photos` itself returns — see [ArchivistApi.getPhotoAsTimelineEntry]'s own doc for

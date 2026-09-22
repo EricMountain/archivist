@@ -300,11 +300,29 @@ since thumbnails are encrypted client-side like everything else. Calls `POST
 /photos/{photoId}/thumbs` (api.md), the same repair route the Android app's own
 "Repair thumbnails" menu action uses.
 
-**What this doesn't do**: fix a photo whose *original* file has the wrong EXIF
-Orientation tag baked in (as opposed to a thumbnail that just never read a
-correct one) — that needs the original's stored bytes replaced, not just its
-thumbnails regenerated, and isn't implemented yet. See `STATUS.md` for where
-that stands.
+**Add `--rotate 90/180/270`** when the orientation baked into the *original*
+itself is wrong — not just a thumbnail that never read a correct EXIF tag, but
+one where even "view original" shows it sideways:
+
+```sh
+.venv/bin/python3 modify_media.py orientation \
+  --host photos.example.com \
+  --username someone@example.com \
+  --path -1739773001/IMG_1234.jpg \
+  --source-file /path/to/local/backup/IMG_1234.jpg \
+  --rotate 90 \
+  --execute
+```
+
+The rotation is applied *on top of* whatever `exif_transpose` already does with
+the source file's own EXIF, and clockwise — `--rotate 90` on a photo that
+already displays upright turns it 90° clockwise from there. It targets the
+asset's primary rendition, re-encodes it (same format, quality 95) and calls
+the new `POST .../renditions/{renditionId}/replace` (api.md, design.md
+"Replacing a rendition's bytes") to swap the stored original's bytes in place,
+then regenerates and uploads thumbnails from those same corrected pixels — one
+`--execute` run, two API calls, always in that order (original, then
+thumbnails, matching `POST /uploads`' own sequencing for a first-time upload).
 
 Neither subcommand does more than one photo per run, deliberately: each
 correction needs its own actual value, not a uniform shift or fix, so this

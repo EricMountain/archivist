@@ -7,7 +7,11 @@ import { derivedBucket, presignPut } from "@archivist/core/s3";
 import { getAssetPartition, getMetaItem, getRenditionItems } from "@archivist/core/repo/media";
 import { timelineBounds, timelinePage, trashPage } from "@archivist/core/repo/timeline";
 import { histogramVersion, readHistogram } from "@archivist/core/repo/histogram";
-import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
+import {
+  deleteRendition as repoDeleteRendition,
+  renameRendition,
+  replaceRenditionBytes,
+} from "@archivist/core/repo/renditions";
 import { correctTakenAt } from "@archivist/core/repo/timestamps";
 import { getHashPointer, getPathPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
@@ -244,6 +248,80 @@ export const patchRendition: RouteHandler = async (req: ApiRequest) => {
 
   await renameRendition(ownerId, photoId, renditionId, rendition.path, body.path);
   return noContent();
+};
+
+interface ReplaceRenditionBody {
+  contentHash: string;
+  plainBytes: number;
+  bytes: number;
+  mime: string;
+  width: number;
+  height: number;
+  encIv?: string;
+  encChunkSize: number;
+}
+
+const MAX_RENDITION_DIMENSION = 20_000;
+
+function clampDimension(n: number): number {
+  if (!Number.isFinite(n) || n <= 0) throw ApiError.validation("width and height must be positive numbers");
+  return Math.min(Math.round(n), MAX_RENDITION_DIMENSION);
+}
+
+/** `POST /photos/{photoId}/renditions/{renditionId}/replace` — the bytes-replacement
+ * counterpart to `patchRendition`'s rename and `postPhotoThumbs`'s thumbnail repair:
+ * for when the original's own stored content needs correcting (an orientation baked
+ * in wrong, say), not just its path or its derived thumbnails. See
+ * `repo/renditions.ts`'s `replaceRenditionBytes` for what this actually rewrites and
+ * why the S3 key stays the same (no CloudFront cache to dodge here, unlike
+ * thumbnails — `/media/*` is `caching_disabled`). The caller re-encrypts under the
+ * asset's existing DEK (unchanged, shared across every rendition) and PUTs to the
+ * presigned URL this returns; the thumbnail ladder is a separate, deliberate
+ * follow-up call to the existing repair route, not something this one touches. */
+export const postRenditionReplace: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const photoId = req.params["photoId"];
+  const renditionId = req.params["renditionId"];
+  if (!photoId || !renditionId) throw ApiError.validation("photoId and renditionId are required");
+
+  const { renditions } = await getAssetPartition(ownerId, photoId);
+  const target = renditions.find((r) => r.renditionId === renditionId);
+  if (!target) throw ApiError.notFound("rendition not found");
+
+  const body = parseJsonBody<ReplaceRenditionBody>(req);
+  if (!body.contentHash) throw ApiError.validation("contentHash is required");
+  if (!body.mime) throw ApiError.validation("mime is required");
+  if (!Number.isFinite(body.plainBytes) || body.plainBytes <= 0) {
+    throw ApiError.validation("plainBytes must be a positive number");
+  }
+  if (!Number.isFinite(body.bytes) || body.bytes <= 0) {
+    throw ApiError.validation("bytes must be a positive number");
+  }
+  if (body.encChunkSize === undefined || body.encChunkSize < 0) {
+    throw ApiError.validation("encChunkSize must be 0 or a positive chunk size");
+  }
+  if (body.encChunkSize === 0 && !body.encIv) {
+    throw ApiError.validation("encIv is required for whole-object mode (encChunkSize: 0)");
+  }
+  const width = clampDimension(body.width);
+  const height = clampDimension(body.height);
+
+  await replaceRenditionBytes({
+    ownerId,
+    photoId,
+    renditionId,
+    contentHash: body.contentHash,
+    plainBytes: body.plainBytes,
+    bytes: body.bytes,
+    mime: body.mime,
+    width,
+    height,
+    encIv: body.encIv,
+    encChunkSize: body.encChunkSize,
+  });
+
+  const uploadUrl = await presignPut(target.s3Bucket, target.s3Key, { storageClass: "INTELLIGENT_TIERING" });
+  return ok({ uploadUrl });
 };
 
 interface DeleteBody {

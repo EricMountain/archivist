@@ -16,18 +16,16 @@ family of corrections. Subcommands:
                 live -- displayed it correctly). Needs the account's recovery
                 code to unwrap the asset's DEK: thumbnails are encrypted
                 client-side like everything else (design.md "Third parties use
-                the API, not the datastore").
+                the API, not the datastore"). Add --rotate to also replace the
+                stored *original* (`POST .../renditions/{id}/replace`) with an
+                extra clockwise rotation on top of whatever EXIF already
+                implies -- for when the orientation baked into the original
+                itself is wrong, not just its thumbnails.
 
 Both target an exact asset via --photo-id or --path, never a search -- see
 inspect_photo.py for the same two flags and why a mutation tool doesn't offer
 --filename's fuzzy search (you don't want to accidentally correct the wrong
 photo because two shared a basename).
-
-`orientation` fixes stored *thumbnails* only, from whatever orientation the
-local source file's own EXIF already says -- it doesn't let you override that
-value or touch the stored original. If a photo is still wrong even in "view
-original" (the source file's own EXIF Orientation tag is itself incorrect),
-this tool can't fix that yet; see STATUS.md.
 
 Usage:
     .venv/bin/python3 modify_media.py taken-at --host photos.example.com \\
@@ -37,13 +35,20 @@ Usage:
     .venv/bin/python3 modify_media.py orientation --host photos.example.com \\
         --username someone@example.com --path -1739773001/IMG_1234.jpg \\
         --source-file /path/to/local/backup/IMG_1234.jpg --execute
+
+    .venv/bin/python3 modify_media.py orientation --host photos.example.com \\
+        --username someone@example.com --path -1739773001/IMG_1234.jpg \\
+        --source-file /path/to/local/backup/IMG_1234.jpg --rotate 90 --execute
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from datetime import datetime, timedelta, timezone
+
+from PIL import Image, ImageOps
 
 import cli_auth
 import crypto_format as cf
@@ -186,7 +191,33 @@ def add_orientation_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--source-file", required=True, help="local path to the original file, EXIF orientation intact"
     )
+    p.add_argument(
+        "--rotate",
+        type=int,
+        choices=(90, 180, 270),
+        help="also replace the stored ORIGINAL (POST .../renditions/{id}/replace, api.md), rotated "
+        "this many degrees clockwise *beyond* whatever the source file's own EXIF orientation "
+        "already implies -- for when the orientation baked into the original itself is wrong, not "
+        "just the thumbnails (which get regenerated from these same corrected pixels either way). "
+        "Targets the asset's primary rendition. Without this flag only thumbnails are touched.",
+    )
     p.set_defaults(run=run_orientation)
+
+
+def _encode_image(im: Image.Image, pil_format: str) -> bytes:
+    """Re-encodes a corrected `Image` back to bytes in its source format -- quality
+    is a lossy-format-only kwarg (PNG et al reject it outright), so this falls back
+    to a plain save rather than assuming every format takes it."""
+    buf = io.BytesIO()
+    try:
+        im.save(buf, format=pil_format, quality=ORIGINAL_REENCODE_QUALITY)
+    except TypeError:
+        buf = io.BytesIO()
+        im.save(buf, format=pil_format)
+    return buf.getvalue()
+
+
+ORIGINAL_REENCODE_QUALITY = 95
 
 
 def run_orientation(args) -> int:
@@ -221,8 +252,26 @@ def run_orientation(args) -> int:
     meta = detail["meta"]
     dek = cf.unwrap_key(enrollment.master_key, b64d(meta["encDek"]))
 
+    target_rendition = None
+    if args.rotate:
+        target_rendition = next(
+            (r for r in detail["renditions"] if r["renditionId"] == meta.get("primaryRend")), None
+        )
+        if target_rendition is None:
+            print("\nerror: this asset has no primary rendition to replace.", file=sys.stderr)
+            return 1
+
     try:
-        new_thumbs = thumbnails.generate_for_image(args.source_file)
+        with Image.open(args.source_file) as im:
+            im.load()
+            source_format = im.format or "JPEG"
+            corrected = ImageOps.exif_transpose(im)
+            if args.rotate:
+                # rotate()'s angle is counter-clockwise; --rotate is documented as
+                # clockwise, hence the sign flip. expand=True so a 90/270 swaps the
+                # canvas dimensions rather than cropping to the original box.
+                corrected = corrected.rotate(-args.rotate, expand=True)
+            new_thumbs = thumbnails.ladder_from_image(corrected)
     except Exception as e:
         print(f"error: couldn't read {args.source_file!r} as an image: {e}", file=sys.stderr)
         return 1
@@ -230,8 +279,13 @@ def run_orientation(args) -> int:
         print(f"\nerror: {args.source_file!r} produced no thumbnails.", file=sys.stderr)
         return 1
 
-    existing_thumbs = meta.get("thumbs") or {}
     print(f"\n{photo_id}  (stem: {meta.get('stem')})")
+    if target_rendition is not None:
+        print(
+            f"  original      {target_rendition['width']}x{target_rendition['height']}  ->  "
+            f"{corrected.width}x{corrected.height}  (rotate {args.rotate}° clockwise)"
+        )
+    existing_thumbs = meta.get("thumbs") or {}
     for t in new_thumbs:
         old = existing_thumbs.get(str(t.size))
         old_dims = f"{old.get('width')}x{old.get('height')}" if isinstance(old, dict) and old.get("width") else "?"
@@ -240,6 +294,27 @@ def run_orientation(args) -> int:
     if not args.execute:
         print("\nDry run only -- nothing changed. Re-run with --execute to apply.")
         return 0
+
+    if target_rendition is not None:
+        rendition_id = target_rendition["renditionId"]
+        plain_bytes = _encode_image(corrected, source_format)
+        content_hash = cf.content_hash(enrollment.hash_secret, plain_bytes)
+        chunk_size = cf.choose_chunk_size(len(plain_bytes))
+        enc = cf.encrypt_object(dek, cf.aad(photo_id, cf.object_ref_rendition(rendition_id)), plain_bytes, chunk_size)
+        body = {
+            "contentHash": content_hash,
+            "plainBytes": len(plain_bytes),
+            "bytes": len(enc.ciphertext),
+            "mime": target_rendition["mime"],
+            "width": corrected.width,
+            "height": corrected.height,
+            "encChunkSize": enc.chunk_size,
+        }
+        if enc.iv is not None:
+            body["encIv"] = b64(enc.iv)
+        resp = api.post_rendition_replace(photo_id, rendition_id, body)
+        put_bytes(resp["uploadUrl"], target_rendition["mime"], enc.ciphertext)
+        print(f"Replaced the original ({rendition_id}).")
 
     encrypted = {
         t.size: (t, cf.encrypt_object(dek, cf.aad(photo_id, cf.object_ref_thumbnail(t.size)), t.bytes_, 0))

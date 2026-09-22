@@ -97,6 +97,7 @@ fun DetailScreen(
     val deleteState by viewModel.deleteState.collectAsStateWithLifecycle()
     val repairState by viewModel.repairState.collectAsStateWithLifecycle()
     val takenAtState by viewModel.takenAtState.collectAsStateWithLifecycle()
+    val rotateState by viewModel.rotateState.collectAsStateWithLifecycle()
 
     // DetailViewModel is retained across opens (hiltViewModel() resolves to the
     // Activity's own ViewModelStore — see the deleteState reset below for the same
@@ -109,6 +110,7 @@ fun DetailScreen(
     // nothing else ever moves takenAtState back to Idle (editing a date doesn't
     // navigate away the way a delete does).
     LaunchedEffect(Unit) { viewModel.dismissTakenAt() }
+    LaunchedEffect(Unit) { viewModel.dismissRotate() }
 
     if (photos.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -191,6 +193,17 @@ fun DetailScreen(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text("Rotate 90° clockwise") },
+                        // Needs the full detail for the same reason "Repair thumbnails"
+                        // above does — RotateRepository picks the rendition to rotate
+                        // from PhotoDetail.primaryRend.
+                        enabled = rotateState !is RotateUiState.InProgress && currentDetail != null,
+                        onClick = {
+                            showMenu = false
+                            currentDetail?.let { viewModel.rotatePhoto(it) }
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Edit date") },
                         enabled = takenAtState !is TakenAtUiState.InProgress && currentDetail != null,
                         onClick = {
@@ -264,6 +277,27 @@ fun DetailScreen(
             TakenAtUiState.InProgress ->
                 Text("Saving…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
             TakenAtUiState.Idle -> {}
+        }
+
+        when (rotateState) {
+            is RotateUiState.Error ->
+                Text(
+                    (rotateState as RotateUiState.Error).message,
+                    // Not always a hard failure -- RotateRepository reports a thumbnail
+                    // repair failure the same way even though the original rotation
+                    // itself succeeded in that case; tertiary (matching RepairUiState.Warning
+                    // above) would be more accurate there, but distinguishing the two
+                    // isn't worth a third RotateOutcome variant for a message that already
+                    // says "rotated, but..." in that case.
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            RotateUiState.Done ->
+                Text("Rotated.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            RotateUiState.InProgress ->
+                Text("Rotating…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            RotateUiState.Idle -> {}
         }
 
         if (isLandscape) {

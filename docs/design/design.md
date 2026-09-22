@@ -1479,6 +1479,40 @@ you'd already decided you don't want, which is cheap next to discarding a RAW by
 mistake. An explicit **purge now** exists for the case where space genuinely is the
 motive, but it's the exception rather than the reason the feature exists.
 
+### Replacing a rendition's bytes
+
+Distinct from deleting one: sometimes the content itself needs correcting rather
+than removing — an orientation baked into the original wrong, say, something no
+amount of re-deriving thumbnails can fix, since a thumbnail is generated *from*
+the original, never the other way round. `POST
+/photos/{photoId}/renditions/{renditionId}/replace` (api.md) rewrites the `R#`
+item's `contentHash`/`bytes`/`plainBytes`/`mime`/`width`/`height`/`encIv`/
+`encChunkSize` in place — same `renditionId`, same S3 key, same `role`/`path`, so
+nothing else that names this rendition (a PATH pointer, a client's own cached
+`renditionId`) needs to change. `#META`'s own `mime`/`width`/`height` update too,
+but only when this rendition is primary — same condition `deleteRendition`'s
+primary re-election already checks.
+
+The one thing that *does* move is the HASH pointer: the old one is deleted (left in
+place, it would keep asserting this owner already holds content that, after this
+call, is simply gone) and a new one is put for the new content, conditioned on not
+already existing elsewhere — a genuine collision with different already-live
+content is refused rather than silently reassigned. Same-key overwrite is safe here
+in a way it wasn't for thumbnails (`postPhotoThumbs`'s `presignedRepairThumbs`
+mints a fresh key every call specifically to dodge `/thumbs/*`'s year-long edge
+cache): `/media/*` is `caching_disabled` (see "S3 layout and storage tiering"
+below), so there's no stale CloudFront response to avoid serving.
+
+Refused outright on a trashed asset (same `attribute_not_exists(deletedAt)`
+condition ingest already relies on) — correcting content on something already
+headed for purge isn't a case worth the extra complexity of supporting.
+
+Deliberately doesn't touch thumbnails: a caller whose replacement bytes also
+invalidate the derived thumbnail ladder (the orientation case, typically) makes
+its own separate `POST .../thumbs` call afterward — the same two-call shape
+`POST /uploads` itself already uses (original, then thumbnails), just for a
+correction instead of a first upload.
+
 ### What trash costs
 
 Trashed originals keep billing at full rate for the retention window, Intelligent-

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import io
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modify_media import parse_taken_at_local, parse_taken_at_utc
+from PIL import Image
+
+from modify_media import _encode_image, parse_taken_at_local, parse_taken_at_utc
 
 
 class ParseTakenAtLocal(unittest.TestCase):
@@ -48,6 +51,48 @@ class ParseTakenAtUtc(unittest.TestCase):
     def test_rejects_unparseable_input(self):
         with self.assertRaises(ValueError):
             parse_taken_at_utc("not-a-date")
+
+
+class EncodeImage(unittest.TestCase):
+    """The --rotate path's re-encode step -- quality is a lossy-format-only kwarg
+    Pillow rejects outright for some formats (PNG), so this has to fall back
+    rather than assume every format accepts it."""
+
+    def test_jpeg_round_trips_with_quality(self):
+        im = Image.new("RGB", (12, 8), (10, 20, 30))
+        data = _encode_image(im, "JPEG")
+        with Image.open(io.BytesIO(data)) as decoded:
+            self.assertEqual(decoded.format, "JPEG")
+            self.assertEqual(decoded.size, (12, 8))
+
+    def test_png_falls_back_when_quality_is_rejected(self):
+        im = Image.new("RGB", (12, 8), (10, 20, 30))
+        data = _encode_image(im, "PNG")
+        with Image.open(io.BytesIO(data)) as decoded:
+            self.assertEqual(decoded.format, "PNG")
+            self.assertEqual(decoded.size, (12, 8))
+
+
+class RotateSemantics(unittest.TestCase):
+    """--rotate is documented as clockwise; Pillow's Image.rotate() angle is
+    counter-clockwise, so run_orientation negates it. Characterises that sign
+    convention directly (not by importing run_orientation, which needs a live API)
+    so a flipped sign regresses loudly rather than only being noticed by eye on a
+    real photo."""
+
+    def test_rotate_90_clockwise_swaps_dimensions_the_documented_direction(self):
+        # A wide (100x60) image with a distinct top-left pixel: rotating 90
+        # clockwise should move that corner's content to the top-right.
+        im = Image.new("RGB", (100, 60), (0, 0, 0))
+        im.putpixel((0, 0), (255, 0, 0))
+        rotated = im.rotate(-90, expand=True)
+        self.assertEqual(rotated.size, (60, 100))
+        self.assertEqual(rotated.getpixel((59, 0)), (255, 0, 0))
+
+    def test_rotate_180_does_not_change_dimensions(self):
+        im = Image.new("RGB", (100, 60), (0, 0, 0))
+        rotated = im.rotate(-180, expand=True)
+        self.assertEqual(rotated.size, (100, 60))
 
 
 if __name__ == "__main__":

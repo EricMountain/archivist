@@ -44,7 +44,13 @@ def _target_dimensions(width: int, height: int, longest_edge: int) -> tuple[int,
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
-def _ladder_from_image(im: Image.Image) -> list[Thumbnail]:
+def ladder_from_image(im: Image.Image) -> list[Thumbnail]:
+    """Public (not just this module's own two callers below) so a caller that's
+    already produced a correctly-oriented `Image` some other way -- `modify_media.py
+    orientation --rotate`, which applies an *additional* rotation on top of
+    `exif_transpose` before both replacing the original and regenerating
+    thumbnails from the very same corrected pixels -- doesn't have to re-derive
+    orientation a second time or round-trip through a file just to reuse this."""
     im = im.convert("RGB") if im.mode not in ("RGB", "RGBA") else im
     width, height = im.size
     out = []
@@ -67,7 +73,7 @@ def generate_for_image(path: str) -> list[Thumbnail]:
         # all, so nothing downstream (Coil, grid thumbnails) has a tag left to correct
         # for. "View original" self-corrects independently, reading the orientation
         # tag straight off the original file's own bytes -- see DetailScreen.kt.
-        return _ladder_from_image(ImageOps.exif_transpose(im))
+        return ladder_from_image(ImageOps.exif_transpose(im))
 
 
 def ffmpeg_available() -> bool:
@@ -107,6 +113,6 @@ def generate_for_video(path: str, duration_seconds: float | None) -> list[Thumbn
     try:
         with Image.open(io.BytesIO(proc.stdout)) as im:
             im.load()
-            return _ladder_from_image(im)
+            return ladder_from_image(im)
     except Exception:
         return None

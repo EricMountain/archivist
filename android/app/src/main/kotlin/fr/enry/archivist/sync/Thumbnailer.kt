@@ -192,20 +192,24 @@ class AndroidThumbnailer
                 base.recycle()
             }
 
-        private fun encodeWebp(bitmap: Bitmap): ByteArray {
-            val out = ByteArrayOutputStream()
-            val format =
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    Bitmap.CompressFormat.WEBP_LOSSY
-                } else {
-                    @Suppress("DEPRECATION")
-                    Bitmap.CompressFormat.WEBP
-                }
-            bitmap.compress(format, WEBP_QUALITY, out)
-            return out.toByteArray()
-        }
-
-        private companion object {
-            const val WEBP_QUALITY = 82
-        }
+        private fun encodeWebp(bitmap: Bitmap): ByteArray = fr.enry.archivist.sync.encodeWebp(bitmap)
     }
+
+/** Pulled out of [AndroidThumbnailer] (`internal`, not `private`) so
+ * [fr.enry.archivist.data.repo.RotateRepository] can produce byte-identical thumbnail
+ * encoding from a bitmap it decoded and rotated itself, rather than duplicating the
+ * WebP-version dance or drifting from this quality setting. */
+internal const val WEBP_QUALITY = 82
+
+internal fun encodeWebp(bitmap: Bitmap): ByteArray {
+    val out = ByteArrayOutputStream()
+    val format =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Bitmap.CompressFormat.WEBP_LOSSY
+        } else {
+            @Suppress("DEPRECATION")
+            Bitmap.CompressFormat.WEBP
+        }
+    bitmap.compress(format, WEBP_QUALITY, out)
+    return out.toByteArray()
+}

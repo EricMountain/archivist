@@ -18,6 +18,7 @@ import {
   patchRendition,
   patchTakenAt,
   postPhotoThumbs,
+  postRenditionReplace,
   postRestore,
 } from "./routes/photos";
 import { getFacetPage, getFacets } from "./routes/facets";
@@ -60,6 +61,10 @@ export const routes: Record<string, RouteEntry> = {
   "PATCH /photos/{photoId}": { handler: patchTakenAt, authMode: "owner" },
   "PATCH /photos/{photoId}/renditions/{renditionId}": {
     handler: patchRendition,
+    authMode: "owner",
+  },
+  "POST /photos/{photoId}/renditions/{renditionId}/replace": {
+    handler: postRenditionReplace,
     authMode: "owner",
   },
   "DELETE /photos/{photoId}": { handler: deletePhoto, authMode: "owner" },

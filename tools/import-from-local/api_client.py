@@ -355,6 +355,16 @@ class ArchivistApi:
         to know this, but it's why a repair is never just overwriting a cached URL."""
         return self._request("POST", f"/photos/{photo_id}/thumbs", {"thumbs": thumbs})
 
+    def post_rendition_replace(self, photo_id: str, rendition_id: str, body: dict) -> dict:
+        """Replaces one rendition's stored bytes in place (api.md `POST
+        /photos/{photoId}/renditions/{renditionId}/replace`, design.md "Replacing a
+        rendition's bytes") -- `body` is `{contentHash, plainBytes, bytes, mime,
+        width, height, encIv?, encChunkSize}`. Returns `{"uploadUrl": ...}`, a
+        presigned PUT against the rendition's *existing* S3 key -- unlike thumbnail
+        repair, there's no fresh key to mint here (`/media/*` is `caching_disabled`
+        at the CloudFront edge, so there's no stale response to dodge)."""
+        return self._request("POST", f"/photos/{photo_id}/renditions/{rendition_id}/replace", body)
+
     def patch_taken_at(self, photo_id: str, taken_at: str, tz_offset_min: int) -> None:
         """Manually corrects `takenAt`/`tzOffsetMin` (api.md `PATCH /photos/{photoId}`,
         design.md "Manually correcting takenAt") -- `taken_at` a UTC ISO-8601 instant,

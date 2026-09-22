@@ -13,6 +13,8 @@ import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.RenditionSummary
 import fr.enry.archivist.data.repo.RepairOutcome
 import fr.enry.archivist.data.repo.RepairRepository
+import fr.enry.archivist.data.repo.RotateOutcome
+import fr.enry.archivist.data.repo.RotateRepository
 import fr.enry.archivist.data.repo.TakenAtOutcome
 import fr.enry.archivist.data.repo.TakenAtRepository
 import java.io.IOException
@@ -77,6 +79,18 @@ sealed interface TakenAtUiState {
     data class Error(val message: String) : TakenAtUiState
 }
 
+/** The "Rotate 90° clockwise" menu action's state, keyed by nothing — same reasoning
+ * as [DeleteUiState]/[RepairUiState]/[TakenAtUiState]. */
+sealed interface RotateUiState {
+    data object Idle : RotateUiState
+
+    data object InProgress : RotateUiState
+
+    data object Done : RotateUiState
+
+    data class Error(val message: String) : RotateUiState
+}
+
 /** One photo's detail fetch/decrypt, keyed by photoId in [DetailViewModel.details] —
  * a page the pager has already scrolled past keeps whatever it last had rather than
  * reverting to [Loading] on every swipe back. */
@@ -121,6 +135,7 @@ class DetailViewModel
         private val deleteRepository: DeleteRepository,
         private val repairRepository: RepairRepository,
         private val takenAtRepository: TakenAtRepository,
+        private val rotateRepository: RotateRepository,
         instanceStore: InstanceStore,
     ) : ViewModel() {
         val photos: StateFlow<List<PhotoEntity>> =
@@ -285,5 +300,39 @@ class DetailViewModel
 
         fun dismissTakenAt() {
             _takenAtState.value = TakenAtUiState.Idle
+        }
+
+        private val _rotateState = MutableStateFlow<RotateUiState>(RotateUiState.Idle)
+        val rotateState: StateFlow<RotateUiState> = _rotateState.asStateFlow()
+
+        /** Needs the full [PhotoDetail] for the same reason [repairPhoto] does — see
+         * [RotateRepository]'s own doc for what it does with it. */
+        fun rotatePhoto(detail: PhotoDetail) {
+            _rotateState.value = RotateUiState.InProgress
+            viewModelScope.launch {
+                val outcome = rotateRepository.rotate(detail)
+                if (outcome is RotateOutcome.Done) {
+                    // Same reasoning as editTakenAt: the cached PhotoDetailUiState.Loaded
+                    // still carries the pre-rotation width/height/thumbs otherwise.
+                    val refreshed =
+                        try {
+                            PhotoDetailUiState.Loaded(photoDetailRepository.fetchDetail(detail.photoId))
+                        } catch (e: IOException) {
+                            PhotoDetailUiState.Error(e.message ?: "network error")
+                        } catch (e: HttpException) {
+                            PhotoDetailUiState.Error("HTTP ${e.code()}")
+                        }
+                    _details.update { it + (detail.photoId to refreshed) }
+                }
+                _rotateState.value =
+                    when (outcome) {
+                        RotateOutcome.Done -> RotateUiState.Done
+                        is RotateOutcome.Error -> RotateUiState.Error(outcome.message)
+                    }
+            }
+        }
+
+        fun dismissRotate() {
+            _rotateState.value = RotateUiState.Idle
         }
     }

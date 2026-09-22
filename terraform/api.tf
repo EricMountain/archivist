@@ -114,6 +114,7 @@ locals {
     "GET /photos/by-path",
     "PATCH /photos/{photoId}",
     "PATCH /photos/{photoId}/renditions/{renditionId}",
+    "POST /photos/{photoId}/renditions/{renditionId}/replace",
     "DELETE /photos/{photoId}",
     "DELETE /photos/{photoId}/renditions/{renditionId}",
     "POST /photos/{photoId}/restore",
