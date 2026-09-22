@@ -30,6 +30,15 @@ enum class TzSrc(val wireValue: String) {
     ASSUMED_UTC("assumed-utc"),
 }
 
+/** `toIsoUtc` in `src/core/time.ts` — fixed-width millisecond precision, always
+ * `.SSS` even when the millis are exactly zero. `Instant.toString()` can't be used
+ * for this: it omits the fractional part entirely when it's zero (`ISO_INSTANT`'s
+ * documented "minimum number of digits" behaviour), which fails the server's
+ * `isIsoUtc` regex (`\.\d{3}Z$`, exactly three digits, always present). */
+private val ISO_UTC_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
+
+fun toIsoUtc(instant: Instant): String = ISO_UTC_FORMAT.format(instant)
+
 enum class OffsetMode { FORCE, FALLBACK }
 
 /** The `tzOffsetMin`/`offsetMode` pair a batch upload can supply — see "Upload-supplied

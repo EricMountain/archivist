@@ -345,6 +345,25 @@ class ArchivistApi:
             params["cursor"] = cursor
         return self._request("GET", f"/trash?{urllib.parse.urlencode(params)}")
 
+    def post_photo_thumbs(self, photo_id: str, thumbs: dict) -> dict:
+        """Repairs one or more thumbnail rungs (api.md `POST /photos/{photoId}/thumbs`)
+        -- `thumbs` maps each size (`"256"`/`"1024"`/`"2048"`) to `{"bytes": N, "iv":
+        b64}`, the same descriptor shape `POST /uploads` itself uses for thumbnails.
+        Returns `{"thumbUploads": {size: presigned PUT url}}`. Presigns against a
+        *fresh* S3 key per call, never the plain upload-time one (design.md: the
+        upload-time key is cached a year at the CloudFront edge) -- callers don't need
+        to know this, but it's why a repair is never just overwriting a cached URL."""
+        return self._request("POST", f"/photos/{photo_id}/thumbs", {"thumbs": thumbs})
+
+    def patch_taken_at(self, photo_id: str, taken_at: str, tz_offset_min: int) -> None:
+        """Manually corrects `takenAt`/`tzOffsetMin` (api.md `PATCH /photos/{photoId}`,
+        design.md "Manually correcting takenAt") -- `taken_at` a UTC ISO-8601 instant,
+        `tz_offset_min` the offset in minutes. Works on a trashed asset too. Sets both
+        `takenAtSrc`/`tzSrc` to `manual` server-side, which permanently outranks every
+        automatic source -- a later-attached rendition's own EXIF can't silently
+        overwrite this."""
+        self._request("PATCH", f"/photos/{photo_id}", {"takenAt": taken_at, "tzOffsetMin": tz_offset_min})
+
     def delete_photo(self, photo_id: str, deleted_by: str | None = None) -> None:
         """Trashes the whole asset -- every rendition, not just one -- via the same
         soft-delete `DELETE /photos/{photoId}` route the app's own delete button

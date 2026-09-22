@@ -1,13 +1,14 @@
 // Timeline, detail, and the rename/delete/restore mutations — plan steps 1.11
 // and 1.12.
 import { ApiError } from "@archivist/core/errors";
-import { toIsoUtc } from "@archivist/core/time";
+import { isIsoUtc, toIsoUtc } from "@archivist/core/time";
 import { newUlid } from "@archivist/core/ids";
 import { derivedBucket, presignPut } from "@archivist/core/s3";
 import { getAssetPartition, getMetaItem, getRenditionItems } from "@archivist/core/repo/media";
 import { timelineBounds, timelinePage, trashPage } from "@archivist/core/repo/timeline";
 import { histogramVersion, readHistogram } from "@archivist/core/repo/histogram";
 import { deleteRendition as repoDeleteRendition, renameRendition } from "@archivist/core/repo/renditions";
+import { correctTakenAt } from "@archivist/core/repo/timestamps";
 import { getHashPointer, getPathPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
 import { setThumbs, THUMB_SIZES } from "./uploads";
@@ -192,6 +193,36 @@ export const getTrash: RouteHandler = async (req: ApiRequest) => {
   });
 
   return ok({ items, cursor: page.cursor });
+};
+
+interface TakenAtBody {
+  takenAt: string;
+  tzOffsetMin: number;
+}
+
+/** Manually corrects a photo's `takenAt`/`tzOffsetMin` — for the case the whole
+ * ladder in design.md's "Establishing takenAt" got wrong (a camera with no
+ * clock set, a bad filename-derived guess from an import tool, …) and nothing
+ * short of a human who knows the real date can fix. See `repo/timestamps.ts`
+ * for what this actually rewrites (meta, timelineSk, every facet item,
+ * live-only histogram bucket) and why `takenAtSrc`/`tzSrc` become `manual` —
+ * `paths.ts`'s `TAKEN_AT_SRC_RANK` ranks it above every automatic rung so a
+ * later-attached rendition's own EXIF can never silently overwrite it. */
+export const patchTakenAt: RouteHandler = async (req: ApiRequest) => {
+  const ownerId = req.auth!.ownerId;
+  const photoId = req.params["photoId"];
+  if (!photoId) throw ApiError.validation("photoId is required");
+
+  const body = parseJsonBody<TakenAtBody>(req);
+  if (!body.takenAt || !isIsoUtc(body.takenAt)) {
+    throw ApiError.validation("takenAt must be an ISO-8601 UTC timestamp, e.g. 2026-07-14T09:22:05.000Z");
+  }
+  if (!Number.isInteger(body.tzOffsetMin) || Math.abs(body.tzOffsetMin) > 1440) {
+    throw ApiError.validation("tzOffsetMin must be an integer number of minutes");
+  }
+
+  await correctTakenAt({ ownerId, photoId, takenAt: body.takenAt, tzOffsetMin: body.tzOffsetMin });
+  return noContent();
 };
 
 interface RenameBody {

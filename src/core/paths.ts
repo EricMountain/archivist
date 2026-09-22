@@ -57,9 +57,15 @@ export function roleOutranks(candidate: RenditionRole, current: RenditionRole): 
   return ROLE_RANK[candidate] > ROLE_RANK[current];
 }
 
-/** First hit wins, ranked exif > file-mtime > s3-mtime > upload — see
- * "Establishing takenAt" in design.md. */
+/** First hit wins, ranked manual > exif > file-mtime > s3-mtime > upload — see
+ * "Establishing takenAt" in design.md. `manual` outranks everything else on
+ * purpose: it's a human's explicit correction of a value the automatic ladder
+ * got wrong, and a later-attached rendition's own EXIF (routes/uploads.ts's
+ * `postUpload`, gated on this same function) must never silently overwrite
+ * that on the theory that EXIF usually wins — that's exactly the case the
+ * correction exists to override. */
 const TAKEN_AT_SRC_RANK: Record<TakenAtSrc, number> = {
+  manual: 4,
   exif: 3,
   "file-mtime": 2,
   "s3-mtime": 1,

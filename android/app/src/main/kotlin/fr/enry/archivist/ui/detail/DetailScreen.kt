@@ -96,6 +96,7 @@ fun DetailScreen(
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
     val deleteState by viewModel.deleteState.collectAsStateWithLifecycle()
     val repairState by viewModel.repairState.collectAsStateWithLifecycle()
+    val takenAtState by viewModel.takenAtState.collectAsStateWithLifecycle()
 
     // DetailViewModel is retained across opens (hiltViewModel() resolves to the
     // Activity's own ViewModelStore — see the deleteState reset below for the same
@@ -104,6 +105,10 @@ fun DetailScreen(
     // Unlike deleteState, nothing else here ever transitions repairState back to
     // Idle on its own (repair doesn't navigate away), so this has to do it explicitly.
     LaunchedEffect(Unit) { viewModel.dismissRepair() }
+    // Same reset, same reasoning: DetailViewModel outlives a single screen visit, and
+    // nothing else ever moves takenAtState back to Idle (editing a date doesn't
+    // navigate away the way a delete does).
+    LaunchedEffect(Unit) { viewModel.dismissTakenAt() }
 
     if (photos.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -143,6 +148,7 @@ fun DetailScreen(
     }
 
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showEditTakenAtDialog by remember { mutableStateOf(false) }
     val mediaDeleteLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
             val confirming = deleteState
@@ -182,6 +188,14 @@ fun DetailScreen(
                         onClick = {
                             showMenu = false
                             currentDetail?.let { viewModel.repairPhoto(it) }
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Edit date") },
+                        enabled = takenAtState !is TakenAtUiState.InProgress && currentDetail != null,
+                        onClick = {
+                            showMenu = false
+                            showEditTakenAtDialog = true
                         },
                     )
                     DropdownMenuItem(
@@ -235,6 +249,21 @@ fun DetailScreen(
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
             RepairUiState.Idle -> {}
+        }
+
+        when (takenAtState) {
+            is TakenAtUiState.Error ->
+                Text(
+                    "Couldn't save the date: ${(takenAtState as TakenAtUiState.Error).message}",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            TakenAtUiState.Done ->
+                Text("Date updated.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            TakenAtUiState.InProgress ->
+                Text("Saving…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            TakenAtUiState.Idle -> {}
         }
 
         if (isLandscape) {
@@ -302,6 +331,18 @@ fun DetailScreen(
             onConfirm = { mode ->
                 showDeleteDialog = false
                 viewModel.deletePhoto(currentPhoto.photoId, mode)
+            },
+        )
+    }
+
+    if (showEditTakenAtDialog && currentDetail != null) {
+        EditTakenAtDialog(
+            currentTakenAt = currentDetail.takenAt,
+            tzOffsetMin = currentDetail.tzOffsetMin,
+            onDismiss = { showEditTakenAtDialog = false },
+            onConfirm = { newTakenAt ->
+                showEditTakenAtDialog = false
+                viewModel.editTakenAt(currentDetail.photoId, newTakenAt, currentDetail.tzOffsetMin)
             },
         )
     }
@@ -420,7 +461,13 @@ private fun MetadataPanel(
             is PhotoDetailUiState.Loaded -> {
                 val detail = state.detail
                 Text(
-                    formatDate(detail.takenAt, detail.tzOffsetMin, approximate = detail.takenAtSrc != "exif"),
+                    // "manual" is exact too -- a human explicitly set it, the opposite of
+                    // approximate (design.md "Manually correcting takenAt").
+                    formatDate(
+                        detail.takenAt,
+                        detail.tzOffsetMin,
+                        approximate = detail.takenAtSrc != "exif" && detail.takenAtSrc != "manual",
+                    ),
                     style = MaterialTheme.typography.titleSmall,
                 )
                 val camera = listOfNotNull(detail.cameraMake, detail.cameraModel).joinToString(" ")

@@ -361,6 +361,46 @@ describe.skipIf(!RUN)("repo layer against DynamoDB Local", () => {
     expect(after.version).toBe(before.version);
   });
 
+  it("a takenAt improvement rewrites the asset's facet items too -- takenAt and facetSk", async () => {
+    const owner = `01FACETMOVE${newUlid().slice(-6)}`;
+    const meta = baseMeta({ ownerId: owner, takenAt: "2025-11-17T09:00:00.000Z", tzOffsetMin: 0 });
+    const rend = baseRendition({ role: "raw" });
+    await createAsset({ stem: meta.stem, path: rend.path, hmac: rend.contentHash, meta, rendition: rend });
+
+    const facet: FacetItem = {
+      pk: mediaPk(owner, meta.photoId),
+      sk: facetSk("YEAR", "2025"),
+      facetType: "YEAR",
+      facetValue: "2025",
+      takenAt: meta.takenAt,
+      tzOffsetMin: 0,
+      thumbs: {},
+      encDek: "dek",
+      encKeyId: "mk-test",
+      width: 100,
+      height: 100,
+      facetPk: facetGsiPk(owner, "YEAR", "2025"),
+      facetSk: sortKey(meta.takenAt, meta.photoId),
+    };
+    await ddb().send(new PutCommand({ TableName: process.env["MEDIA_TABLE"], Item: facet }));
+
+    const better = baseRendition({ role: "display" });
+    const improvedTakenAt = "2025-11-18T03:00:00.000Z";
+    await attachRendition({
+      ownerId: owner,
+      photoId: meta.photoId,
+      path: better.path,
+      hmac: better.contentHash,
+      rendition: better,
+      takenAtImprovement: { takenAt: improvedTakenAt, tzOffsetMin: 0, tzSrc: "exif", takenAtSrc: "exif" },
+    });
+
+    const { facets } = await getAssetPartition(owner, meta.photoId);
+    expect(facets).toHaveLength(1);
+    expect(facets[0]?.takenAt).toBe(improvedTakenAt);
+    expect(facets[0]?.facetSk).toBe(sortKey(improvedTakenAt, meta.photoId));
+  });
+
   it("rebuildHistogram is idempotent: running it twice produces the same counts", async () => {
     const owner = `01HISTIDEMPOTENT${newUlid().slice(-4)}`;
     const meta = baseMeta({ ownerId: owner, takenAt: "2026-01-01T00:00:00.000Z", tzOffsetMin: 0 });

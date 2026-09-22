@@ -243,6 +243,73 @@ whole corpus (what `--filename`/`--contains` still do, via the cache); `--path`
 only ever answers "what's at this exact path," which the existing pointer
 already knows for free.
 
+## Fixing something after the fact
+
+`modify_media.py` is the "something about this imported photo is wrong and
+only a human can fix it" tool — one entry point, subcommands for each kind of
+correction. Both target an exact asset via `--photo-id`/`--path` (same as
+`inspect_photo.py` above — never a fuzzy `--filename` search, since
+accidentally correcting the wrong photo because two shared a basename would
+be worse than not correcting it at all), and are a dry run by default;
+`--execute` applies.
+
+**`taken-at`** corrects `takenAt`/`tzOffsetMin` — for when the whole ladder in
+design.md's "Establishing takenAt" got it wrong: a camera with no clock set, a
+filename-parsed date that used the wrong convention, an import that fell all
+the way back to file mtime.
+
+```sh
+.venv/bin/python3 modify_media.py taken-at \
+  --host photos.example.com \
+  --username someone@example.com \
+  --photo-id 01K5A2QB3HN7WYP2GKD4RVXM8C \
+  --taken-at-local "2019-06-15 14:00:00" --tz-offset-min 120 \
+  --execute
+```
+
+`--taken-at-local` takes the local wall-clock time the photographer actually
+experienced plus the offset it was in (positive = east of UTC); `--taken-at`
+takes a UTC instant directly if you already have one. Calls `PATCH
+/photos/{photoId}` (api.md, design.md "Manually correcting takenAt"), which
+sets `takenAtSrc`/`tzSrc` to `manual` server-side — the one rung that
+permanently outranks every automatic source, so a later-attached rendition's
+own EXIF can never silently overwrite the correction on the next upload. Works
+on a trashed asset too. Cognito sign-in only, no master key: this touches no
+encrypted content.
+
+**`orientation`** regenerates a photo's thumbnails from a local file with EXIF
+orientation correctly applied — for a photo imported before this tool's
+`thumbnails.py` gained an `exif_transpose` call: its thumbnails came out
+sideways even though the source file's own EXIF was fine (and "view original"
+displayed it correctly, since Android reads that EXIF live off the original's
+own bytes rather than trusting anything stored).
+
+```sh
+.venv/bin/python3 modify_media.py orientation \
+  --host photos.example.com \
+  --username someone@example.com \
+  --path -1739773001/IMG_1234.jpg \
+  --source-file /path/to/local/backup/IMG_1234.jpg \
+  --execute
+```
+
+`--source-file` is the local original — the same file (or an identical copy)
+`main.py` imported from, EXIF intact. Needs the account's recovery code
+(`ARCHIVIST_RECOVERY_CODE`, same prompt as `main.py`) to unwrap the asset's DEK,
+since thumbnails are encrypted client-side like everything else. Calls `POST
+/photos/{photoId}/thumbs` (api.md), the same repair route the Android app's own
+"Repair thumbnails" menu action uses.
+
+**What this doesn't do**: fix a photo whose *original* file has the wrong EXIF
+Orientation tag baked in (as opposed to a thumbnail that just never read a
+correct one) — that needs the original's stored bytes replaced, not just its
+thumbnails regenerated, and isn't implemented yet. See `STATUS.md` for where
+that stands.
+
+Neither subcommand does more than one photo per run, deliberately: each
+correction needs its own actual value, not a uniform shift or fix, so this
+doesn't try to guess a bulk mode — loop the script yourself if you have a list.
+
 ## What this handles
 
 * **Every rendition-grouping mechanism the design already has**, applied to what

@@ -1169,10 +1169,19 @@ timestamp even when EXIF has none. First hit wins; the winner is recorded in
 
 | | Source | `takenAtSrc` |
 | --- | --- | --- |
+| 0 | Manual correction (`PATCH /photos/{photoId}`, api.md) | `manual` |
 | 1 | EXIF `DateTimeOriginal` | `exif` |
 | 2 | Client filesystem mtime, supplied at upload | `file-mtime` |
 | 3 | S3 object `LastModified` | `s3-mtime` |
 | 4 | `uploadedAt` | `upload` |
+
+Rung 0 isn't part of the automatic ladder above it — nothing at ingest or attach time
+ever produces `manual`, and a fresh upload can never land there. It exists only for a
+human explicitly overriding whatever the ladder decided, after the fact, and it
+outranks every other rung permanently (`paths.ts`'s `TAKEN_AT_SRC_RANK`): a later
+rendition attach may still *improve* an automatic answer, but must never overwrite a
+deliberate correction just because its own EXIF disagrees — that would defeat the
+point of the correction. See "Manually correcting takenAt" below.
 
 Rung 2 does the work that "fall back to S3 `LastModified`" implies. Since the client
 encrypts before upload, the S3 object is created at upload time — its `LastModified` is
@@ -1201,6 +1210,7 @@ is recorded in `tzSrc`:
 
 | | Source | `tzSrc` |
 | --- | --- | --- |
+| 0 | Manual correction (`PATCH /photos/{photoId}`, api.md) | `manual` |
 | 1 | Upload-supplied offset, `offsetMode=force` | `upload-forced` |
 | 2 | EXIF `OffsetTimeOriginal` (2.31+, most phones and recent cameras) | `exif-offset` |
 | 3 | GPS delta | `gps` |
@@ -1254,6 +1264,26 @@ of trampling a better answer that was already found.
 Note this rewrites `takenAt`, and therefore `timelineSk` and every affected photo's facet
 items — see the last known limitation below. It's bounded to one partition per photo
 and should run as a batched background job, not inline in the settings request.
+
+### Manually correcting `takenAt`
+
+Not every wrong date is a timezone guess a device default can retroactively fix —
+a camera with no clock set at all, or an import tool's filename-parsed fallback
+that got the wrong convention, produces a `takenAt` that's simply wrong, not just
+offset. `PATCH /photos/{photoId}` (api.md) takes a new `takenAt`/`tzOffsetMin`
+directly, for one photo at a time, and applies unconditionally — unlike the
+device-default correction above, there's no ladder check gating it, because a
+human specifying an exact new value *is* the authority here. Sets both
+`takenAtSrc` and `tzSrc` to `manual`, the one rung both ladders rank above every
+automatic source (`paths.ts`'s `TAKEN_AT_SRC_RANK`) — otherwise a later-attached
+rendition's own EXIF could silently clobber the correction on the very next
+upload, which would make the fix temporary in a way nothing would surface.
+
+Same shape as the last known limitation below: one partition, one transaction,
+rewrites `#META`, `timelineSk`, and every facet item's own `takenAt`/`facetSk`.
+Also moves the photo's histogram bucket (pattern 15) from the old local day to
+the new one — but only for a live asset; a trashed one was already removed from
+the histogram by trash.ts; touching it again here would double-count.
 
 ## Interoperability
 
@@ -1562,7 +1592,8 @@ a continuous trip narrative and the wrong one for "my mornings", and it's baked 
 local time and group by local day within a page.
 
 **Correcting `takenAt` rewrites the photo's facet items**, since they denormalise it
-for `facetSk`. Rare, bounded to one partition, and doable in a single transaction.
+for `facetSk`. Rare, bounded to one partition, and doable in a single transaction —
+see "Manually correcting `takenAt`" above, which is exactly this.
 
 ## Open questions
 

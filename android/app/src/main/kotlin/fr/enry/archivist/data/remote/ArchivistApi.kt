@@ -215,6 +215,19 @@ interface ArchivistApi {
         @Url url: String,
     ): Response<ResponseBody>
 
+    /** `PATCH /photos/{photoId}` in `api.md` — manually corrects `takenAt`/
+     * `tzOffsetMin` (design.md "Manually correcting takenAt"). Sets `takenAtSrc`/
+     * `tzSrc` to `manual` server-side; see [fr.enry.archivist.data.repo.TakenAtRepository]
+     * for the local-state refresh a caller needs afterwards, since this moves the
+     * photo's position in the timeline. `Response<T>` for the same reason as
+     * [deleteKey]/[patchDevice]: a validation failure (a malformed `takenAt`) is an
+     * ordinary outcome the caller checks for. */
+    @PATCH
+    suspend fun patchTakenAt(
+        @Url url: String,
+        @Body body: PatchTakenAtRequest,
+    ): Response<ResponseBody>
+
     /** Plan step 2.18: `GET /settings` in `api.md` — owner-level policy every client
      * reads before it acts, the same way it already needs `homeTz`. Currently just
      * [SettingsResponse.stripLocationOnUpload]. */
@@ -513,6 +526,11 @@ data class DevicesResponse(val devices: List<DeviceDto>)
  * view of the device rather than a partial patch. */
 @Serializable
 data class PatchDeviceRequest(val label: String, val tzOffsetMin: Int?)
+
+/** `takenAt` a UTC ISO-8601 instant (`toIsoUtc` format), `tzOffsetMin` in minutes —
+ * see `routes/photos.ts`'s `patchTakenAt` for the exact validation. */
+@Serializable
+data class PatchTakenAtRequest(val takenAt: String, val tzOffsetMin: Int)
 
 /** `DELETE /account` in api.md — the caller must echo back its own ownerId as an
  * explicit "type it to confirm". */

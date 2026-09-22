@@ -248,3 +248,28 @@ class TimestampsTest {
         assertEquals(Instant.parse("2024-06-15T13:00:00Z"), result?.takenAt)
     }
 }
+
+class ToIsoUtcTest {
+    @Test
+    fun `always includes three fractional digits, even when the millis are exactly zero`() {
+        // The bug this guards against: Instant#toString() (ISO_INSTANT) omits the
+        // fractional part entirely when nanos are zero, which fails the server's
+        // isIsoUtc regex (`\.\d{3}Z$`, always present).
+        assertEquals("2020-01-01T00:00:00.000Z", toIsoUtc(Instant.parse("2020-01-01T00:00:00Z")))
+    }
+
+    @Test
+    fun `pads a short millisecond value to three digits`() {
+        assertEquals("2020-01-01T00:00:00.005Z", toIsoUtc(Instant.ofEpochMilli(1577836800005L)))
+    }
+
+    @Test
+    fun `preserves a full three-digit millisecond value`() {
+        assertEquals("2019-06-15T12:00:00.123Z", toIsoUtc(Instant.parse("2019-06-15T12:00:00.123Z")))
+    }
+
+    @Test
+    fun `truncates sub-millisecond precision rather than rounding or erroring`() {
+        assertEquals("2019-06-15T12:00:00.123Z", toIsoUtc(Instant.parse("2019-06-15T12:00:00.123456789Z")))
+    }
+}

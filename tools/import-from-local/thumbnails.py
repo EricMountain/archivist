@@ -22,7 +22,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 SIZES = (256, 1024, 2048)
 WEBP_QUALITY = 82
@@ -60,7 +60,14 @@ def _ladder_from_image(im: Image.Image) -> list[Thumbnail]:
 def generate_for_image(path: str) -> list[Thumbnail]:
     with Image.open(path) as im:
         im.load()
-        return _ladder_from_image(im)
+        # exif_transpose bakes the source's own EXIF Orientation tag into the actual
+        # pixels (and normalises the tag on its result) -- without this, a portrait
+        # photo shot sideways-relative-to-sensor comes out landscape here, since
+        # WEBP_QUALITY export below doesn't carry the source EXIF segment forward at
+        # all, so nothing downstream (Coil, grid thumbnails) has a tag left to correct
+        # for. "View original" self-corrects independently, reading the orientation
+        # tag straight off the original file's own bytes -- see DetailScreen.kt.
+        return _ladder_from_image(ImageOps.exif_transpose(im))
 
 
 def ffmpeg_available() -> bool:

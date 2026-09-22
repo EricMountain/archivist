@@ -16,6 +16,7 @@ import {
   getPhotosHistogram,
   getTrash,
   patchRendition,
+  patchTakenAt,
   postPhotoThumbs,
   postRestore,
 } from "./routes/photos";
@@ -56,6 +57,7 @@ export const routes: Record<string, RouteEntry> = {
   "GET /photos/histogram": { handler: getPhotosHistogram, authMode: "owner" },
   "GET /photos/{photoId}": { handler: getPhoto, authMode: "owner" },
   "GET /photos/by-path": { handler: getPhotoByPath, authMode: "owner" },
+  "PATCH /photos/{photoId}": { handler: patchTakenAt, authMode: "owner" },
   "PATCH /photos/{photoId}/renditions/{renditionId}": {
     handler: patchRendition,
     authMode: "owner",

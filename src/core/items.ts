@@ -17,9 +17,10 @@ export type FacetType =
 
 export type RenditionRole = "display" | "raw" | "motion" | "sidecar";
 
-export type TakenAtSrc = "exif" | "file-mtime" | "s3-mtime" | "upload";
+export type TakenAtSrc = "manual" | "exif" | "file-mtime" | "s3-mtime" | "upload";
 
 export type TzSrc =
+  | "manual"
   | "upload-forced"
   | "exif-offset"
   | "gps"

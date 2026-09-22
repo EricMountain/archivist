@@ -13,6 +13,8 @@ import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.RenditionSummary
 import fr.enry.archivist.data.repo.RepairOutcome
 import fr.enry.archivist.data.repo.RepairRepository
+import fr.enry.archivist.data.repo.TakenAtOutcome
+import fr.enry.archivist.data.repo.TakenAtRepository
 import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.launch
@@ -63,6 +65,18 @@ sealed interface RepairUiState {
     data class Error(val message: String) : RepairUiState
 }
 
+/** The "Edit date" dialog's state, keyed by nothing — same reasoning as
+ * [DeleteUiState]/[RepairUiState]: only one edit is ever in flight at a time. */
+sealed interface TakenAtUiState {
+    data object Idle : TakenAtUiState
+
+    data object InProgress : TakenAtUiState
+
+    data object Done : TakenAtUiState
+
+    data class Error(val message: String) : TakenAtUiState
+}
+
 /** One photo's detail fetch/decrypt, keyed by photoId in [DetailViewModel.details] —
  * a page the pager has already scrolled past keeps whatever it last had rather than
  * reverting to [Loading] on every swipe back. */
@@ -106,6 +120,7 @@ class DetailViewModel
         private val photoDetailRepository: PhotoDetailRepository,
         private val deleteRepository: DeleteRepository,
         private val repairRepository: RepairRepository,
+        private val takenAtRepository: TakenAtRepository,
         instanceStore: InstanceStore,
     ) : ViewModel() {
         val photos: StateFlow<List<PhotoEntity>> =
@@ -232,5 +247,43 @@ class DetailViewModel
 
         fun dismissRepair() {
             _repairState.value = RepairUiState.Idle
+        }
+
+        private val _takenAtState = MutableStateFlow<TakenAtUiState>(TakenAtUiState.Idle)
+        val takenAtState: StateFlow<TakenAtUiState> = _takenAtState.asStateFlow()
+
+        fun editTakenAt(
+            photoId: String,
+            takenAt: String,
+            tzOffsetMin: Int,
+        ) {
+            _takenAtState.value = TakenAtUiState.InProgress
+            viewModelScope.launch {
+                _takenAtState.value =
+                    when (val outcome = takenAtRepository.correct(photoId, takenAt, tzOffsetMin)) {
+                        TakenAtOutcome.Done -> {
+                            // ensureDetail's own "already cached, no-op" guard would skip a
+                            // plain re-call here, so refetch directly rather than through it
+                            // -- the cached PhotoDetailUiState.Loaded still carries the old
+                            // takenAt/takenAtSrc otherwise, and nothing else would prompt a
+                            // refresh until this page happened to scroll out and back in.
+                            val refreshed =
+                                try {
+                                    PhotoDetailUiState.Loaded(photoDetailRepository.fetchDetail(photoId))
+                                } catch (e: IOException) {
+                                    PhotoDetailUiState.Error(e.message ?: "network error")
+                                } catch (e: HttpException) {
+                                    PhotoDetailUiState.Error("HTTP ${e.code()}")
+                                }
+                            _details.update { it + (photoId to refreshed) }
+                            TakenAtUiState.Done
+                        }
+                        is TakenAtOutcome.Error -> TakenAtUiState.Error(outcome.message)
+                    }
+            }
+        }
+
+        fun dismissTakenAt() {
+            _takenAtState.value = TakenAtUiState.Idle
         }
     }

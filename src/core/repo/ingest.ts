@@ -236,20 +236,36 @@ export async function attachRendition(input: AttachRenditionInput): Promise<void
     },
   ];
 
-  // A takenAt improvement usually refines the time within the same day, in which
-  // case this is empty; when it does cross a day boundary the counter has to follow,
-  // because timelineSk just did.
+  // A takenAt improvement rewrites the same things a manual correction does
+  // (repo/timestamps.ts's correctTakenAt) — every facet item denormalises
+  // takenAt for its own facetSk, so an improvement that doesn't touch them
+  // leaves facet_gsi's ordering stale for this asset until something else
+  // corrects it. histogramMove: a takenAt improvement usually refines the
+  // time within the same day, in which case this is empty; when it does cross
+  // a day boundary the counter has to follow, because timelineSk just did.
+  // Always live here (never trashed): the #META Update above already
+  // conditions on `attribute_not_exists(deletedAt)`, so if the asset was
+  // trashed between this read and the transaction, the whole thing aborts.
   if (input.takenAtImprovement) {
-    const { meta } = await getAssetPartition(input.ownerId, input.photoId);
+    const { meta, facets } = await getAssetPartition(input.ownerId, input.photoId);
     if (meta) {
+      const { takenAt, tzOffsetMin } = input.takenAtImprovement;
       items.push(
+        ...facets.map((facet) => ({
+          Update: {
+            TableName: tableName(),
+            Key: { pk, sk: facet.sk },
+            UpdateExpression: "SET takenAt = :takenAt, facetSk = :facetSk",
+            ExpressionAttributeValues: {
+              ":takenAt": takenAt,
+              ":facetSk": sortKey(takenAt, input.photoId),
+            },
+          },
+        })),
         ...histogramMove(
           input.ownerId,
           { takenAt: meta.takenAt, tzOffsetMin: meta.tzOffsetMin },
-          {
-            takenAt: input.takenAtImprovement.takenAt,
-            tzOffsetMin: input.takenAtImprovement.tzOffsetMin,
-          },
+          { takenAt, tzOffsetMin },
         ),
       );
     }
