@@ -81,7 +81,7 @@ class RotateRepository
         private val uploadQueueDao: UploadQueueDao,
         private val photoDao: PhotoDao,
         private val masterKeyHolder: MasterKeyHolder,
-        private val hashSecretHolder: HashSecretHolder,
+        private val enrolmentRepository: EnrolmentRepository,
         private val photoDetailRepository: PhotoDetailRepository,
         private val jumpCoordinator: TimelineJumpCoordinator,
         private val okHttpClient: OkHttpClient,
@@ -89,7 +89,10 @@ class RotateRepository
     ) {
         suspend fun rotate(detail: PhotoDetail): RotateOutcome {
             val masterKey = masterKeyHolder.current.value ?: return RotateOutcome.Error("locked — unlock to rotate")
-            val hashSecret = hashSecretHolder.current.value ?: return RotateOutcome.Error("locked — unlock to rotate")
+            val hashSecret =
+                enrolmentRepository.ensureHashSecret().getOrElse {
+                    return RotateOutcome.Error("locked — unlock to rotate")
+                }
             val rendition =
                 detail.renditions.find { it.renditionId == detail.primaryRend } ?: detail.renditions.firstOrNull()
                     ?: return RotateOutcome.Error("this asset has no rendition to rotate")
