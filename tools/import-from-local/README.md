@@ -116,20 +116,24 @@ to clean up by clearing it faster, and no reason to.
 filename — full `#META` (dimensions, timestamps and which ladder rung produced
 them, status, grouping) and every rendition (role, path, size, content hash) —
 for eyeballing a `dedupe_by_filename.py` report before running `--execute`, or
-confirming what actually got trashed afterwards. **Searches trashed assets by
-default, alongside live ones**, showing `[TRASHED]`/`[live]` on each match
-(read straight off `#META.deletedAt` — design.md "Trash and deletion" — not off
-which cache section happened to turn a photo up) — pass `--live-only` if you
-only want live ones. Trash used to be opt-in here because finding it meant an
-uncached, always-live walk; now that both live and trashed detail are cached
-the same way (below), there's no reason to hide one by default.
+confirming what actually got trashed afterwards. **Live assets only by
+default** — pass `--include-trashed` to also search trashed ones, which then
+show as `[TRASHED]`/`[live]` per match (read straight off `#META.deletedAt` —
+design.md "Trash and deletion" — not off which cache section happened to turn
+a photo up). Trash search was briefly default-on here once both sections were
+cached the same way (below), but building or refreshing the trashed section's
+cache means a `GET /trash` listing walk, which has been observed timing out
+server-side at real trash sizes (a bare `HTTP 500`) even with `getTrash`'s
+bounded-concurrency fix — so it's opt-in again, and a warning is printed
+whenever it's left off, so an absent trashed match is never silently mistaken
+for "not trashed".
 
 ```sh
 .venv/bin/python3 inspect_photo.py \
   --host photos.example.com \
   --username someone@example.com \
   --filename IMG_1234.jpg
-  # --contains for a substring match; --live-only to skip trashed assets
+  # --contains for a substring match; --include-trashed to also search trashed assets
 ```
 
 Matches on *any* rendition's filename, not just the primary, so an asset still
@@ -161,9 +165,9 @@ no pointer read, no listing, no cache:
 
 Both skip the library and the cache entirely — instead of `--filename`'s
 cached-library search, they're one or two direct reads. `--contains`/
-`--live-only`/`--refresh-*` don't apply to either: there's no listing to filter
-or cache to refresh. Reach for `--photo-id` first when you have one, `--path`
-when you don't, and `--filename` only when you have neither.
+`--include-trashed`/`--refresh-*` don't apply to either: there's no listing to
+filter or cache to refresh. Reach for `--photo-id` first when you have one,
+`--path` when you don't, and `--filename` only when you have neither.
 
 Add `--refresh-match` to bypass the cache for just what matched — after finding
 candidates (from the cache, by default), it re-fetches live detail for exactly

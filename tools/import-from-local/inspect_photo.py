@@ -5,14 +5,18 @@ trusting it, or checking what actually landed after `--execute`: full `#META`
 (dimensions, timestamps, status, grouping) and every `R#` rendition (role,
 path, size, content hash) for each match, human-readable.
 
-**Searches trashed assets by default, alongside live ones** -- "did this
-actually get trashed?" is exactly the question a dedupe report gets asked
-right after `--execute`, and design.md's `deletedAt`/`deletedBy` on `#META`
-already answer it directly once an asset's detail is in hand; the only reason
-this was ever opt-in was that fetching the trash listing used to mean a full,
-uncached live walk. Now that both live and trashed detail are cached the same
-way (library_cache.py), there's no reason to hide one by default -- pass
-`--live-only` to search only live assets.
+**Live assets only by default** -- "did this actually get trashed?" is exactly
+the question a dedupe report gets asked right after `--execute`, and
+design.md's `deletedAt`/`deletedBy` on `#META` already answer it directly once
+an asset's detail is in hand, so trash inclusion was made default-on for a
+while once both sections were cached the same way (library_cache.py). Reverted
+back to opt-in: a `GET /trash` listing walk -- needed to build or refresh the
+trashed section's cache, unlike the live section which the timeline's own
+paging keeps cheap -- has been observed timing out server-side at real trash
+sizes even with the bounded-concurrency fix in `getTrash` (STATUS.md 1.12),
+surfacing as a bare `HTTP 500` here. Pass `--include-trashed` to search trashed
+assets too; a warning is printed whenever it's left off, so an absent trashed
+match is never silently mistaken for "not trashed".
 
 Doesn't touch DynamoDB directly -- same as dedupe_by_filename.py, this walks
 the ordinary `GET /photos`/`GET /photos/{photoId}`/`GET /trash` routes
@@ -200,14 +204,14 @@ def main() -> int:
         "string this tool's own 'stem' field is built from. Resolves it directly via "
         "GET /photos/by-path (one DynamoDB read, live or trashed) instead of loading or paging "
         "through the library at all -- use this over --filename whenever you already have the "
-        "exact path (e.g. from a dedupe_by_filename.py report). --contains/--live-only/"
+        "exact path (e.g. from a dedupe_by_filename.py report). --contains/--include-trashed/"
         "--refresh-* don't apply here: there's no listing to filter or cache to refresh.",
     )
     target.add_argument(
         "--photo-id",
         help="a ULID already in hand -- straight to GET /photos/{photoId}, no pointer read, no "
         "listing, no cache. The natural choice right after dedupe_by_filename.py's own report, "
-        "which prints each candidate's photo_id directly. --contains/--live-only/--refresh-* "
+        "which prints each candidate's photo_id directly. --contains/--include-trashed/--refresh-* "
         "don't apply here either.",
     )
     parser.add_argument(
@@ -216,10 +220,12 @@ def main() -> int:
         help="with --filename: substring match (case-insensitive) instead of an exact basename match",
     )
     parser.add_argument(
-        "--live-only",
+        "--include-trashed",
         action="store_true",
-        help="don't search trashed assets -- by default both are searched (both are cached the "
-        "same way, so trash costs nothing extra to include)",
+        help="also search trashed assets -- off by default because building or refreshing the "
+        "trashed section's cache means a GET /trash listing walk, which has been observed timing "
+        "out server-side at real trash sizes (HTTP 500). A warning is printed whenever this is "
+        "left off.",
     )
     parser.add_argument("--concurrency", type=int, default=library_scan.DEFAULT_CONCURRENCY)
     parser.add_argument(
@@ -289,22 +295,29 @@ def main() -> int:
     common = dict(use_cache=not args.no_cache, refresh_listing=args.refresh_listing,
                   refresh_cache=args.refresh_cache, concurrency=args.concurrency)
     all_details = _load_section(api, args.host, args.username, "live", progress, **common)
-    if not args.live_only:
+    if args.include_trashed:
         try:
             all_details.update(_load_section(api, args.host, args.username, "trashed", progress, **common))
-        except Exception as e:  # noqa: BLE001 -- trash inclusion is a default convenience, not a
-            # requirement: a live server error, a network blip api_client.py's own retries didn't
-            # absorb, or anything else here must not take down a search that live results alone can
-            # still usefully answer. Reported plainly rather than silently swallowed either way.
+        except Exception as e:  # noqa: BLE001 -- trash inclusion is opt-in, not a requirement: a
+            # live server error (the GET /trash timeout this default exists because of, a network
+            # blip api_client.py's own retries didn't absorb, or anything else here must not take
+            # down a search that live results alone can still usefully answer. Reported plainly
+            # rather than silently swallowed either way.
             print(f"warning: couldn't load trashed assets ({e}) -- showing live results only", file=sys.stderr)
+    else:
+        print(
+            "warning: skipping trashed assets (off by default -- the trash listing can time out "
+            "at real trash sizes). Pass --include-trashed to search them too.",
+            file=sys.stderr,
+        )
 
     matches_found = find_matches(all_details, args.filename, args.contains)
 
     if not matches_found:
-        scope = "live assets" if args.live_only else "live or trashed assets"
+        scope = "live or trashed assets" if args.include_trashed else "live assets"
         print(f"\nNo asset found among {scope} with a rendition matching {args.filename!r}.")
-        if args.live_only:
-            print("(--live-only was set -- a trashed match, if any, wouldn't show up here.)")
+        if not args.include_trashed:
+            print("(trashed assets were skipped by default -- pass --include-trashed to also search them.)")
         return 0
 
     if args.refresh_match and not args.no_cache:
