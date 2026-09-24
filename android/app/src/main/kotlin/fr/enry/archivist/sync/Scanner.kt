@@ -63,6 +63,8 @@ class Scanner
             for (folder in folders) {
                 for (file in mediaStoreSource.listFiles(folder.folderUri)) {
                     if (uploadQueueDao.getByLocalUri(file.contentUri) != null) continue
+                    // Predates the folder's last pause -- not new, don't re-queue it.
+                    if (folder.skipBeforeEpochSec?.let { file.dateAdded <= it } == true) continue
 
                     val contentHash = runCatching { hash(hashSecret, file) }.getOrNull() ?: continue
 

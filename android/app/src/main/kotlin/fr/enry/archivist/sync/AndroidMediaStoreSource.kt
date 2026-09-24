@@ -63,6 +63,7 @@ class AndroidMediaStoreSource
                             MediaStore.Files.FileColumns.DISPLAY_NAME,
                             MediaStore.Files.FileColumns.SIZE,
                             MediaStore.Files.FileColumns.DATE_MODIFIED,
+                            MediaStore.Files.FileColumns.DATE_ADDED,
                         ),
                     selection = "$baseSelection AND ${MediaStore.Files.FileColumns.BUCKET_ID} = ?",
                     selectionArgs = baseSelectionArgs + bucketId,
@@ -71,6 +72,7 @@ class AndroidMediaStoreSource
                     val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
                     val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
                     val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+                    val addedCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol)
                         result.add(
@@ -80,6 +82,7 @@ class AndroidMediaStoreSource
                                 bucketId = bucketId,
                                 size = cursor.getLong(sizeCol),
                                 dateModified = cursor.getLong(dateCol),
+                                dateAdded = cursor.getLong(addedCol),
                             ),
                         )
                     }

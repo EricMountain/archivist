@@ -19,6 +19,11 @@ import androidx.room.TypeConverters
  * [fr.enry.archivist.data.local.LocalStorageModule] falls back to a destructive one,
  * which only ever drops a local cache/queue (nothing server-side), and nothing has
  * shipped this schema to a real install yet.
+ *
+ * Version 5 added `sync_state.skipBeforeEpochSec` and *does* have a real migration
+ * ([MIGRATION_4_5]): unlike the earlier bumps, dropping tables here would wipe
+ * `upload_queue`, which is the only record of what was already seen — and a scanner that
+ * has forgotten that re-queues the whole camera roll.
  */
 @Database(
     entities = [
@@ -32,7 +37,7 @@ import androidx.room.TypeConverters
         HistogramEntity::class,
         TimelineWindowEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -55,3 +60,10 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun timelineWindowDao(): TimelineWindowDao
 }
+
+val MIGRATION_4_5 =
+    object : androidx.room.migration.Migration(4, 5) {
+        override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE sync_state ADD COLUMN skipBeforeEpochSec INTEGER")
+        }
+    }

@@ -107,6 +107,10 @@ class FoldersViewModel
                         // Preserve the original selection time through a later toggle
                         // rather than bumping it every time.
                         addedAt = existing?.addedAt ?: nowIso(),
+                        // Switching off stamps the moment; switching back on keeps that
+                        // stamp so the scan only queues what arrived since. A folder
+                        // enabled for the first time has none, and queues everything.
+                        skipBeforeEpochSec = if (enabled) existing?.skipBeforeEpochSec else Instant.now().epochSecond,
                     ),
                 )
                 _uiState.value =

@@ -26,8 +26,9 @@ class FakeMediaStoreSource : MediaStoreSource {
         contentUri: String,
         displayName: String,
         content: ByteArray,
+        dateAdded: Long = 0L,
     ) {
-        val file = DeviceMediaFile(contentUri, displayName, bucketId, content.size.toLong(), 0L)
+        val file = DeviceMediaFile(contentUri, displayName, bucketId, content.size.toLong(), 0L, dateAdded)
         filesByBucket.getOrPut(bucketId) { mutableListOf() }.add(file)
         contentByUri[contentUri] = content
         val existingIndex = folders.indexOfFirst { it.bucketId == bucketId }

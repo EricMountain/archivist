@@ -99,6 +99,28 @@ class ScannerTest {
         }
 
     @Test
+    fun `re-enabling a paused folder queues only files added since the pause`() =
+        runTest {
+            db.folderSelectionDao().upsert(
+                FolderSelectionEntity(
+                    folderUri = "camera",
+                    displayName = "Camera",
+                    enabled = true,
+                    addedAt = "2026-08-30T10:00:00.000Z",
+                    skipBeforeEpochSec = 1_000L,
+                ),
+            )
+            mediaStoreSource.addFile("camera", "Camera", "content://media/1", "old.jpg", byteArrayOf(1), dateAdded = 900L)
+            mediaStoreSource.addFile("camera", "Camera", "content://media/2", "edge.jpg", byteArrayOf(2), dateAdded = 1_000L)
+            mediaStoreSource.addFile("camera", "Camera", "content://media/3", "new.jpg", byteArrayOf(3), dateAdded = 1_001L)
+
+            val queued = scanner.scan().getOrThrow()
+
+            assertEquals(1, queued)
+            assertEquals(listOf("content://media/3"), db.uploadQueueDao().observeAll().first().map { it.localUri })
+        }
+
+    @Test
     fun `an unselected folder's files are never queued`() =
         runTest {
             mediaStoreSource.addFile("screenshots", "Screenshots", "content://media/1", "shot.png", byteArrayOf(9))

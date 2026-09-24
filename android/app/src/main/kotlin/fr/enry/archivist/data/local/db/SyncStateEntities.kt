@@ -19,6 +19,11 @@ data class FolderSelectionEntity(
     val displayName: String,
     val enabled: Boolean,
     val addedAt: String,
+    /** Set when the folder is switched off: files added to it at or before this instant
+     * (`MediaStore` `DATE_ADDED`, epoch seconds) are never queued by a later re-enable —
+     * they predate the pause, so the user already had their chance to sync them. `null`
+     * means no cutoff (a first-time selection queues everything). */
+    val skipBeforeEpochSec: Long? = null,
 )
 
 @Dao
@@ -26,12 +31,13 @@ interface FolderSelectionDao {
     /** Not `@Upsert` — see the note on `PhotoDao.upsertOne`. */
     @Query(
         """
-        INSERT INTO sync_state (folderUri, displayName, enabled, addedAt)
-        VALUES (:folderUri, :displayName, :enabled, :addedAt)
+        INSERT INTO sync_state (folderUri, displayName, enabled, addedAt, skipBeforeEpochSec)
+        VALUES (:folderUri, :displayName, :enabled, :addedAt, :skipBeforeEpochSec)
         ON CONFLICT(folderUri) DO UPDATE SET
             displayName = excluded.displayName,
             enabled = excluded.enabled,
-            addedAt = excluded.addedAt
+            addedAt = excluded.addedAt,
+            skipBeforeEpochSec = excluded.skipBeforeEpochSec
         """,
     )
     suspend fun upsertOne(
@@ -39,10 +45,11 @@ interface FolderSelectionDao {
         displayName: String,
         enabled: Boolean,
         addedAt: String,
+        skipBeforeEpochSec: Long?,
     )
 
     suspend fun upsert(folder: FolderSelectionEntity) =
-        upsertOne(folder.folderUri, folder.displayName, folder.enabled, folder.addedAt)
+        upsertOne(folder.folderUri, folder.displayName, folder.enabled, folder.addedAt, folder.skipBeforeEpochSec)
 
     @Query("SELECT * FROM sync_state ORDER BY addedAt ASC")
     fun observeAll(): Flow<List<FolderSelectionEntity>>

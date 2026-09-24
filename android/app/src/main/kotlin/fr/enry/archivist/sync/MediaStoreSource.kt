@@ -21,6 +21,9 @@ data class DeviceMediaFile(
     val bucketId: String,
     val size: Long,
     val dateModified: Long,
+    /** `MediaStore` `DATE_ADDED`, epoch seconds — when it arrived on the device, which
+     * (unlike [dateModified]) an edit doesn't change. */
+    val dateAdded: Long = 0L,
 )
 
 /**
