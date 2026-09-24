@@ -121,6 +121,22 @@ class ScannerTest {
         }
 
     @Test
+    fun `a clean scan advances the cutoff and clearing it allows a full rescan`() =
+        runTest {
+            selectFolder("camera", "Camera")
+            mediaStoreSource.addFile("camera", "Camera", "content://media/1", "a.jpg", byteArrayOf(1), dateAdded = 5L)
+            scanner.scan().getOrThrow()
+            assertTrue((db.folderSelectionDao().getByFolderUri("camera")?.skipBeforeEpochSec ?: 0L) > 5L)
+
+            // Cancelled from the queue screen, then the folder is toggled: not re-queued.
+            db.uploadQueueDao().deleteById(db.uploadQueueDao().getByLocalUri("content://media/1")!!.id)
+            assertEquals(0, scanner.scan().getOrThrow())
+
+            db.folderSelectionDao().setSkipBefore("camera", null)
+            assertEquals(1, scanner.scan().getOrThrow())
+        }
+
+    @Test
     fun `an unselected folder's files are never queued`() =
         runTest {
             mediaStoreSource.addFile("screenshots", "Screenshots", "content://media/1", "shot.png", byteArrayOf(9))

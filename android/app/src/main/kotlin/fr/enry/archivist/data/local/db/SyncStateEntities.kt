@@ -19,10 +19,11 @@ data class FolderSelectionEntity(
     val displayName: String,
     val enabled: Boolean,
     val addedAt: String,
-    /** Set when the folder is switched off: files added to it at or before this instant
-     * (`MediaStore` `DATE_ADDED`, epoch seconds) are never queued by a later re-enable —
-     * they predate the pause, so the user already had their chance to sync them. `null`
-     * means no cutoff (a first-time selection queues everything). */
+    /** Where the last complete scan of this folder started (`MediaStore` `DATE_ADDED`,
+     * epoch seconds): files added at or before it were already considered then, so a
+     * later scan — e.g. after the folder is switched off and on — skips them rather than
+     * re-queuing what was cancelled or already handled. `null` means never fully
+     * scanned (or a forced rescan): everything is a candidate. */
     val skipBeforeEpochSec: Long? = null,
 )
 
@@ -67,6 +68,12 @@ interface FolderSelectionDao {
     suspend fun setEnabled(
         folderUri: String,
         enabled: Boolean,
+    )
+
+    @Query("UPDATE sync_state SET skipBeforeEpochSec = :skipBeforeEpochSec WHERE folderUri = :folderUri")
+    suspend fun setSkipBefore(
+        folderUri: String,
+        skipBeforeEpochSec: Long?,
     )
 
     @Query("DELETE FROM sync_state WHERE folderUri = :folderUri")

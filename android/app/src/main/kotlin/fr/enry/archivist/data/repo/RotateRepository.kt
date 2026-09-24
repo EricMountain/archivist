@@ -59,18 +59,25 @@ sealed interface RotateOutcome {
  * memory for a feature meant for an ordinary photo. */
 private const val MAX_ROTATABLE_BYTES = 33_554_432L
 
+/** The three offsets the "Rotate" submenu offers, each carrying the clockwise degrees
+ * [RotateRepository.rotate] actually applies — [Matrix.postRotate]'s own convention, the
+ * opposite sign from Pillow's (see `modify_media.py`'s `--rotate`), which is why
+ * counter-clockwise is 270 here rather than -90. */
+enum class RotateDirection(val clockwiseDegrees: Int) {
+    CLOCKWISE_90(90),
+    COUNTERCLOCKWISE_90(270),
+    ROTATE_180(180),
+}
+
 /**
- * The "Rotate 90° clockwise" menu action — decodes the primary rendition's original at
- * full resolution (never Thumbnailer's own decode path, which intentionally downsamples
- * to thumbnail size), rotates it, and both replaces the stored original (`POST
- * .../renditions/{id}/replace`) and regenerates the thumbnail ladder from those same
- * rotated pixels (`POST .../thumbs`) — the in-app counterpart to
+ * The "Rotate" submenu's actions — decodes the primary rendition's original at full
+ * resolution (never Thumbnailer's own decode path, which intentionally downsamples to
+ * thumbnail size), rotates it by the requested [RotateDirection], and both replaces the
+ * stored original (`POST .../renditions/{id}/replace`) and regenerates the thumbnail
+ * ladder from those same rotated pixels (`POST .../thumbs`) — the in-app counterpart to
  * `modify_media.py orientation --rotate`. Source resolution (local file first, server
  * download as fallback) mirrors [RepairRepository] exactly; the two differ in what they
  * do with the decoded bitmap, not in how they find it.
- *
- * Always exactly 90°: repeated taps compose to 180°/270°, the same interaction every
- * other photo app uses for this, rather than this menu offering a degree picker.
  */
 @Singleton
 class RotateRepository
@@ -87,7 +94,10 @@ class RotateRepository
         private val okHttpClient: OkHttpClient,
         @ApplicationContext private val context: Context,
     ) {
-        suspend fun rotate(detail: PhotoDetail): RotateOutcome {
+        suspend fun rotate(
+            detail: PhotoDetail,
+            direction: RotateDirection,
+        ): RotateOutcome {
             val masterKey = masterKeyHolder.current.value ?: return RotateOutcome.Error("locked — unlock to rotate")
             val hashSecret =
                 enrolmentRepository.ensureHashSecret().getOrElse {
@@ -114,7 +124,7 @@ class RotateRepository
                 tempFile = resolvedTemp
 
                 base = decodeFullBitmap(sourceUri)
-                rotated = rotateClockwise90(base!!)
+                rotated = rotateBy(base!!, direction.clockwiseDegrees)
                 val plainBytes = encodeBitmap(rotated!!, rendition.mime)
                 if (plainBytes.size > MAX_ROTATABLE_BYTES) {
                     return RotateOutcome.Error("this photo is too large to rotate in-app yet")
@@ -209,8 +219,11 @@ class RotateRepository
             return ImageDecoder.decodeBitmap(source) { decoder, _, _ -> decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE }
         }
 
-        private fun rotateClockwise90(base: Bitmap): Bitmap {
-            val matrix = Matrix().apply { postRotate(90f) }
+        private fun rotateBy(
+            base: Bitmap,
+            clockwiseDegrees: Int,
+        ): Bitmap {
+            val matrix = Matrix().apply { postRotate(clockwiseDegrees.toFloat()) }
             return Bitmap.createBitmap(base, 0, 0, base.width, base.height, matrix, true)
         }
 

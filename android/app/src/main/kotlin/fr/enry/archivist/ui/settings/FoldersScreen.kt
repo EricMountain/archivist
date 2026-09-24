@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,6 +21,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -85,6 +87,7 @@ fun FoldersScreen(
             FolderList(
                 state = state,
                 onToggleFolder = viewModel::setFolderEnabled,
+                onRescanFolder = viewModel::rescanFolder,
                 modifier = modifier,
             )
     }
@@ -114,6 +117,7 @@ private fun PermissionRationale(
 private fun FolderList(
     state: FoldersUiState.Loaded,
     onToggleFolder: (FolderUiItem, Boolean) -> Unit,
+    onRescanFolder: (FolderUiItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
@@ -138,7 +142,11 @@ private fun FolderList(
         }
         LazyColumn {
             items(state.folders, key = { it.bucketId }) { folder ->
-                FolderRow(folder, onToggle = { enabled -> onToggleFolder(folder, enabled) })
+                FolderRow(
+                    folder,
+                    onToggle = { enabled -> onToggleFolder(folder, enabled) },
+                    onRescan = { onRescanFolder(folder) },
+                )
             }
         }
     }
@@ -148,6 +156,7 @@ private fun FolderList(
 private fun FolderRow(
     folder: FolderUiItem,
     onToggle: (Boolean) -> Unit,
+    onRescan: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -162,6 +171,9 @@ private fun FolderRow(
                 if (folder.itemCount == 1) "1 item" else "${folder.itemCount} items",
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (folder.enabled) {
+                TextButton(onClick = onRescan, contentPadding = PaddingValues(0.dp)) { Text("Rescan everything") }
+            }
         }
         Switch(checked = folder.enabled, onCheckedChange = onToggle)
     }

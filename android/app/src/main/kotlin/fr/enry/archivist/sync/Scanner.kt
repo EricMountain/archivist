@@ -61,12 +61,20 @@ class Scanner
 
             var queued = 0
             for (folder in folders) {
+                // Taken before listing, minus a second of slack for DATE_ADDED's
+                // granularity, so nothing added mid-scan can fall behind the cutoff.
+                val scanStartedAt = Instant.now().epochSecond - 1
+                var allHashed = true
                 for (file in mediaStoreSource.listFiles(folder.folderUri)) {
                     if (uploadQueueDao.getByLocalUri(file.contentUri) != null) continue
                     // Predates the folder's last pause -- not new, don't re-queue it.
                     if (folder.skipBeforeEpochSec?.let { file.dateAdded <= it } == true) continue
 
-                    val contentHash = runCatching { hash(hashSecret, file) }.getOrNull() ?: continue
+                    val contentHash =
+                        runCatching { hash(hashSecret, file) }.getOrNull() ?: run {
+                            allHashed = false
+                            null
+                        } ?: continue
 
                     val state =
                         when {
@@ -112,6 +120,9 @@ class Scanner
                     // never count it twice.
                     if (insertedId != -1L && state == UploadState.PENDING) queued++
                 }
+                // A file that failed to read must stay a candidate, so only a clean pass
+                // advances the cutoff.
+                if (allHashed) folderSelectionDao.setSkipBefore(folder.folderUri, scanStartedAt)
             }
             return Result.success(queued)
         }

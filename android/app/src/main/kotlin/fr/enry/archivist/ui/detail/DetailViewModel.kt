@@ -13,6 +13,7 @@ import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.RenditionSummary
 import fr.enry.archivist.data.repo.RepairOutcome
 import fr.enry.archivist.data.repo.RepairRepository
+import fr.enry.archivist.data.repo.RotateDirection
 import fr.enry.archivist.data.repo.RotateOutcome
 import fr.enry.archivist.data.repo.RotateRepository
 import fr.enry.archivist.data.repo.TakenAtOutcome
@@ -79,7 +80,7 @@ sealed interface TakenAtUiState {
     data class Error(val message: String) : TakenAtUiState
 }
 
-/** The "Rotate 90° clockwise" menu action's state, keyed by nothing — same reasoning
+/** The "Rotate" submenu's state, keyed by nothing — same reasoning
  * as [DeleteUiState]/[RepairUiState]/[TakenAtUiState]. */
 sealed interface RotateUiState {
     data object Idle : RotateUiState
@@ -307,10 +308,13 @@ class DetailViewModel
 
         /** Needs the full [PhotoDetail] for the same reason [repairPhoto] does — see
          * [RotateRepository]'s own doc for what it does with it. */
-        fun rotatePhoto(detail: PhotoDetail) {
+        fun rotatePhoto(
+            detail: PhotoDetail,
+            direction: RotateDirection,
+        ) {
             _rotateState.value = RotateUiState.InProgress
             viewModelScope.launch {
-                val outcome = rotateRepository.rotate(detail)
+                val outcome = rotateRepository.rotate(detail, direction)
                 if (outcome is RotateOutcome.Done) {
                     // Same reasoning as editTakenAt: the cached PhotoDetailUiState.Loaded
                     // still carries the pre-rotation width/height/thumbs otherwise.

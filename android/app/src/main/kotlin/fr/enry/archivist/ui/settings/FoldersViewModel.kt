@@ -107,10 +107,9 @@ class FoldersViewModel
                         // Preserve the original selection time through a later toggle
                         // rather than bumping it every time.
                         addedAt = existing?.addedAt ?: nowIso(),
-                        // Switching off stamps the moment; switching back on keeps that
-                        // stamp so the scan only queues what arrived since. A folder
-                        // enabled for the first time has none, and queues everything.
-                        skipBeforeEpochSec = if (enabled) existing?.skipBeforeEpochSec else Instant.now().epochSecond,
+                        // Scanner owns the cutoff; a toggle keeps it, so re-enabling only
+                        // queues what arrived since the last complete scan.
+                        skipBeforeEpochSec = existing?.skipBeforeEpochSec,
                     ),
                 )
                 _uiState.value =
@@ -118,6 +117,17 @@ class FoldersViewModel
                         folders = state.folders.map { if (it.bucketId == folder.bucketId) it.copy(enabled = enabled) else it },
                     )
                 if (enabled) scan()
+            }
+        }
+
+        /** Forgets what earlier scans covered, so every file in the folder is a candidate
+         * again. Files already in the queue (or already uploaded) are still recognised
+         * and not duplicated -- this only recovers ones a scan never saw or that were
+         * cancelled. */
+        fun rescanFolder(folder: FolderUiItem) {
+            viewModelScope.launch {
+                folderSelectionDao.setSkipBefore(folder.bucketId, null)
+                scan()
             }
         }
 

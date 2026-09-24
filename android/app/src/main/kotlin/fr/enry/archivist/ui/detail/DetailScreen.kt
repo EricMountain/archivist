@@ -63,6 +63,7 @@ import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.RenditionSummary
+import fr.enry.archivist.data.repo.RotateDirection
 import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.ZoneOffset
@@ -178,47 +179,79 @@ fun DetailScreen(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = onBack) { Text("← Back") }
             var showMenu by remember { mutableStateOf(false) }
+            // Flattened into the same anchored DropdownMenu rather than a second popup --
+            // there's only one submenu in this app's menus, doesn't need general nesting
+            // support, and this way it stays anchored to the same "⋮" button. Reset
+            // whenever the menu itself closes, whichever way it closed.
+            var showRotateSubmenu by remember { mutableStateOf(false) }
             Box {
                 TextButton(onClick = { showMenu = true }) { Text("⋮") }
-                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Repair thumbnails") },
-                        // Needs the full detail (renditions/encDek), not just the grid's
-                        // own PhotoEntity -- briefly disabled right after opening, until
-                        // the LaunchedEffect above's ensureDetail() call resolves.
-                        enabled = repairState !is RepairUiState.InProgress && currentDetail != null,
-                        onClick = {
-                            showMenu = false
-                            currentDetail?.let { viewModel.repairPhoto(it) }
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Rotate 90° clockwise") },
-                        // Needs the full detail for the same reason "Repair thumbnails"
-                        // above does — RotateRepository picks the rendition to rotate
-                        // from PhotoDetail.primaryRend.
-                        enabled = rotateState !is RotateUiState.InProgress && currentDetail != null,
-                        onClick = {
-                            showMenu = false
-                            currentDetail?.let { viewModel.rotatePhoto(it) }
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Edit date") },
-                        enabled = takenAtState !is TakenAtUiState.InProgress && currentDetail != null,
-                        onClick = {
-                            showMenu = false
-                            showEditTakenAtDialog = true
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        enabled = deleteState !is DeleteUiState.InProgress,
-                        onClick = {
-                            showMenu = false
-                            showDeleteDialog = true
-                        },
-                    )
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = {
+                        showMenu = false
+                        showRotateSubmenu = false
+                    },
+                ) {
+                    if (showRotateSubmenu) {
+                        DropdownMenuItem(
+                            text = { Text("← Back") },
+                            onClick = { showRotateSubmenu = false },
+                        )
+                        for ((label, direction) in
+                            listOf(
+                                "Rotate 90° clockwise" to RotateDirection.CLOCKWISE_90,
+                                "Rotate 90° counter-clockwise" to RotateDirection.COUNTERCLOCKWISE_90,
+                                "Rotate 180°" to RotateDirection.ROTATE_180,
+                            )
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                // Needs the full detail (renditions/encDek), not just the
+                                // grid's own PhotoEntity -- RotateRepository picks the
+                                // rendition to rotate from PhotoDetail.primaryRend.
+                                enabled = rotateState !is RotateUiState.InProgress && currentDetail != null,
+                                onClick = {
+                                    showMenu = false
+                                    showRotateSubmenu = false
+                                    currentDetail?.let { viewModel.rotatePhoto(it, direction) }
+                                },
+                            )
+                        }
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("Repair thumbnails") },
+                            // Needs the full detail (renditions/encDek), not just the grid's
+                            // own PhotoEntity -- briefly disabled right after opening, until
+                            // the LaunchedEffect above's ensureDetail() call resolves.
+                            enabled = repairState !is RepairUiState.InProgress && currentDetail != null,
+                            onClick = {
+                                showMenu = false
+                                currentDetail?.let { viewModel.repairPhoto(it) }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rotate ▸") },
+                            enabled = rotateState !is RotateUiState.InProgress && currentDetail != null,
+                            onClick = { showRotateSubmenu = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Edit date") },
+                            enabled = takenAtState !is TakenAtUiState.InProgress && currentDetail != null,
+                            onClick = {
+                                showMenu = false
+                                showEditTakenAtDialog = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete") },
+                            enabled = deleteState !is DeleteUiState.InProgress,
+                            onClick = {
+                                showMenu = false
+                                showDeleteDialog = true
+                            },
+                        )
+                    }
                 }
             }
         }
