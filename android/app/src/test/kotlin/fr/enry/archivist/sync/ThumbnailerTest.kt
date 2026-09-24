@@ -88,4 +88,47 @@ class ThumbnailerTest {
         assertEquals(0L, posterFrameTimeUs(durationMs = null))
         assertEquals(0L, posterFrameTimeUs(durationMs = 0))
     }
+
+    @Test
+    fun `candidates start at the poster instant then probe a quarter half and three quarters in`() {
+        assertEquals(
+            listOf(1_000_000L, 2_500_000L, 5_000_000L, 7_500_000L),
+            posterFrameCandidatesUs(durationMs = 10_000),
+        )
+    }
+
+    @Test
+    fun `candidates collapse duplicates for a very short clip`() {
+        // 4 ms: poster instant and the half-way probe are both 2000 us; only one survives.
+        assertEquals(listOf(2_000L, 1_000L, 3_000L), posterFrameCandidatesUs(durationMs = 4))
+    }
+
+    @Test
+    fun `unknown duration only probes frame zero`() {
+        assertEquals(listOf(0L), posterFrameCandidatesUs(durationMs = null))
+        assertEquals(listOf(0L), posterFrameCandidatesUs(durationMs = 0))
+    }
+
+    @Test
+    fun `an all black frame is mostly dark`() {
+        assertTrue(isMostlyDark(IntArray(256) { 0xFF000000.toInt() }))
+    }
+
+    @Test
+    fun `a mid grey frame is not dark`() {
+        assertTrue(!isMostlyDark(IntArray(256) { 0xFF808080.toInt() }))
+    }
+
+    @Test
+    fun `mean luma weights green above red above blue`() {
+        val red = meanLuma(intArrayOf(0xFFFF0000.toInt()))
+        val green = meanLuma(intArrayOf(0xFF00FF00.toInt()))
+        val blue = meanLuma(intArrayOf(0xFF0000FF.toInt()))
+        assertTrue(green > red && red > blue)
+    }
+
+    @Test
+    fun `mean luma of an empty sample is zero`() {
+        assertEquals(0.0, meanLuma(IntArray(0)))
+    }
 }

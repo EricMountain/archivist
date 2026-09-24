@@ -1603,6 +1603,80 @@ Worth stating as a rule: **any future change to derivatives is a local-backup jo
 That's an argument for keeping that backup genuinely complete and current, and it's a
 second reason — beyond lock-out avoidance — that it isn't optional.
 
+### Video preview clip (proposed, not implemented)
+
+**Status: proposal.** Nothing below exists yet — no schema, API, or client change has
+been made, and `sample-data.md`/`api.md`/`crypto-format.md` deliberately don't mention
+it. Accepting it means updating all of them (and adding a conformance vector) in the
+same change; see the open question of the same name.
+
+**Problem.** A video's thumbnail is a single still. It can be uninformative (a poster
+frame that is black, or a static title card), and it says nothing about whether the
+clip is a two-second reaction or a ten-minute walk-through. Playing the original just
+to find out means downloading and decrypting all of it, from Archive Instant if it has
+cooled.
+
+**Proposal.** In addition to the still ladder — which stays, and is what every grid,
+placeholder and non-video-aware client uses — the client generates **one short,
+muted, low-resolution preview clip** per video asset and uploads it encrypted
+alongside the thumbnails.
+
+| Property | Choice | Why |
+| --- | --- | --- |
+| Length | first 3 s of the clip, or the whole clip if shorter | An orientation aid, not an edit. Cost and encode time scale with it. |
+| Resolution | Shorter edge at most 480 px, aspect preserved, never upscaled | Detail-view sized; the 2048 still already covers "look closely". |
+| Codec | H.264 (baseline/main) in MP4, **no audio track** | Universally decodable by ExoPlayer and every browser client. Dropping audio saves bytes and avoids a second decode path. |
+| Target size | ~300-600 KB | Comparable to the 1024/2048 stills, so the "~0.5 MB of derivatives per photo" budget roughly doubles for videos only. |
+| Playback surface | **Detail view only** (autoplay, muted, loop). Grid keeps the still. | Many concurrent decoders in a scrolling grid is a battery and hardware-decoder-limit problem; a still is the right grid image. A grid long-press could be added later. |
+| Which frames | Start of the clip, not a highlight | Highlight selection needs analysis the client can't cheaply do; revisit only if the start proves unhelpful. |
+
+**Encoding.** `androidx.media3:media3-transformer` (new dependency; the module today
+has only `media3-exoplayer`/`media3-ui`) with a clip-trim and a scale effect. It runs
+in the upload worker after thumbnailing and before the PUTs, on the same
+"plaintext only ever exists on the client" footing as thumbnails: the client generates
+it from a file it holds, the server is never asked to transcode anything (no Lambda can
+read the pixels). Transformer needs a looper-bearing thread and is comparatively slow
+and battery-heavy, so it counts against the same concurrency limiter as thumbnailing
+and must not run for videos below a minimum length worth previewing.
+
+**Object type and wire format.** This is a *new object kind*, not a fourth thumbnail
+size — reusing `t:<size>` would let a clip be substituted for a still, which is the
+exact confusion the AAD binding exists to prevent (`crypto-format.md`'s "A 256px
+thumbnail served as the 1024px one"). Proposed:
+
+* AAD `objectRef` gains `"p"` (one preview per asset, so no qualifier).
+* Always whole-object mode — a few hundred KB is far under the streaming threshold.
+* Distinct random IV, same per-asset DEK, like every other object.
+* `#META.preview = { bucket, key, iv, bytes, width, height, durationMs }`, in the
+  derived (Standard) bucket at `th/<ownerId>/<photoId>/preview`. Absent for stills and
+  for videos that have none.
+* **Not** projected into `timeline_gsi`/`facet_gsi`: only the detail view uses it, and
+  the detail view already reads the full `#META`. Grid cost is unchanged.
+* Served through the existing thumbnail CloudFront behaviour — same key scheme, same
+  treatment of immutability, same "mint a fresh key on repair to dodge the year-long
+  edge cache" rule.
+* Deleted with the asset like every other object (`DeleteObjects` list grows by one).
+
+**API.** `POST /uploads` and `POST /photos/{photoId}/thumbs` accept an optional
+`preview` descriptor (`bytes`, `iv`, `width`, `height`, `durationMs`) alongside
+`thumbs`, and return a `previewUpload` presigned URL next to `thumbUploads`. Repair
+therefore needs no new endpoint. Attach-without-becoming-primary follows the existing
+rule: the client must not PUT a preview the server didn't ask for, since it would be
+encrypted under a different asset's DEK.
+
+**Existing videos.** Backfilled by the existing "Repair thumbnails" path (local file
+first, server copy as fallback) — no new mechanism. A bulk backfill is a local-backup
+job like any other derivative change (see "Changing the ladder later").
+
+**Privacy.** No new metadata leaves the device beyond what the still ladder already
+discloses: the clip is ciphertext, and its `width`/`height`/`durationMs` are of a piece
+with the original's own. `docs/play/` still needs its usual re-check on acceptance.
+
+**Failure model.** A preview is strictly best-effort. If transcoding fails or times
+out, the asset is still uploaded with its stills and no `preview`; the detail view
+falls back to today's behaviour. It must never leave a row stuck in a "generating"
+state (see the 2026-09-09 stall in `STATUS.md` for what that looks like).
+
 ## Known limitations
 
 **No multi-facet intersection.** "Dogs AND shot on a Canon" needs two facet_gsi queries
@@ -1770,3 +1844,13 @@ see "Manually correcting `takenAt`" above, which is exactly this.
    repository method to call it and a holder to cache the unwrapped secret in memory
    (mirroring `MasterKeyHolder`) — which is what plan step 2.7 is actually blocked on
    using this for.
+
+5. **Video preview clip: adopt or not, and with what parameters?** Proposed in "Video
+   preview clip" under the thumbnail ladder. Unresolved: (a) whether a 3 s / 480 p /
+   muted clip is worth roughly doubling per-video derivative storage; (b) whether
+   `media3-transformer` is acceptable on battery and on `minSdk` 28 devices, to be
+   measured on real hardware before committing, in the spirit of item 1; (c) grid
+   long-press playback, deferred; (d) a minimum source length below which no preview is
+   made. On acceptance: update `sample-data.md` (a video asset with `preview`),
+   `api.md`, `crypto-format.md` (objectRef `p` plus a conformance vector) and
+   `docs/play/`.

@@ -95,6 +95,44 @@ internal fun posterFrameTimeUs(durationMs: Long?): Long {
     return minOf(duration / 2, 1_000L) * 1_000L
 }
 
+/** Instants (microseconds) to try for the poster frame, best guess first: the
+ * [posterFrameTimeUs] instant, then a quarter, half and three quarters of the way
+ * through. A clip that fades in from black, or opens on a dark title card, is common
+ * enough that the first guess alone leaves a black thumbnail -- see
+ * [isMostlyDark]. Unknown/zero duration has nothing to probe beyond frame zero. Pure
+ * and Android-free, same reasoning as [posterFrameTimeUs]. */
+internal fun posterFrameCandidatesUs(durationMs: Long?): List<Long> {
+    val duration = durationMs?.takeIf { it > 0 } ?: return listOf(0L)
+    return listOf(
+        posterFrameTimeUs(duration),
+        duration * 250L,
+        duration * 500L,
+        duration * 750L,
+    ).distinct()
+}
+
+/** Mean luma (0-255, Rec. 601 weights) of ARGB [pixels]; 0 for an empty array. Pure so
+ * the darkness heuristic is JVM-testable -- callers hand it a tiny downscaled sample,
+ * not a full frame. */
+internal fun meanLuma(pixels: IntArray): Double {
+    if (pixels.isEmpty()) return 0.0
+    var sum = 0.0
+    for (p in pixels) {
+        val r = (p shr 16) and 0xFF
+        val g = (p shr 8) and 0xFF
+        val b = p and 0xFF
+        sum += 0.299 * r + 0.587 * g + 0.114 * b
+    }
+    return sum / pixels.size
+}
+
+/** Below this mean luma a frame counts as "black" for poster purposes. Deliberately
+ * low: a genuinely dark night scene sits well above it, while a fade-in/black first
+ * frame is essentially 0-8. If every candidate is darker, the brightest wins anyway. */
+internal const val DARK_FRAME_LUMA = 16.0
+
+internal fun isMostlyDark(pixels: IntArray): Boolean = meanLuma(pixels) < DARK_FRAME_LUMA
+
 /**
  * Decodes the source exactly once, at a sample size chosen for the *largest* rung
  * ([Thumbnailer.SIZES] max) -- a 50 MP original never exists as a full-size bitmap in
@@ -136,12 +174,54 @@ class AndroidThumbnailer
                 try {
                     retriever.setDataSource(context, uri)
                     val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-                    retriever.getFrameAtTime(posterFrameTimeUs(durationMs), MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    pickPosterFrame(retriever, posterFrameCandidatesUs(durationMs))
                 } finally {
                     retriever.release()
                 }
             val base = frame ?: throw IOException("could not decode a poster frame from $contentUri")
             return thumbnailsFrom(base, base.width, base.height)
+        }
+
+        /** Tries each of [candidatesUs] in order and returns the first frame that
+         * isn't [isMostlyDark]; if all are dark, the brightest one seen. Uses
+         * `OPTION_CLOSEST` (an exact frame), not `OPTION_CLOSEST_SYNC`: the latter snaps
+         * to a keyframe, and a clip whose only early keyframe is frame zero returned
+         * that (often black) frame for every requested instant. Losing frames are
+         * recycled; null only if no candidate decoded at all. */
+        private fun pickPosterFrame(
+            retriever: MediaMetadataRetriever,
+            candidatesUs: List<Long>,
+        ): Bitmap? {
+            var best: Bitmap? = null
+            var bestLuma = -1.0
+            for (timeUs in candidatesUs) {
+                val frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: continue
+                val luma = sampleLuma(frame)
+                if (luma >= DARK_FRAME_LUMA) {
+                    best?.recycle()
+                    return frame
+                }
+                if (luma > bestLuma) {
+                    best?.recycle()
+                    best = frame
+                    bestLuma = luma
+                } else {
+                    frame.recycle()
+                }
+            }
+            return best
+        }
+
+        /** Mean luma of a tiny downscale of [frame] -- cheap regardless of video size. */
+        private fun sampleLuma(frame: Bitmap): Double {
+            val sample = Bitmap.createScaledBitmap(frame, LUMA_SAMPLE_EDGE, LUMA_SAMPLE_EDGE, true)
+            return try {
+                val pixels = IntArray(LUMA_SAMPLE_EDGE * LUMA_SAMPLE_EDGE)
+                sample.getPixels(pixels, 0, LUMA_SAMPLE_EDGE, 0, 0, LUMA_SAMPLE_EDGE, LUMA_SAMPLE_EDGE)
+                meanLuma(pixels)
+            } finally {
+                if (sample !== frame) sample.recycle()
+            }
         }
 
         private fun generateImageThumbnails(contentUri: String): List<Thumbnail> {
@@ -194,6 +274,8 @@ class AndroidThumbnailer
 
         private fun encodeWebp(bitmap: Bitmap): ByteArray = fr.enry.archivist.sync.encodeWebp(bitmap)
     }
+
+private const val LUMA_SAMPLE_EDGE = 16
 
 /** Pulled out of [AndroidThumbnailer] (`internal`, not `private`) so
  * [fr.enry.archivist.data.repo.RotateRepository] can produce byte-identical thumbnail
