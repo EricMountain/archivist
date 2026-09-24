@@ -429,15 +429,20 @@ data class PhotosHistogramResponse(
     val version: Long = 0,
 )
 
-/** The subset of `MetaItem` (`src/core/items.ts`) plan step 2.12 needs — see
- * [ArchivistApi.getPhoto]'s doc for why this doesn't declare the item's full field set.
- * [exifEnc]/[exifIv] are absent for an asset that had no EXIF worth encrypting
- * ([fr.enry.archivist.domain.ExifBlob.from] returns null in that case), which is
- * exactly the "photo lacking EXIF" case plan step 2.12's "Done when" names. */
+/** The subset of `MetaItem` (`src/core/items.ts`) plan step 2.12 needs, plus (`stem`
+ * through `deletedBy`) the rest of what the "Details" menu action shows — see
+ * [ArchivistApi.getPhoto]'s doc for why this doesn't declare the item's full field set
+ * even now. [exifEnc]/[exifIv] are absent for an asset that had no EXIF worth
+ * encrypting ([fr.enry.archivist.domain.ExifBlob.from] returns null in that case),
+ * which is exactly the "photo lacking EXIF" case plan step 2.12's "Done when" names.
+ * [deletedAt]/[deletedBy] are here for parity with `inspect_photo.py`'s own dump, not
+ * because `DetailScreen` is reachable for a trashed asset today. */
 @Serializable
 data class PhotoMetaDto(
     val photoId: String,
+    val stem: String,
     val primaryRend: String? = null,
+    val renditions: Int,
     val mime: String,
     val width: Int,
     val height: Int,
@@ -446,15 +451,24 @@ data class PhotoMetaDto(
     val takenAt: String,
     val tzOffsetMin: Int,
     val takenAtSrc: String,
+    val tzSrc: String,
+    val deviceKey: String? = null,
+    val uploadedAt: String,
+    val groupSrc: String,
+    val status: String,
+    val deletedAt: String? = null,
+    val deletedBy: String? = null,
     val exifEnc: String? = null,
     val exifIv: String? = null,
 )
 
-/** The subset of `RenditionItem` (`src/core/items.ts`) plan step 2.12 needs. [s3Key]
- * already carries the `raw/` prefix `strip_media_prefix` (terraform/cloudfront.tf)
- * strips at the edge, so `"$apiBase-less-host/media/$s3Key"` (see
+/** The subset of `RenditionItem` (`src/core/items.ts`) plan step 2.12 needs, plus
+ * [contentHash]/[addedAt] for the "Details" menu action ([s3Key] already carries the
+ * `raw/` prefix `strip_media_prefix` (terraform/cloudfront.tf) strips at the edge, so
+ * `"$apiBase-less-host/media/$s3Key"` (see
  * [fr.enry.archivist.data.repo.PhotoDetailRepository]) is the exact CloudFront URL —
- * same relationship [fr.enry.archivist.crypto.EncryptedThumbRef.url] has to `th/` keys. */
+ * same relationship [fr.enry.archivist.crypto.EncryptedThumbRef.url] has to `th/`
+ * keys). */
 @Serializable
 data class RenditionDto(
     val renditionId: String,
@@ -463,12 +477,14 @@ data class RenditionDto(
     val ext: String,
     val mime: String,
     val s3Key: String,
+    val contentHash: String,
     val bytes: Long,
     val plainBytes: Long,
     val width: Int,
     val height: Int,
     val encIv: String? = null,
     val encChunkSize: Long,
+    val addedAt: String,
 )
 
 @Serializable

@@ -22,9 +22,9 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-/** One `R#` item, trimmed to what the detail screen's rendition list and "view
- * original" action need — see [fr.enry.archivist.data.remote.RenditionDto]'s own doc
- * for why the wire DTO itself is already this narrow. */
+/** One `R#` item, trimmed to what the detail screen's rendition list, "view original"
+ * action, and "Details" dialog need — see [fr.enry.archivist.data.remote.RenditionDto]'s
+ * own doc for why the wire DTO itself is already this narrow. */
 data class RenditionSummary(
     val renditionId: String,
     val role: String,
@@ -32,12 +32,14 @@ data class RenditionSummary(
     val ext: String,
     val mime: String,
     val s3Key: String,
+    val contentHash: String,
     val bytes: Long,
     val plainBytes: Long,
     val width: Int,
     val height: Int,
     val encIv: String?,
     val encChunkSize: Long,
+    val addedAt: String,
 )
 
 /**
@@ -51,14 +53,23 @@ data class RenditionSummary(
  */
 data class PhotoDetail(
     val photoId: String,
+    val stem: String,
     val encDek: String,
     val takenAt: String,
     val tzOffsetMin: Int,
     val takenAtSrc: String,
+    val tzSrc: String,
     val mime: String,
     val width: Int,
     val height: Int,
     val primaryRend: String?,
+    val renditionsCount: Int,
+    val groupSrc: String,
+    val deviceKey: String?,
+    val status: String,
+    val uploadedAt: String,
+    val deletedAt: String?,
+    val deletedBy: String?,
     val cameraMake: String?,
     val cameraModel: String?,
     val exifDecryptFailed: Boolean,
@@ -98,14 +109,23 @@ class PhotoDetailRepository
             val exif = decryptExif(meta.photoId, meta.encDek, meta.exifEnc, meta.exifIv)
             return PhotoDetail(
                 photoId = meta.photoId,
+                stem = meta.stem,
                 encDek = meta.encDek,
                 takenAt = meta.takenAt,
                 tzOffsetMin = meta.tzOffsetMin,
                 takenAtSrc = meta.takenAtSrc,
+                tzSrc = meta.tzSrc,
                 mime = meta.mime,
                 width = meta.width,
                 height = meta.height,
                 primaryRend = meta.primaryRend,
+                renditionsCount = meta.renditions,
+                groupSrc = meta.groupSrc,
+                deviceKey = meta.deviceKey,
+                status = meta.status,
+                uploadedAt = meta.uploadedAt,
+                deletedAt = meta.deletedAt,
+                deletedBy = meta.deletedBy,
                 cameraMake = exif?.blob?.cameraMake,
                 cameraModel = exif?.blob?.cameraModel,
                 exifDecryptFailed = meta.exifEnc != null && exif == null,
@@ -181,12 +201,14 @@ private fun RenditionDto.toSummary() =
         ext = ext,
         mime = mime,
         s3Key = s3Key,
+        contentHash = contentHash,
         bytes = bytes,
         plainBytes = plainBytes,
         width = width,
         height = height,
         encIv = encIv,
         encChunkSize = encChunkSize,
+        addedAt = addedAt,
     )
 
 private fun photoUrl(

@@ -152,6 +152,7 @@ fun DetailScreen(
 
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showEditTakenAtDialog by remember { mutableStateOf(false) }
+    var showDetailsDialog by remember { mutableStateOf(false) }
     val mediaDeleteLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
             val confirming = deleteState
@@ -249,6 +250,14 @@ fun DetailScreen(
                             onClick = {
                                 showMenu = false
                                 showDeleteDialog = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Details") },
+                            enabled = currentDetail != null,
+                            onClick = {
+                                showMenu = false
+                                showDetailsDialog = true
                             },
                         )
                     }
@@ -411,6 +420,13 @@ fun DetailScreen(
                 showEditTakenAtDialog = false
                 viewModel.editTakenAt(currentDetail.photoId, newTakenAt, currentDetail.tzOffsetMin)
             },
+        )
+    }
+
+    if (showDetailsDialog && currentDetail != null) {
+        PhotoDetailsDialog(
+            detail = currentDetail,
+            onDismiss = { showDetailsDialog = false },
         )
     }
 }
