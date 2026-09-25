@@ -503,7 +503,7 @@ class UploadRepository
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w("UploadRepository", "preview generation failed, uploading without one: ${e.message}")
+                Log.w("UploadRepository", "preview generation failed, uploading without one", e)
                 null
             }
 

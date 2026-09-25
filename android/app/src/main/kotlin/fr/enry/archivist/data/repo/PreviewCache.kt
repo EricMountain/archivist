@@ -1,6 +1,7 @@
 package fr.enry.archivist.data.repo
 
 import android.content.Context
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fr.enry.archivist.crypto.Aad
 import fr.enry.archivist.crypto.ObjectRef
@@ -105,6 +106,10 @@ class PreviewCache
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // Best-effort by design (the still stays), but never silent: a preview that
+                    // "just doesn't play" is otherwise undiagnosable. Logged with the photoId
+                    // and the failure class only -- never the URL, key material or bytes.
+                    Log.w("PreviewCache", "preview for ${ref.photoId} unavailable: ${e::class.simpleName}: ${e.message}")
                     failed += ref.url
                     null
                 }

@@ -81,6 +81,25 @@ def status_tag(meta: dict) -> str:
     return "TRASHED" if meta.get("deletedAt") else "live"
 
 
+def format_thumbs(thumbs: dict | None) -> str:
+    """The still ladder's sizes and ciphertext bytes, or `none` -- an asset with no
+    thumbnails at all shows a grey square in the app (see "Repair thumbnails")."""
+    if not thumbs:
+        return "none"
+    return ", ".join(f"{size}px={t.get('bytes'):,}B" for size, t in sorted(thumbs.items(), key=lambda kv: int(kv[0])))
+
+
+def format_preview(preview: dict | None) -> str:
+    """The video preview clip's descriptor (design.md, "Video preview clip"), or `none`.
+    Absent for every still, and for any video whose preview was never generated or never
+    made it to the server -- the app then shows only the still thumbnail. The key's
+    shape tells you what happened: `th/<owner>/<photo>/preview` is the plain
+    upload-time key, `th/<owner>/<photo>/<generation>/preview` is a repair's."""
+    if not preview:
+        return "none"
+    return f"{preview.get('bytes'):,}B  key={preview.get('key')}"
+
+
 def format_meta(meta: dict) -> str:
     lines = [
         f"  status        {meta.get('status')}",
@@ -93,6 +112,8 @@ def format_meta(meta: dict) -> str:
         f"  renditions    {meta.get('renditions')}",
         f"  groupSrc      {meta.get('groupSrc')}",
     ]
+    lines.append(f"  thumbs        {format_thumbs(meta.get('thumbs'))}")
+    lines.append(f"  preview       {format_preview(meta.get('preview'))}")
     if meta.get("deviceKey"):
         lines.append(f"  deviceKey     {meta['deviceKey']}")
     if meta.get("deletedAt"):

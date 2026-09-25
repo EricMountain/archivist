@@ -136,6 +136,8 @@ for "not trashed".
   # --contains for a substring match; --include-trashed to also search trashed assets
 ```
 
+The output also shows the asset's `thumbs` (still ladder sizes) and `preview` (the video preview clip's size and key, or `none`) — the quickest way to tell whether a video's preview ever reached the server. A `.../<generation>/preview` key means it came from a repair.
+
 Matches on *any* rendition's filename, not just the primary, so an asset still
 turns up by its RAW sibling's own name. Same auth as the other two scripts, same
 "nothing here is encrypted, no master key needed" as `dedupe_by_filename.py`.

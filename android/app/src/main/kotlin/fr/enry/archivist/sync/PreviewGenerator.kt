@@ -14,6 +14,7 @@ import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.InAppMp4Muxer
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
@@ -65,6 +66,21 @@ const val PREVIEW_MAX_DURATION_MS = 60_000L
  * exact value is a measured-on-real-footage question -- see design.md open question 5. */
 const val PREVIEW_VIDEO_BITRATE = 250_000
 
+/** Tone-mapping methods to try, in order. OpenGL first: it doesn't depend on the device's
+ * MediaCodec supporting tone-mapping. See `TransformerPreviewGenerator.transcodeTonemapping`. */
+internal fun hdrModeName(mode: Int): String =
+    when (mode) {
+        Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL -> "tonemap-gl"
+        Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_MEDIACODEC -> "tonemap-mediacodec"
+        else -> "hdr-mode-$mode"
+    }
+
+internal val HDR_TONE_MAP_MODES =
+    listOf(
+        Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL,
+        Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_MEDIACODEC,
+    )
+
 /** The dimensions of the preview for a [width]x[height] *displayed* (rotation already
  * applied) source: [targetDimensions] at [PREVIEW_MAX_EDGE], then each edge rounded down
  * to an even number, since H.264 chroma subsampling needs it. Pure and Android-free so
@@ -98,7 +114,7 @@ class TransformerPreviewGenerator
                 context.cacheDir.mkdirs()
                 val out = File.createTempFile("preview-", ".mp4", context.cacheDir)
                 try {
-                    transcode(uri, out, width, height, trim = needsTrim(probe.durationMs))
+                    transcodeTonemapping(uri, out, width, height, trim = needsTrim(probe.durationMs))
                     val bytes = withContext(Dispatchers.IO) { out.readBytes() }
                     if (bytes.isEmpty()) throw IOException("preview transcode produced no output for $contentUri")
                     PreviewClip(width, height, bytes)
@@ -140,12 +156,45 @@ class TransformerPreviewGenerator
         /** Transformer must be started, and cancelled, on a thread with a [Looper]; the
          * main thread is the only one guaranteed to have one here. The transcode itself
          * runs on the transformer's own threads, so this doesn't block the UI. */
+        /** Tries each of [HDR_TONE_MAP_MODES] in turn, so an HDR source (10-bit HEVC HLG/HDR10,
+         * what many phones record by default) still yields an 8-bit SDR H.264 preview: the
+         * transformer's default is to *keep* HDR, which an H.264 encoder can't take, and the
+         * export fails with `ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED` (reproduced with a
+         * 10-bit HLG HEVC clip on an emulator; a real user's repair of a phone video hit
+         * "preview clip couldn't be generated"). The setting is a no-op for SDR sources, so
+         * an SDR video succeeds on the first attempt; only a failure pays for a retry, with
+         * the other tone-mapping method, since which one works is device-dependent. */
+        private suspend fun transcodeTonemapping(
+            uri: Uri,
+            out: File,
+            width: Int,
+            height: Int,
+            trim: Boolean,
+        ) {
+            val failures = mutableListOf<String>()
+            var first: IOException? = null
+            for (mode in HDR_TONE_MAP_MODES) {
+                out.delete()
+                try {
+                    transcode(uri, out, width, height, trim, mode)
+                    return
+                } catch (e: IOException) {
+                    first = first ?: e
+                    failures += "${hdrModeName(mode)}: ${e.message}"
+                }
+            }
+            // Every attempt's reason, not just the last: which mode failed how is exactly what
+            // says whether a given phone can't decode the source or can't tone-map it.
+            throw IOException(failures.joinToString("; "), first)
+        }
+
         private suspend fun transcode(
             uri: Uri,
             out: File,
             width: Int,
             height: Int,
             trim: Boolean,
+            hdrMode: Int,
         ) = withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { continuation ->
                 val mediaItem =
@@ -209,7 +258,14 @@ class TransformerPreviewGenerator
                                     exportException: ExportException,
                                 ) {
                                     if (continuation.isActive) {
-                                        continuation.resumeWithException(IOException("preview transcode failed: ${exportException.message}", exportException))
+                                        continuation.resumeWithException(
+                                            IOException(
+                                                // The error code name (ENCODER_INIT_FAILED, DECODING_FORMAT_UNSUPPORTED,
+                                                // ...) is what actually says what went wrong on a given device.
+                                                "${exportException.errorCodeName} (${exportException.message.orEmpty().take(110)})",
+                                                exportException,
+                                            ),
+                                        )
                                     }
                                 }
                             },
@@ -218,7 +274,11 @@ class TransformerPreviewGenerator
                 continuation.invokeOnCancellation {
                     Handler(Looper.getMainLooper()).post { transformer.cancel() }
                 }
-                transformer.start(edited, out.absolutePath)
+                val composition =
+                    Composition.Builder(EditedMediaItemSequence.Builder(edited).build())
+                        .setHdrMode(hdrMode)
+                        .build()
+                transformer.start(composition, out.absolutePath)
             }
         }
     }

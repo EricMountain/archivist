@@ -165,6 +165,38 @@ class PreviewGeneratorInstrumentedTest {
             }
         }
 
+    /** Real phone footage is not an ffmpeg test pattern: modern phones record 10-bit HDR HEVC
+     * (HLG) and 60 fps. A user's repair of a real video reported "the preview clip couldn't be
+     * generated" while every synthetic H.264 fixture above worked. */
+    @Test
+    fun tenBitHdrHevcSourceProducesAnSdrH264Preview() =
+        runBlocking {
+            val clip =
+                try {
+                    generator.generate(asset("preview-src-hevc-hdr.mp4"))
+                } catch (e: IOException) {
+                    // An emulator's software decoder can't decode 10-bit HLG at all, so
+                    // neither tone-mapping mode can be exercised there. That is a device
+                    // limitation, not a verdict on the code -- skipped, loudly, not passed.
+                    // Any *other* failure still fails this test.
+                    org.junit.Assume.assumeFalse(
+                        "this device cannot decode 10-bit HDR HEVC: ${e.message}",
+                        e.message.orEmpty().contains("DECODING_FORMAT_UNSUPPORTED"),
+                    )
+                    throw e
+                }
+            val m = meta(write(clip))
+            assertEquals(200 to 112, displayed(m))
+            assertTrue("preview is ${clip.bytes.size} bytes", clip.bytes.size in 1_000..200_000)
+        }
+
+    @Test
+    fun sixtyFpsSourceProducesAPreview() =
+        runBlocking {
+            val clip = generator.generate(asset("preview-src-h264-60fps.mp4"))
+            assertEquals(200 to 112, displayed(meta(write(clip))))
+        }
+
     @Test
     fun aMissingSourceFailsWithAnIOExceptionInsteadOfHanging() {
         try {

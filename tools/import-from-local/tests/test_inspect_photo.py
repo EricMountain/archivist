@@ -14,6 +14,8 @@ from inspect_photo import (
     find_matches,
     format_facets,
     format_meta,
+    format_preview,
+    format_thumbs,
     format_rendition,
     matches,
     print_asset,
@@ -109,6 +111,25 @@ class Formatting(unittest.TestCase):
         })
         self.assertIn("2026-01-01T00:00:00.000Z", text)
         self.assertIn("unknown device", text)
+
+    def test_format_preview_none_for_a_still_or_a_video_without_one(self):
+        self.assertEqual("none", format_preview(None))
+        self.assertEqual("none", format_preview({}))
+        self.assertIn("preview       none", format_meta({"status": "ready"}))
+
+    def test_format_preview_shows_size_and_key(self):
+        text = format_preview({"bucket": "b", "key": "th/o/p/preview", "iv": "x", "bytes": 1843216})
+        self.assertEqual("1,843,216B  key=th/o/p/preview", text)
+
+    def test_format_meta_includes_the_preview_line_when_present(self):
+        text = format_meta({"status": "ready", "preview": {"key": "th/o/p/g/preview", "bytes": 2048}})
+        self.assertIn("preview       2,048B  key=th/o/p/g/preview", text)
+
+    def test_format_thumbs_lists_sizes_numerically(self):
+        thumbs = {"1024": {"bytes": 5}, "256": {"bytes": 1}, "2048": {"bytes": 9}}
+        self.assertEqual("256px=1B, 1024px=5B, 2048px=9B", format_thumbs(thumbs))
+        self.assertEqual("none", format_thumbs(None))
+        self.assertEqual("none", format_thumbs({}))
 
     def test_format_meta_omits_deleted_at_when_live(self):
         text = format_meta({"status": "ready"})

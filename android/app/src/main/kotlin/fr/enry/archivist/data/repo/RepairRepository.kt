@@ -140,6 +140,7 @@ class RepairRepository
                 // A video whose preview couldn't be produced is still repaired -- its
                 // stills matter more -- but the caller is told (see the Warning below).
                 val previewFailed = isVideo && derived.preview == null
+                val previewError = derived.previewError
 
                 val encrypted =
                     thumbnails.map { t ->
@@ -199,7 +200,10 @@ class RepairRepository
                             add("Repaired using the copy stored on the server — the original wasn't found on this device.")
                         }
                         if (previewFailed) {
-                            add("The thumbnails were repaired, but the preview clip couldn't be generated.")
+                            add(
+                                "The thumbnails were repaired, but the preview clip couldn't be generated" +
+                                    (previewError?.let { " ($it)" } ?: "") + ".",
+                            )
                         }
                     }
                 if (warnings.isEmpty()) RepairOutcome.Done else RepairOutcome.Warning(warnings.joinToString(" "))
@@ -248,20 +252,21 @@ class RepairRepository
             mime: String,
         ): Derived {
             val thumbnails = thumbnailer.generate(uri, mime)
-            val preview =
-                if (mime.startsWith("video/")) {
-                    try {
-                        previewGenerator.generate(uri)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w("RepairRepository", "preview generation failed: ${e.message}")
-                        null
-                    }
-                } else {
-                    null
+            var preview: PreviewClip? = null
+            var previewError: String? = null
+            if (mime.startsWith("video/")) {
+                try {
+                    preview = previewGenerator.generate(uri)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("RepairRepository", "preview generation failed", e)
+                    // Shown in the repair result so a failure on someone's real footage can be
+                    // diagnosed from the app alone -- no adb needed.
+                    previewError = (e.message ?: e::class.simpleName).orEmpty().take(400)
                 }
-            return Derived(thumbnails, preview)
+            }
+            return Derived(thumbnails, preview, previewError)
         }
 
         private suspend fun putBytes(
@@ -285,7 +290,7 @@ private class EncryptedRepairPreview(val iv: ByteArray, val ciphertext: ByteArra
 
 /** What one decode of the source produced: the still ladder, and (video only, and only
  * if it succeeded) the preview clip. */
-private class Derived(val thumbnails: List<Thumbnail>, val preview: PreviewClip?)
+private class Derived(val thumbnails: List<Thumbnail>, val preview: PreviewClip?, val previewError: String? = null)
 
 private fun thumbsUrl(
     apiBase: String,

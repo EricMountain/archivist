@@ -364,6 +364,8 @@ class RepairRepositoryTest {
 
             assertTrue(outcome is RepairOutcome.Warning, "expected a warning, got $outcome")
             assertTrue((outcome as RepairOutcome.Warning).message.contains("preview"))
+            // ...and says *why*, so it can be diagnosed from the app alone.
+            assertTrue(outcome.message.contains("no encoder"), outcome.message)
             val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/photos/$photoId/thumbs"]!!))
             assertTrue("preview" !in sent)
             assertTrue(recordedBodies.keys.any { it == "/thumb/256" })
