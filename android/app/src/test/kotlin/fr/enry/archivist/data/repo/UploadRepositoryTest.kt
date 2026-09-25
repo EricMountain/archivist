@@ -25,6 +25,7 @@ import fr.enry.archivist.sync.LocationStripper
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeMediaStoreSource
 import fr.enry.archivist.testutil.FakeSharedPreferences
+import fr.enry.archivist.testutil.FakePreviewGenerator
 import fr.enry.archivist.testutil.FakeThumbnailer
 import fr.enry.archivist.testutil.SyntheticMp4
 import java.io.File
@@ -61,6 +62,7 @@ class UploadRepositoryTest {
     private lateinit var mediaStoreSource: FakeMediaStoreSource
     private lateinit var uploadEvents: UploadEvents
     private lateinit var repository: UploadRepository
+    private val previewGenerator = FakePreviewGenerator()
 
     private val json = Json { ignoreUnknownKeys = true }
     private val host = "photos.example.com"
@@ -152,6 +154,7 @@ class UploadRepositoryTest {
                 localTombstoneDao = db.localTombstoneDao(),
                 mediaStoreSource = mediaStoreSource,
                 thumbnailer = FakeThumbnailer(),
+                previewGenerator = previewGenerator,
                 instanceStore = instanceStore,
                 archivistApiFactory = archivistApiFactory,
                 enrolmentStore = enrolmentStore,
@@ -663,6 +666,7 @@ class UploadRepositoryTest {
     private fun createEchoDispatcher(
         renditionId: String,
         mediaPathSuffix: String,
+        extraResponseJson: String = "",
     ) = object : Dispatcher() {
         override fun dispatch(request: RecordedRequest): MockResponse {
             val path = request.path.orEmpty()
@@ -683,7 +687,7 @@ class UploadRepositoryTest {
                     val encDek = sent.string("encDek")
                     val body =
                         """{"photoId":"$photoId","renditionId":"$renditionId","created":true,"encDek":"$encDek","encKeyId":"mk-1",
-                        |${originalUploadJson(mediaPathSuffix)}}
+                        |${originalUploadJson(mediaPathSuffix)}${if (extraResponseJson.isEmpty()) "" else ",$extraResponseJson"}}
                         """.trimMargin().replace("\n", "")
                     MockResponse().setResponseCode(200).setBody(body)
                 }
@@ -703,6 +707,122 @@ class UploadRepositoryTest {
         val originalCiphertext = recordedBodies.entries.single { it.key.startsWith("/media/$mediaPathSuffix") }.value
         return WholeObjectCipher.decrypt(dek, encIv, Aad.of(photoId, ObjectRef.Rendition(renditionId)), originalCiphertext)
     }
+
+    // ------------------------------------------------------------------
+    // Video preview clip (design.md, "Video preview clip").
+    // ------------------------------------------------------------------
+
+    private fun previewUploadJson(pathSuffix: String) = """"previewUpload":"${server.url("/preview/$pathSuffix")}""""
+
+    @Test
+    fun `video created -- sends the preview descriptor, PUTs it before the original, decryptable under the DEK`() =
+        runTest {
+            connectInstance()
+            val videoBytes = SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox(SyntheticMp4.lociBox())))
+            val queueId = queueVideoRow("content://media/video3", "clip3.mp4", "hmac-sha256:video-preview-1", videoBytes)
+            server.dispatcher =
+                createEchoDispatcher(renditionId = "rv3", mediaPathSuffix = "video-orig-3", extraResponseJson = previewUploadJson("p3"))
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            assertEquals(listOf("content://media/video3"), previewGenerator.requested)
+
+            val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+            val descriptor = sent.getValue("preview").jsonObject
+            val photoId = sent.string("photoId")
+            val dek = masterKey.unwrapDek(decode(sent.string("encDek")))
+
+            val previewCiphertext = recordedBodies.entries.single { it.key.startsWith("/preview/p3") }.value
+            // The descriptor's `bytes` is the *ciphertext* length, per crypto-format.md.
+            assertEquals(previewCiphertext.size.toLong(), descriptor.getValue("bytes").jsonPrimitive.content.toLong())
+            val plaintext =
+                WholeObjectCipher.decrypt(dek, decode(descriptor.string("iv")), Aad.of(photoId, ObjectRef.Preview), previewCiphertext)
+            assertArrayEquals(previewGenerator.clip.bytes, plaintext)
+
+            // Ordering matters: the preview never gates readiness, so it must land
+            // *before* the original -- a failure after would leave #META.preview dangling.
+            val order = recordedBodies.keys.toList()
+            assertTrue(order.indexOfFirst { it.startsWith("/preview/") } < order.indexOfFirst { it.startsWith("/media/") })
+        }
+
+    @Test
+    fun `a still never asks for a preview and sends no descriptor`() =
+        runTest {
+            connectInstance()
+            val queueId = queueRow()
+            uploadResponseBody = """{"photoId":"01ARZ3NDEKTSV4RRFFQ69G5FB0","renditionId":"r1","created":true,"encDek":"x","encKeyId":"mk-1",${originalUploadJson("orig")}}"""
+
+            repository.uploadOne(queueId)
+
+            assertTrue(previewGenerator.requested.isEmpty())
+            val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+            assertFalse("preview" in sent)
+        }
+
+    @Test
+    fun `a failing preview generator does not fail the upload`() =
+        runTest {
+            connectInstance()
+            previewGenerator.error = java.io.IOException("no encoder on this device")
+            val videoBytes = SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox(SyntheticMp4.lociBox())))
+            val queueId = queueVideoRow("content://media/video4", "clip4.mp4", "hmac-sha256:video-preview-2", videoBytes)
+            server.dispatcher = createEchoDispatcher(renditionId = "rv4", mediaPathSuffix = "video-orig-4")
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            assertEquals(UploadState.DONE, db.uploadQueueDao().getById(queueId)!!.state)
+            val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+            assertFalse("preview" in sent)
+            assertTrue(recordedBodies.keys.none { it.startsWith("/preview/") })
+            // The still ladder is unaffected.
+            assertTrue("thumbs" in sent)
+        }
+
+    @Test
+    fun `attach that does not become primary -- no previewUpload offered, so nothing is PUT`() =
+        runTest {
+            connectInstance()
+            val videoBytes = SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox(SyntheticMp4.lociBox())))
+            val queueId = queueVideoRow("content://media/video5", "clip5.mp4", "hmac-sha256:video-preview-3", videoBytes)
+            val realEncDek = encode(masterKey.wrapDek(ByteArray(32) { (it + 4).toByte() }))
+            uploadResponseBody =
+                """{"photoId":"01ARZ3NDEKTSV4RRFFQ69G5FB1","renditionId":"r5","created":false,"becomesPrimary":false,
+                |"encDek":"$realEncDek","encKeyId":"mk-1",${originalUploadJson("orig5")}}
+                """.trimMargin().replace("\n", "")
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            assertTrue(recordedBodies.keys.any { it.startsWith("/media/orig5") })
+            assertTrue(recordedBodies.keys.none { it.startsWith("/preview/") })
+        }
+
+    @Test
+    fun `resumed -- re-encrypts the preview under the real DEK, reusing the descriptor's IV`() =
+        runTest {
+            connectInstance()
+            val videoBytes = SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox(SyntheticMp4.lociBox())))
+            val queueId = queueVideoRow("content://media/video6", "clip6.mp4", "hmac-sha256:video-preview-4", videoBytes)
+            val realDek = ByteArray(32) { (it + 5).toByte() }
+            val realEncDek = encode(masterKey.wrapDek(realDek))
+            val photoId = "01ARZ3NDEKTSV4RRFFQ69G5FB2"
+            uploadResponseBody =
+                """{"photoId":"$photoId","renditionId":"r6","created":false,"resumed":true,
+                |"encDek":"$realEncDek","encKeyId":"mk-1","encIv":"${encode(ByteArray(12) { 9 })}","encChunkSize":0,
+                |${originalUploadJson("orig6")},${previewUploadJson("p6")}}
+                """.trimMargin().replace("\n", "")
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+            val iv = decode(sent.getValue("preview").jsonObject.string("iv"))
+            val ciphertext = recordedBodies.entries.single { it.key.startsWith("/preview/p6") }.value
+            val plaintext = WholeObjectCipher.decrypt(realDek, iv, Aad.of(photoId, ObjectRef.Preview), ciphertext)
+            assertArrayEquals(previewGenerator.clip.bytes, plaintext)
+        }
 
     @Test
     fun `strips a video's location before upload when stripLocationOnUpload is on`() =

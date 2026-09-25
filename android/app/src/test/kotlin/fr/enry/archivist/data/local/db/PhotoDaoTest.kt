@@ -54,6 +54,43 @@ class PhotoDaoTest {
             assertEquals(entry, stored)
         }
 
+    private val preview = ThumbEntry(bucket = "pa-derived", key = "th/o/p/preview", iv = "ivp", bytes = 1_843_216)
+
+    @Test
+    fun `a video's preview descriptor round-trips`() =
+        runTest {
+            val entry = photo("v1", "2026-07-16T04:15:33.000Z").copy(mime = "video/mp4", preview = preview)
+            dao.upsertAll(listOf(entry))
+
+            assertEquals(entry, dao.getByPhotoId("v1"))
+            assertEquals(preview, dao.getByPhotoId("v1")?.preview)
+        }
+
+    @Test
+    fun `a photo without a preview reads back with a null preview`() =
+        runTest {
+            dao.upsertAll(listOf(photo("p1", "2026-07-14T09:22:05.000Z")))
+            assertNull(dao.getByPhotoId("p1")?.preview)
+        }
+
+    @Test
+    fun `re-upserting adds, replaces and then removes a preview`() =
+        runTest {
+            val base = photo("v1", "2026-07-16T04:15:33.000Z").copy(mime = "video/mp4")
+            dao.upsertAll(listOf(base))
+            assertNull(dao.getByPhotoId("v1")?.preview)
+
+            dao.upsertAll(listOf(base.copy(preview = preview)))
+            assertEquals(preview, dao.getByPhotoId("v1")?.preview)
+
+            val repaired = preview.copy(key = "th/o/p/gen2/preview", iv = "ivp2")
+            dao.upsertAll(listOf(base.copy(preview = repaired)))
+            assertEquals(repaired, dao.getByPhotoId("v1")?.preview)
+
+            dao.upsertAll(listOf(base))
+            assertNull(dao.getByPhotoId("v1")?.preview)
+        }
+
     @Test
     fun `upsert of an existing photoId replaces it rather than duplicating`() =
         runTest {

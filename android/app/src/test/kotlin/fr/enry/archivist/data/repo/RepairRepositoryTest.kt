@@ -64,6 +64,7 @@ class RepairRepositoryTest {
     private lateinit var masterKeyHolder: MasterKeyHolder
     private lateinit var photoDetailRepository: PhotoDetailRepository
     private lateinit var thumbnailer: Thumbnailer
+    private val previewGenerator = fr.enry.archivist.testutil.FakePreviewGenerator()
     private lateinit var jumpCoordinator: TimelineJumpCoordinator
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -97,6 +98,7 @@ class RepairRepositoryTest {
             uploadQueueDao = db.uploadQueueDao(),
             photoDao = db.photoDao(),
             thumbnailer = thumbnailer,
+            previewGenerator = previewGenerator,
             masterKeyHolder = masterKeyHolder,
             photoDetailRepository = photoDetailRepository,
             jumpCoordinator = jumpCoordinator,
@@ -154,13 +156,16 @@ class RepairRepositoryTest {
         )
     }
 
-    private fun rendition(id: String = renditionId) =
+    private fun rendition(
+        id: String = renditionId,
+        mime: String = "image/jpeg",
+    ) =
         RenditionSummary(
             renditionId = id,
             role = "display",
             path = "camera/IMG_1.jpg",
             ext = "jpg",
-            mime = "image/jpeg",
+            mime = mime,
             s3Key = "raw/o/$photoId/$id",
             contentHash = "hmac-sha256:$id",
             bytes = 116,
@@ -198,7 +203,10 @@ class RepairRepositoryTest {
             renditions = renditions,
         )
 
-    private suspend fun queueRow(state: UploadState = UploadState.DONE): Long =
+    private suspend fun queueRow(
+        state: UploadState = UploadState.DONE,
+        mime: String = "image/jpeg",
+    ): Long =
         db.uploadQueueDao().insert(
             UploadQueueEntity(
                 localUri = localUri,
@@ -212,7 +220,7 @@ class RepairRepositoryTest {
                 tzOffsetMin = 0,
                 takenAtSrc = "upload",
                 tzSrc = "assumed-utc",
-                mime = "image/jpeg",
+                mime = mime,
                 width = 100,
                 height = 100,
                 photoId = photoId,
@@ -227,12 +235,14 @@ class RepairRepositoryTest {
     private fun thumbUploadsJson() =
         """"thumbUploads":{"256":"${server.url("/thumb/256")}","1024":"${server.url("/thumb/1024")}","2048":"${server.url("/thumb/2048")}"}"""
 
-    private fun timelineEntryJson() =
+    private fun timelineEntryJson(previewJson: String = "") =
         """{"meta":{"photoId":"$photoId","takenAt":"2026-08-30T10:00:00.000Z",
-        |"thumbs":{"256":{"bucket":"derived","key":"th/o/$photoId/256","iv":"iv-256","bytes":2}},
+        |"thumbs":{"256":{"bucket":"derived","key":"th/o/$photoId/256","iv":"iv-256","bytes":2}},$previewJson
         |"encDek":"$encDek","encKeyId":"mk-1","width":100,"height":100,"mime":"image/jpeg",
         |"tzOffsetMin":0,"status":"ready"}}
         """.trimMargin().replace("\n", "")
+
+    private var refreshedEntryJson: String = ""
 
     private fun setApiDispatcher(onThumbsPost: (RecordedRequest, ByteArray) -> MockResponse) {
         server.dispatcher =
@@ -243,7 +253,8 @@ class RepairRepositoryTest {
                     recordedBodies[path] = body
                     return when {
                         path == "/api/photos/$photoId/thumbs" -> onThumbsPost(request, body)
-                        path == "/api/photos/$photoId" -> MockResponse().setResponseCode(200).setBody(timelineEntryJson())
+                        path == "/api/photos/$photoId" ->
+                            MockResponse().setResponseCode(200).setBody(refreshedEntryJson.ifEmpty { timelineEntryJson() })
                         else -> MockResponse().setResponseCode(200)
                     }
                 }
@@ -300,6 +311,76 @@ class RepairRepositoryTest {
             // TimelinePagingSource.load would start the page exactly at it (pageFromKey)
             // instead of around it (refreshAround), which is what repositioned the grid.
             assertTrue(!jumpCoordinator.isLanding(expectedKey))
+        }
+
+    // ------------------------------------------------------------------
+    // Video preview clip: repair regenerates it alongside the stills.
+    // ------------------------------------------------------------------
+
+    private fun previewUploadJson() = """"previewUpload":"${server.url("/preview/repaired")}""""
+
+    @Test
+    fun `video -- repairs the preview clip too, decryptable under the asset's DEK with its own AAD`() =
+        runTest {
+            connectInstance()
+            queueRow(mime = "video/mp4")
+            refreshedEntryJson =
+                timelineEntryJson(""""preview":{"bucket":"derived","key":"th/o/$photoId/g/preview","iv":"iv-p","bytes":80},""")
+            setApiDispatcher { _, _ ->
+                MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()},${previewUploadJson()}}")
+            }
+
+            val outcome = buildRepository().repairThumbnails(photoDetail(listOf(rendition(mime = "video/mp4"))))
+
+            assertEquals(RepairOutcome.Done, outcome)
+            assertEquals(listOf(localUri), previewGenerator.requested)
+
+            val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/photos/$photoId/thumbs"]!!))
+            val descriptor = sent.getValue("preview").jsonObject
+            val ciphertext = recordedBodies.entries.single { it.key == "/preview/repaired" }.value
+            assertEquals(ciphertext.size.toLong(), descriptor.getValue("bytes").jsonPrimitive.content.toLong())
+            val plaintext =
+                WholeObjectCipher.decrypt(
+                    dek,
+                    decode(descriptor.getValue("iv").jsonPrimitive.content),
+                    Aad.of(photoId, ObjectRef.Preview),
+                    ciphertext,
+                )
+            assertArrayEquals(previewGenerator.clip.bytes, plaintext)
+
+            // ...and the refreshed timeline row now carries the new preview descriptor.
+            assertEquals(ThumbEntry("derived", "th/o/$photoId/g/preview", "iv-p", 80), db.photoDao().getByPhotoId(photoId)!!.preview)
+        }
+
+    @Test
+    fun `video -- a preview that can't be generated is a warning, and the stills are still repaired`() =
+        runTest {
+            connectInstance()
+            queueRow(mime = "video/mp4")
+            previewGenerator.error = IOException("no encoder")
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
+
+            val outcome = buildRepository().repairThumbnails(photoDetail(listOf(rendition(mime = "video/mp4"))))
+
+            assertTrue(outcome is RepairOutcome.Warning, "expected a warning, got $outcome")
+            assertTrue((outcome as RepairOutcome.Warning).message.contains("preview"))
+            val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/photos/$photoId/thumbs"]!!))
+            assertTrue("preview" !in sent)
+            assertTrue(recordedBodies.keys.any { it == "/thumb/256" })
+        }
+
+    @Test
+    fun `a still never asks for a preview`() =
+        runTest {
+            connectInstance()
+            queueRow()
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
+
+            assertEquals(RepairOutcome.Done, buildRepository().repairThumbnails(photoDetail()))
+
+            assertTrue(previewGenerator.requested.isEmpty())
+            val sent = json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/photos/$photoId/thumbs"]!!))
+            assertTrue("preview" !in sent)
         }
 
     @Test

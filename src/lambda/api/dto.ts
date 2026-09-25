@@ -9,6 +9,7 @@ export function timelineEntryDto(item: TimelineEntry) {
     photoId: photoIdFromMediaPk(item.pk),
     takenAt: parseSortKey(item.timelineSk).timestamp,
     thumbs: item.thumbs,
+    ...(item.preview ? { preview: item.preview } : {}),
     encDek: item.encDek,
     encKeyId: item.encKeyId,
     width: item.width,

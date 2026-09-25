@@ -112,6 +112,7 @@ class DeleteRepositoryTest {
             thumbs = emptyMap(),
             encDek = "dek",
             encKeyId = "mk-1",
+            preview = null,
         )
     }
 

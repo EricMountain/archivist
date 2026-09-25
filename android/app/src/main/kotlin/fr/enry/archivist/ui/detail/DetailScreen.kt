@@ -60,6 +60,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import fr.enry.archivist.crypto.EncryptedThumbRef
+import fr.enry.archivist.ui.preview.VideoPreview
+import fr.enry.archivist.ui.preview.previewRef
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.RenditionSummary
@@ -363,7 +365,7 @@ fun DetailScreen(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     key = { pagerPhotos[it].photoId },
                 ) { page ->
-                    ZoomableThumb(photo = pagerPhotos[page], host = host)
+                    ZoomableThumb(photo = pagerPhotos[page], host = host, playPreview = pagerState.currentPage == page)
                 }
 
                 currentPhoto?.let { photo ->
@@ -382,7 +384,7 @@ fun DetailScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 key = { pagerPhotos[it].photoId },
             ) { page ->
-                ZoomableThumb(photo = pagerPhotos[page], host = host)
+                ZoomableThumb(photo = pagerPhotos[page], host = host, playPreview = pagerState.currentPage == page)
             }
 
             currentPhoto?.let { photo ->
@@ -455,6 +457,9 @@ fun DetailScreen(
 private fun ZoomableThumb(
     photo: PhotoEntity,
     host: String?,
+    /** Only the pager's *current* page plays its video preview — never a neighbouring
+     * page, so swiping doesn't spin up a player per page. */
+    playPreview: Boolean,
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -466,34 +471,42 @@ private fun ZoomableThumb(
         return
     }
 
-    AsyncImage(
-        model =
-            EncryptedThumbRef(
-                photoId = photo.photoId,
-                longestEdge = longestEdge,
-                url = "https://$host/thumbs/${entry.key}",
-                iv = entry.iv,
-                encDek = photo.encDek,
-            ),
-        contentDescription = null,
-        contentScale = ContentScale.Fit,
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectPinchZoom(canPanWithOneFinger = { scale > 1f }) { zoomChange, panChange ->
-                        val newScale = (scale * zoomChange).coerceIn(1f, 6f)
-                        scale = newScale
-                        offset = if (newScale <= 1f) Offset.Zero else offset + panChange
-                    }
+    // The pinch-zoom and its transform live on the container so the preview, when one is
+    // playing, zooms and pans together with the still it is drawn over.
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectPinchZoom(canPanWithOneFinger = { scale > 1f }) { zoomChange, panChange ->
+                    val newScale = (scale * zoomChange).coerceIn(1f, 6f)
+                    scale = newScale
+                    offset = if (newScale <= 1f) Offset.Zero else offset + panChange
                 }
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    translationX = offset.x,
-                    translationY = offset.y,
+            }
+            .graphicsLayer(
+                scaleX = scale,
+                scaleY = scale,
+                translationX = offset.x,
+                translationY = offset.y,
+            ),
+    ) {
+        AsyncImage(
+            model =
+                EncryptedThumbRef(
+                    photoId = photo.photoId,
+                    longestEdge = longestEdge,
+                    url = "https://$host/thumbs/${entry.key}",
+                    iv = entry.iv,
+                    encDek = photo.encDek,
                 ),
-    )
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (playPreview) {
+            photo.previewRef(host)?.let { ref -> VideoPreview(ref, Modifier.fillMaxSize(), cover = false) }
+        }
+    }
 }
 
 /**

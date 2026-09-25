@@ -25,7 +25,10 @@ import fr.enry.archivist.domain.Timestamps
 import fr.enry.archivist.domain.Ulid
 import fr.enry.archivist.sync.LocationStripper
 import fr.enry.archivist.sync.MediaStoreSource
+import fr.enry.archivist.sync.PreviewClip
+import fr.enry.archivist.sync.PreviewGenerator
 import fr.enry.archivist.sync.Thumbnailer
+import android.util.Log
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -121,6 +124,7 @@ class UploadRepository
         private val localTombstoneDao: LocalTombstoneDao,
         private val mediaStoreSource: MediaStoreSource,
         private val thumbnailer: Thumbnailer,
+        private val previewGenerator: PreviewGenerator,
         private val instanceStore: InstanceStore,
         private val archivistApiFactory: ArchivistApiFactory,
         private val enrolmentStore: EnrolmentStore,
@@ -220,6 +224,10 @@ class UploadRepository
                     )
 
                 val thumbnails = thumbnailer.generate(row.localUri, mime)
+                // The video preview clip (design.md, "Video preview clip"): strictly
+                // best-effort -- a video whose preview couldn't be produced still
+                // uploads, with its stills and no `preview` descriptor.
+                val previewClip = if (mime.startsWith("video/")) generatePreviewOrNull(row.localUri) else null
                 // A source no wider/taller than the largest rung comes back at its own
                 // real size (Thumbnailer never upscales) — a reasonable stand-in for
                 // the original's own dimensions when EXIF had none. When the source
@@ -264,6 +272,17 @@ class UploadRepository
                         EncryptedThumb(t.longestEdge, plaintext = t.bytes, iv = iv, ciphertext = ciphertext)
                     }
 
+                val encryptedPreview =
+                    previewClip?.let { clip ->
+                        val iv = EnvelopeCrypto.generateIv()
+                        EncryptedPreview(
+                            plaintext = clip.bytes,
+                            iv = iv,
+                            ciphertext =
+                                WholeObjectCipher.encrypt(candidateDek, iv, Aad.of(candidatePhotoId, ObjectRef.Preview), clip.bytes),
+                        )
+                    }
+
                 val request =
                     PostUploadRequest(
                         path = "${row.folderUri}/${row.displayName}",
@@ -288,6 +307,7 @@ class UploadRepository
                             encryptedThumbs.associate {
                                 it.size.toString() to ThumbDescriptorDto(it.ciphertext.size.toLong(), encode(it.iv))
                             }.ifEmpty { null },
+                        preview = encryptedPreview?.let { ThumbDescriptorDto(it.ciphertext.size.toLong(), encode(it.iv)) },
                         photoId = candidatePhotoId,
                     )
 
@@ -305,6 +325,7 @@ class UploadRepository
                     candidateDek = candidateDek,
                     candidateIv = candidateIv,
                     encryptedThumbs = encryptedThumbs,
+                    encryptedPreview = encryptedPreview,
                     masterKey = masterKey,
                     strippedFile = strippedFile,
                 )
@@ -345,6 +366,7 @@ class UploadRepository
             candidateDek: ByteArray,
             candidateIv: ByteArray?,
             encryptedThumbs: List<EncryptedThumb>,
+            encryptedPreview: EncryptedPreview?,
             masterKey: MasterKey,
             strippedFile: File?,
         ): UploadOutcome {
@@ -413,6 +435,27 @@ class UploadRepository
                 }
             }
 
+            // The preview goes *before* the original, deliberately. It never gates the
+            // asset reaching `ready` (server-side), so a preview PUT that failed *after*
+            // the original landed would leave `#META.preview` pointing at an object that
+            // doesn't exist, permanently -- a retry would then find a ready asset and a
+            // bare `duplicate`. Failing here instead leaves the asset `processing`, so the
+            // retry takes the `resumed` path, which re-presigns and re-records it.
+            val previewUrl = response.previewUpload
+            if (encryptedPreview != null && previewUrl != null) {
+                // Same reasoning as the thumbnails below: `created` means the candidate
+                // DEK already encrypted this correctly; otherwise re-encrypt the same
+                // plaintext under the real DEK, reusing the IV the descriptor already
+                // told the server.
+                val bytes =
+                    if (created) {
+                        encryptedPreview.ciphertext
+                    } else {
+                        WholeObjectCipher.encrypt(dek, encryptedPreview.iv, Aad.of(photoId, ObjectRef.Preview), encryptedPreview.plaintext)
+                    }
+                putBytes(previewUrl, "video/mp4", bytes)
+            }
+
             putOriginal(
                 url = original.url,
                 mime = mime,
@@ -453,6 +496,16 @@ class UploadRepository
             markDone(row, photoId, renditionId)
             return UploadOutcome.Success
         }
+
+        private suspend fun generatePreviewOrNull(localUri: String): PreviewClip? =
+            try {
+                previewGenerator.generate(localUri)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("UploadRepository", "preview generation failed, uploading without one: ${e.message}")
+                null
+            }
 
         private suspend fun putOriginal(
             url: String,
@@ -578,6 +631,11 @@ class UploadRepository
 private data class TimestampFields(val takenAt: String, val takenAtSrc: String, val tzOffsetMin: Int, val tzSrc: String)
 
 private class EncryptedThumb(val size: Int, val plaintext: ByteArray, val iv: ByteArray, val ciphertext: ByteArray)
+
+/** The video preview clip, encrypted under the candidate DEK. [plaintext] is kept for the
+ * same reason [EncryptedThumb] keeps it: a `resumed`/attach response swaps in the real
+ * DEK, and the same plaintext has to be re-encrypted under it (reusing [iv]). */
+private class EncryptedPreview(val plaintext: ByteArray, val iv: ByteArray, val ciphertext: ByteArray)
 
 private fun ciphertextLength(
     plainBytes: Long,

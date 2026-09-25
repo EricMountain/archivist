@@ -56,6 +56,12 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import androidx.compose.runtime.snapshotFlow
+import fr.enry.archivist.ui.preview.GRID_PREVIEW_SETTLE_MS
+import fr.enry.archivist.ui.preview.VideoPreview
+import fr.enry.archivist.ui.preview.previewRef
+import fr.enry.archivist.ui.preview.selectPlayingIndices
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
@@ -394,6 +400,29 @@ private fun TimelineItemGrid(
     onPhotoClick: (PhotoEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Which cells currently play their video preview (design.md, "Video preview clip").
+    // Nothing plays while the grid is moving; once it has been still for
+    // GRID_PREVIEW_SETTLE_MS, the first few visible cells that have a preview start, and
+    // the moment it moves again they are all released. Keyed by photoId, not index: the
+    // list can shift underneath as paging loads.
+    var playingIds by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(gridState, items) {
+        snapshotFlow { gridState.isScrollInProgress to items.itemCount }.collectLatest { (scrolling, _) ->
+            if (scrolling) {
+                playingIds = emptySet()
+                return@collectLatest
+            }
+            delay(GRID_PREVIEW_SETTLE_MS)
+            fun previewPhotoAt(index: Int) = (items.peek(index) as? TimelineItem.Photo)?.photo?.takeIf { it.preview != null }
+            playingIds =
+                selectPlayingIndices(
+                    visibleIndices = gridState.layoutInfo.visibleItemsInfo.map { it.index },
+                    hasPreview = { previewPhotoAt(it) != null },
+                    scrolling = false,
+                ).mapNotNull { previewPhotoAt(it)?.photoId }.toSet()
+        }
+    }
+
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 96.dp),
         state = gridState,
@@ -411,7 +440,13 @@ private fun TimelineItemGrid(
         ) { index ->
             when (val item = items[index]) {
                 is TimelineItem.Header -> DateHeader(item)
-                is TimelineItem.Photo -> PhotoCell(item.photo, host, onClick = { onPhotoClick(item.photo) })
+                is TimelineItem.Photo ->
+                    PhotoCell(
+                        item.photo,
+                        host,
+                        playPreview = item.photo.photoId in playingIds,
+                        onClick = { onPhotoClick(item.photo) },
+                    )
                 null -> PlaceholderCell()
             }
         }
@@ -434,34 +469,52 @@ private fun DateHeader(header: TimelineItem.Header) {
 private fun PhotoCell(
     photo: PhotoEntity,
     host: String?,
+    playPreview: Boolean,
     onClick: () -> Unit,
 ) {
     val chosen =
         photo.thumbs[GRID_THUMB_SIZE]?.let { GRID_THUMB_SIZE to it }
             ?: photo.thumbs.entries.minByOrNull { it.key }?.let { it.key to it.value }
     if (host == null || chosen == null) {
-        PlaceholderCell()
+        // Still tappable: a photo with no thumbnails (e.g. a video uploaded before video
+        // thumbnails existed) must remain reachable, since the detail screen is where
+        // "Repair thumbnails" lives. Only the paging placeholder for a not-yet-loaded
+        // item stays inert.
+        PlaceholderCell(onClick = onClick)
         return
     }
     val (longestEdge, entry) = chosen
-    AsyncImage(
-        model =
-            EncryptedThumbRef(
-                photoId = photo.photoId,
-                longestEdge = longestEdge,
-                url = "https://$host/thumbs/${entry.key}",
-                iv = entry.iv,
-                encDek = photo.encDek,
-            ),
-        contentDescription = null,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier.fillMaxWidth().aspectRatio(1f).clickable(onClick = onClick),
-    )
+    // The tap handler is on the container, not the image, so it still fires when a
+    // preview is playing over the still.
+    Box(Modifier.fillMaxWidth().aspectRatio(1f).clickable(onClick = onClick)) {
+        AsyncImage(
+            model =
+                EncryptedThumbRef(
+                    photoId = photo.photoId,
+                    longestEdge = longestEdge,
+                    url = "https://$host/thumbs/${entry.key}",
+                    iv = entry.iv,
+                    encDek = photo.encDek,
+                ),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize(),
+        )
+        if (playPreview) {
+            photo.previewRef(host)?.let { ref -> VideoPreview(ref, Modifier.matchParentSize(), cover = true) }
+        }
+    }
 }
 
 @Composable
-private fun PlaceholderCell() {
-    Box(Modifier.fillMaxWidth().aspectRatio(1f).background(MaterialTheme.colorScheme.surfaceVariant))
+private fun PlaceholderCell(onClick: (() -> Unit)? = null) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+    )
 }
 
 private val HEADER_FORMATTER = DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG)

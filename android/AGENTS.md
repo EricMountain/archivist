@@ -258,6 +258,76 @@ doc paragraphs back one at a time). Any MIME-glob or path-glob phrase — `video
 `image/*`, `*.jpg` — is exactly as dangerous here as a CloudFront path; grep for the
 literal two-character sequence `/*`, not just `/media/*`-shaped strings specifically.
 
+**`connectedDebugAndroidTest` isn't the only way to lose an emulator's app state — a
+device that's `RUNNING_LOCKED` looks like the app has no data.** Found while trying to run
+`PreviewGeneratorInstrumentedTest` against the Pixel 8a AVD: `pm list packages` shows
+`fr.enry.archivist.debug`, but `run-as` says `couldn't stat /data/user/0/fr.enry.archivist.
+debug` and the tests fail with `ENOENT` creating files under `cacheDir` (`mkdirs()` can't
+help — the whole data dir isn't visible). `adb shell dumpsys user | grep State` says
+`RUNNING_LOCKED`: the AVD has a screen lock, so credential-encrypted app storage is
+sealed until someone enters the PIN, and the session inside is intact. It is **not** a
+broken install — don't `pm clear` or reinstall to "fix" it. Either unlock it (the PIN is
+the user's, not in this repo), or use the other AVD (the Pixel 9a had no lock and no app,
+so `connectedDebugAndroidTest` was safe there). Installing an APK over it with
+`adb install -r -t` is allowed while locked and preserves data, but nothing that needs
+the app's storage can run until it's unlocked.
+
+**Changing `testdata/vectors/` alone doesn't re-run `:core:crypto:test`.** The vectors
+live outside the module, so Gradle doesn't treat them as an input and reports the task
+`UP-TO-DATE` after you add a case. Use `./gradlew :core:crypto:testDebugUnitTest
+--rerun-tasks` (plain `--rerun` on `:core:crypto:test` isn't enough — the real work is in
+the `testDebugUnitTest` task it depends on) and check the result XML, not just `BUILD
+SUCCESSFUL`. Likewise, `tools/gen-vectors/generate.py` is **not** reproducible for the
+streaming and RSA cases (random salts/padding): re-running it rewrites those committed
+fixtures. Add new cases to `manifest.json` by hand-merging, as cases 24-25 were.
+
+**media3's MP4 muxer pads the file with hundreds of KB by default.** `Transformer`'s
+default muxer writes `moov` at the *start* of the file ("streamable output") and reserves
+an empty `free` box for it before it knows how big it will be: a 4 s, 250 kbps preview came
+out at 525 KB, ~400 KB of it padding (`ffprobe` shows the video stream right on target and
+the container bitrate 4x too high — that mismatch is the tell; an `mdat`/`free` box walk
+confirms it). `setVideoDurationUs` on `DefaultMuxer.Factory` does **not** shrink it (it only
+feeds a metadata duration); `InAppMp4Muxer.Factory().setAttemptStreamableOutputEnabled(false)`
+does. Not caught by any JVM test — `PreviewGeneratorInstrumentedTest`'s size bound is what
+guards it.
+
+**Never stop an emulator with `adb emu kill` right after installing to it — use `adb shell
+sync; adb shell reboot -p`.** `emu kill` is a power cut: the just-written APK can be
+truncated on disk, and at the next boot `PackageManager` logs `Failed to parse .../base.apk`
+/ `Deleting invalid package` and the app silently vanishes (`pm list packages` empty,
+`run-as` says `unknown package`, `pm install-existing` says the package doesn't exist —
+while `pm list packages -u` and `dumpsys package` still show stale records with the old
+install times, which is misleading). Found the hard way on the Pixel 8a AVD after an
+in-place `adb install -r`. The app's *data* survives this (only the code directory is
+deleted, and the package keeps its UID), so the fix is to reinstall the same build with
+`adb install -r -t` — same package name and signing key — and the data comes back. Confirm
+in the boot log: `adb logcat -d -b all | grep "Deleting invalid package"`.
+
+**ExoPlayer into a `TextureView` reports no video size until it has rendered to a real
+surface — so never make creating the `TextureView` depend on the video size.** Symptom (found
+on a real emulator, `ui/preview/VideoPreview.kt`): players created, decoders initialised,
+state `READY`, `isPlaying=true`, loops ticking over on schedule — and not one pixel changes
+on screen. The player is decoding into a placeholder surface, `onRenderedFirstFrame` and
+`onVideoSizeChanged` never fire, and a composable that waits for either before creating the
+view deadlocks (as does hiding the view with `alpha(0f)`, since an undrawn `TextureView`
+never gets its `SurfaceTexture`). Read the aspect ratio from the track format in
+`onTracksChanged` instead. To diagnose: `player.addAnalyticsListener(EventLogger())` and
+`adb logcat -s EventLogger | grep -E "renderedFirstFrame|videoSize"` — their absence, next to
+a healthy `state`/`isPlaying`, is the whole tell. Measure "is it really animating" with a
+pixel diff of the cell across screenshots against a static control region (PIL is enough;
+numpy isn't installed here) rather than eyeballing two frames.
+
+**`MediaMetadataRetriever.setDataSource` throws `IllegalArgumentException` (or a bare
+`RuntimeException`), not `IOException`,** for a missing or unreadable source. Anything whose
+contract says "throws `IOException`" has to wrap it — `TransformerPreviewGenerator.probe`
+does.
+
+**`MasterKeyHolder.clear()` zeroizes the very `MasterKey` object it holds** — reusing that
+instance afterwards (say, a test that clears the holder and then calls `wrapDek` on its own
+`masterKey` field to build the next fixture) fails with `IllegalStateException`. Wrap
+anything you need first, and `set` a fresh `MasterKey.of(...)` to "unlock" again
+(`PreviewCacheTest`).
+
 ## CI and release (Gradle Play Publisher)
 
 **Applying `com.github.triplet.play` (GPP) breaks `assembleRelease`/`bundleRelease` for

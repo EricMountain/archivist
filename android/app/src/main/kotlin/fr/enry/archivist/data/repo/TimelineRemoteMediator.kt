@@ -353,4 +353,5 @@ internal fun TimelineEntryDto.toEntity(): PhotoEntity =
         thumbs = thumbs.mapKeys { it.key.toInt() },
         encDek = encDek,
         encKeyId = encKeyId,
+        preview = preview,
     )

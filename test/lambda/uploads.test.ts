@@ -260,6 +260,88 @@ describe.skipIf(!RUN)("POST /uploads — client-supplied photoId (plan step 2.10
     expect(meta?.thumbs).toMatchObject({ "256": { iv: "jpeg-thumb-iv", bytes: 42 } });
   });
 
+  it("a new asset with a preview descriptor persists #META.preview at the deterministic key and presigns it", async () => {
+    const { userId, ownerId } = await newOwner();
+    const photoId = newUlid();
+    const response = await postUpload(
+      uploadReq(
+        ownerId,
+        userId,
+        baseUploadBody({
+          path: `2026/uploads-test/${newUlid()}.mp4`,
+          mime: "video/mp4",
+          photoId,
+          preview: { bytes: 1_500_000, iv: "preview-iv" },
+        }),
+      ),
+    );
+    const body = response.body as { created: boolean; previewUpload?: string };
+    expect(body.created).toBe(true);
+    expect(body.previewUpload).toMatch(/^https?:\/\//);
+
+    const { meta } = await getAssetPartition(ownerId, photoId);
+    expect(meta?.preview).toMatchObject({
+      key: `th/${ownerId}/${photoId}/preview`,
+      iv: "preview-iv",
+      bytes: 1_500_000,
+    });
+    expect(body.previewUpload).toContain(meta!.preview!.key);
+  });
+
+  it("no preview descriptor means no #META.preview and no previewUpload", async () => {
+    const { userId, ownerId } = await newOwner();
+    const photoId = newUlid();
+    const response = await postUpload(
+      uploadReq(ownerId, userId, baseUploadBody({ path: `2026/uploads-test/${newUlid()}.jpg`, photoId })),
+    );
+    expect((response.body as { previewUpload?: string }).previewUpload).toBeUndefined();
+    expect((await getAssetPartition(ownerId, photoId)).meta?.preview).toBeUndefined();
+  });
+
+  it("an invalid preview descriptor is rejected before anything is created", async () => {
+    const { userId, ownerId } = await newOwner();
+    await expect(
+      postUpload(
+        uploadReq(
+          ownerId,
+          userId,
+          baseUploadBody({ path: `2026/uploads-test/${newUlid()}.mp4`, preview: { bytes: 0, iv: "x" } }),
+        ),
+      ),
+    ).rejects.toThrow(/preview/i);
+  });
+
+  it("an attach that becomes primary persists its preview; one that doesn't neither persists nor presigns it", async () => {
+    const { userId, ownerId } = await newOwner();
+    const stem = `2026/uploads-test/${newUlid()}`;
+
+    // RAW first (no preview), then a JPEG that outranks it: the JPEG's preview lands.
+    const rawCandidate = newUlid();
+    await postUpload(uploadReq(ownerId, userId, baseUploadBody({ path: `${stem}.cr3`, photoId: rawCandidate })));
+    const primary = await postUpload(
+      uploadReq(
+        ownerId,
+        userId,
+        baseUploadBody({ path: `${stem}.jpg`, photoId: newUlid(), preview: { bytes: 7, iv: "jpeg-preview" } }),
+      ),
+    );
+    expect(primary.body).toMatchObject({ becomesPrimary: true });
+    expect((primary.body as { previewUpload?: string }).previewUpload).toBeTruthy();
+    expect((await getAssetPartition(ownerId, rawCandidate)).meta?.preview).toMatchObject({ iv: "jpeg-preview" });
+
+    // A lower-ranked attach afterwards must not displace it, nor be offered a URL.
+    const secondary = await postUpload(
+      uploadReq(
+        ownerId,
+        userId,
+        baseUploadBody({ path: `${stem}.cr2`, photoId: newUlid(), preview: { bytes: 9, iv: "raw-preview" } }),
+      ),
+    );
+    expect(secondary.body).toMatchObject({ becomesPrimary: false });
+    expect((secondary.body as { previewUpload?: string }).previewUpload).toBeUndefined();
+    expect((await getAssetPartition(ownerId, rawCandidate)).meta?.preview).toMatchObject({ iv: "jpeg-preview" });
+  });
+
   it("rejects a photoId that isn't a ULID", async () => {
     const { userId, ownerId } = await newOwner();
     const body = baseUploadBody({ photoId: "not-a-ulid" });

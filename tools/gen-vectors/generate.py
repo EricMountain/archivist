@@ -704,6 +704,55 @@ def main() -> None:
         ),
     })
 
+    # -- Video preview clip (24-25) -----------------------------------------------
+    # The preview is a *different kind of object* from a still thumbnail: objectRef
+    # `p` (one per asset, no qualifier), never `t:<size>`. Case 25 is the reason the
+    # tag exists -- a preview relabelled as a still (or vice versa) must fail
+    # authentication rather than decrypt to plausible bytes.
+
+    dek_preview = derive_bytes("dek:preview", 32)
+    aad_preview = f"archivist:1:{PHOTO_ID}:p"
+    iv24 = derive_bytes("iv:24-whole-preview", 12)
+    pt24 = pattern_bytes("whole-preview-mp4", 150_000)
+    ct24 = whole_encrypt(dek_preview, iv24, aad_bytes(aad_preview), pt24)
+    assert len(ct24) == len(pt24) + TAG
+    assert whole_decrypt(dek_preview, iv24, aad_bytes(aad_preview), ct24) == pt24
+    vs.write("24-whole-preview.cipher", ct24)
+    vs.add({
+        "case": 24,
+        "id": "24-whole-preview",
+        "mode": "whole",
+        "dek": dek_preview.hex(),
+        "iv": iv24.hex(),
+        "aad": aad_preview,
+        "plainLength": len(pt24),
+        "plainPatternSeed": "whole-preview-mp4",
+        "files": {"cipher": "24-whole-preview.cipher"},
+        "expect": "decrypt",
+    })
+
+    # 25: case 24's ciphertext, unmodified, presented as the 256px still.
+    as_still = f"archivist:1:{PHOTO_ID}:t:256"
+    try:
+        whole_decrypt(dek_preview, iv24, aad_bytes(as_still), ct24)
+        raise AssertionError("case 25 was expected to fail to decrypt")
+    except AssertionError:
+        raise
+    except Exception:
+        pass
+    vs.write("25-whole-preview-as-thumbnail.cipher", ct24)
+    vs.add({
+        "case": 25,
+        "id": "25-whole-preview-as-thumbnail",
+        "mode": "whole",
+        "dek": dek_preview.hex(),
+        "iv": iv24.hex(),
+        "aad": as_still,
+        "files": {"cipher": "25-whole-preview-as-thumbnail.cipher"},
+        "expect": "fail",
+        "note": "cipher is case 24's, unmodified; aad names it as a 256px thumbnail",
+    })
+
     vs.save_manifest()
     print(f"wrote {len(vs.entries)} cases to {vs.out_dir}")
 

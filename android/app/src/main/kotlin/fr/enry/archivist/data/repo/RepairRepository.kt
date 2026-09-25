@@ -16,6 +16,9 @@ import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.PostPhotoThumbsRequest
 import fr.enry.archivist.data.remote.ThumbDescriptorDto
+import android.util.Log
+import fr.enry.archivist.sync.PreviewClip
+import fr.enry.archivist.sync.PreviewGenerator
 import fr.enry.archivist.sync.Thumbnail
 import fr.enry.archivist.sync.Thumbnailer
 import java.io.File
@@ -23,6 +26,7 @@ import java.io.IOException
 import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -88,6 +92,7 @@ class RepairRepository
         private val uploadQueueDao: UploadQueueDao,
         private val photoDao: PhotoDao,
         private val thumbnailer: Thumbnailer,
+        private val previewGenerator: PreviewGenerator,
         private val masterKeyHolder: MasterKeyHolder,
         private val photoDetailRepository: PhotoDetailRepository,
         private val jumpCoordinator: TimelineJumpCoordinator,
@@ -102,6 +107,7 @@ class RepairRepository
             val rendition =
                 detail.renditions.find { it.renditionId == detail.primaryRend } ?: detail.renditions.firstOrNull()
                     ?: return RepairOutcome.Error("this asset has no rendition to repair from")
+            val isVideo = rendition.mime.startsWith("video/")
 
             val instance = instanceStore.current.first() ?: return RepairOutcome.Error("no connected instance")
             val api = archivistApiFactory.create(instance.host, instance.document.region, instance.document.cognito.clientId)
@@ -115,10 +121,10 @@ class RepairRepository
                         .find { it.state == UploadState.DONE && it.renditionId == rendition.renditionId && it.mime != null }
 
                 var usedFallback = false
-                val thumbnails =
+                val derived =
                     if (localRow != null) {
                         try {
-                            thumbnailer.generate(localRow.localUri, localRow.mime!!)
+                            derive(localRow.localUri, localRow.mime!!)
                         } catch (e: IOException) {
                             // The row exists, but the file it points at can no longer be
                             // opened (moved/deleted outside this app) -- fall through to
@@ -130,6 +136,10 @@ class RepairRepository
                         usedFallback = true
                         generateFromServer(detail.photoId, detail.encDek, rendition)
                     }
+                val thumbnails = derived.thumbnails
+                // A video whose preview couldn't be produced is still repaired -- its
+                // stills matter more -- but the caller is told (see the Warning below).
+                val previewFailed = isVideo && derived.preview == null
 
                 val encrypted =
                     thumbnails.map { t ->
@@ -141,13 +151,33 @@ class RepairRepository
                 val descriptors =
                     encrypted.associate { t -> t.size.toString() to ThumbDescriptorDto(t.ciphertext.size.toLong(), encode(t.iv)) }
 
-                val httpResponse = api.postPhotoThumbs(thumbsUrl(apiBase, detail.photoId), PostPhotoThumbsRequest(descriptors))
+                val encryptedPreview =
+                    derived.preview?.let { clip ->
+                        val iv = EnvelopeCrypto.generateIv()
+                        EncryptedRepairPreview(
+                            iv,
+                            WholeObjectCipher.encrypt(dek, iv, Aad.of(detail.photoId, ObjectRef.Preview), clip.bytes),
+                        )
+                    }
+
+                val httpResponse =
+                    api.postPhotoThumbs(
+                        thumbsUrl(apiBase, detail.photoId),
+                        PostPhotoThumbsRequest(
+                            thumbs = descriptors.ifEmpty { null },
+                            preview = encryptedPreview?.let { ThumbDescriptorDto(it.ciphertext.size.toLong(), encode(it.iv)) },
+                        ),
+                    )
                 if (!httpResponse.isSuccessful) return RepairOutcome.Error("server rejected repair (HTTP ${httpResponse.code()})")
                 val body = httpResponse.body() ?: return RepairOutcome.Error("empty response body")
 
                 for (t in encrypted) {
                     val url = body.thumbUploads[t.size.toString()] ?: continue
-                    putBytes(url, t.ciphertext)
+                    putBytes(url, "image/webp", t.ciphertext)
+                }
+                val previewUrl = body.previewUpload
+                if (encryptedPreview != null && previewUrl != null) {
+                    putBytes(previewUrl, "video/mp4", encryptedPreview.ciphertext)
                 }
 
                 val refreshed = api.getPhotoAsTimelineEntry(photoUrl(apiBase, detail.photoId))
@@ -163,13 +193,16 @@ class RepairRepository
                 jumpCoordinator.stageExternalRefreshKey(TimelineKey(refreshed.meta.takenAt, refreshed.meta.photoId))
                 photoDao.upsertAll(listOf(refreshed.meta.toEntity()))
 
-                if (usedFallback) {
-                    RepairOutcome.Warning(
-                        "Repaired using the copy stored on the server — the original wasn't found on this device.",
-                    )
-                } else {
-                    RepairOutcome.Done
-                }
+                val warnings =
+                    buildList {
+                        if (usedFallback) {
+                            add("Repaired using the copy stored on the server — the original wasn't found on this device.")
+                        }
+                        if (previewFailed) {
+                            add("The thumbnails were repaired, but the preview clip couldn't be generated.")
+                        }
+                    }
+                if (warnings.isEmpty()) RepairOutcome.Done else RepairOutcome.Warning(warnings.joinToString(" "))
             } catch (e: ImageLockedException) {
                 RepairOutcome.Error("locked — unlock to repair")
             } catch (e: IOException) {
@@ -195,23 +228,49 @@ class RepairRepository
             photoId: String,
             encDek: String,
             rendition: RenditionSummary,
-        ): List<Thumbnail> {
+        ): Derived {
             val bytes = photoDetailRepository.downloadOriginal(photoId, encDek, rendition)
             val file = File.createTempFile("repair-", ".${rendition.ext}", context.cacheDir)
             return try {
                 withContext(Dispatchers.IO) { file.writeBytes(bytes) }
-                thumbnailer.generate(Uri.fromFile(file).toString(), rendition.mime)
+                derive(Uri.fromFile(file).toString(), rendition.mime)
             } finally {
                 file.delete()
             }
         }
 
+        /** The still ladder for [uri], plus -- for a video only -- its preview clip. The
+         * stills are mandatory (a failure propagates, so the caller's local-then-server
+         * fallback still works); the preview is best-effort and comes back `null` on
+         * failure. */
+        private suspend fun derive(
+            uri: String,
+            mime: String,
+        ): Derived {
+            val thumbnails = thumbnailer.generate(uri, mime)
+            val preview =
+                if (mime.startsWith("video/")) {
+                    try {
+                        previewGenerator.generate(uri)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w("RepairRepository", "preview generation failed: ${e.message}")
+                        null
+                    }
+                } else {
+                    null
+                }
+            return Derived(thumbnails, preview)
+        }
+
         private suspend fun putBytes(
             url: String,
+            mime: String,
             bytes: ByteArray,
         ) {
             withContext(Dispatchers.IO) {
-                val body = bytes.toRequestBody("image/webp".toMediaTypeOrNull())
+                val body = bytes.toRequestBody(mime.toMediaTypeOrNull())
                 val request = Request.Builder().url(url).put(body).build()
                 okHttpClient.newCall(request).execute().use { resp ->
                     if (!resp.isSuccessful) throw IOException("PUT to $url failed: HTTP ${resp.code}")
@@ -221,6 +280,12 @@ class RepairRepository
     }
 
 private class EncryptedRepairThumb(val size: Int, val iv: ByteArray, val ciphertext: ByteArray)
+
+private class EncryptedRepairPreview(val iv: ByteArray, val ciphertext: ByteArray)
+
+/** What one decode of the source produced: the still ladder, and (video only, and only
+ * if it succeeded) the preview clip. */
+private class Derived(val thumbnails: List<Thumbnail>, val preview: PreviewClip?)
 
 private fun thumbsUrl(
     apiBase: String,

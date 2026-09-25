@@ -51,6 +51,7 @@ export async function purgeAsset(
   for (const thumb of Object.values(meta.thumbs)) {
     addObject(thumb.bucket, thumb.key);
   }
+  if (meta.preview) addObject(meta.preview.bucket, meta.preview.key);
 
   let objectsDeleted = 0;
   for (const [bucket, keys] of s3ObjectsByBucket) {

@@ -14,6 +14,7 @@ import {
   originalKey,
   originalsBucket,
   presignPut,
+  previewKey,
   thumbKey,
 } from "@archivist/core/s3";
 import { attachRendition, createAsset } from "@archivist/core/repo/ingest";
@@ -28,7 +29,14 @@ import { getOwnerSettings } from "@archivist/core/repo/identity";
 import { restoreAsset } from "@archivist/core/repo/trash";
 import { epochSecondsAfterDays } from "@archivist/core/time";
 import { isPurgedPointer } from "@archivist/core/items";
-import type { MetaItem, RenditionItem, TakenAtSrc, ThumbEntry, TzSrc } from "@archivist/core/items";
+import type {
+  MetaItem,
+  PreviewEntry,
+  RenditionItem,
+  TakenAtSrc,
+  ThumbEntry,
+  TzSrc,
+} from "@archivist/core/items";
 import { ok, parseJsonBody } from "../http";
 import type { ApiRequest, ApiResponse, RouteHandler } from "../http";
 
@@ -41,6 +49,22 @@ export interface ThumbDescriptor {
 }
 
 export type ThumbDescriptorMap = Partial<Record<`${ThumbSize}`, ThumbDescriptor>>;
+
+/** Same shape as a still's descriptor — the ciphertext size and IV — for the video
+ * preview clip. Upper bound is generous headroom over the design's ~2 MB target (a
+ * 60 s clip at 200-300 kbps), so a client bug can't presign an unbounded object. */
+export type PreviewDescriptor = ThumbDescriptor;
+export const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
+
+export function validatePreviewDescriptor(preview: PreviewDescriptor | undefined): void {
+  if (preview === undefined) return;
+  if (!preview || typeof preview.iv !== "string" || preview.iv.length === 0) {
+    throw ApiError.validation("preview.iv is required");
+  }
+  if (!Number.isFinite(preview.bytes) || preview.bytes <= 0 || preview.bytes > MAX_PREVIEW_BYTES) {
+    throw ApiError.validation(`preview.bytes must be between 1 and ${MAX_PREVIEW_BYTES}`);
+  }
+}
 
 interface UploadBody {
   path: string;
@@ -62,6 +86,10 @@ interface UploadBody {
   encIv: string;
   encChunkSize: number;
   thumbs?: ThumbDescriptorMap;
+  /** Video preview clip descriptor — optional, and only ever sent for a video. Handled
+   * exactly like `thumbs` (persisted on create, on an attach that becomes primary, and
+   * on resume), except it never gates readiness. */
+  preview?: PreviewDescriptor;
   reAddDeleted?: boolean;
   groupWith?: string;
   noGroup?: boolean;
@@ -129,6 +157,7 @@ function validate(body: UploadBody): void {
   if (body.photoId !== undefined && !isUlid(body.photoId)) {
     throw ApiError.validation("photoId must be a ULID");
   }
+  validatePreviewDescriptor(body.preview);
 }
 
 interface BuildRenditionArgs {
@@ -187,6 +216,22 @@ export async function presignedThumbs(
     uploads[size] = await presignPut(derivedBucket(), key);
   }
   return { thumbs, uploads };
+}
+
+/** The preview counterpart of [presignedThumbs]: a deterministic key
+ * ([previewKey]) plus the [PreviewEntry] [setPreview] persists. `undefined` for both
+ * when the client sent no descriptor. */
+export async function presignedPreview(
+  ownerId: string,
+  photoId: string,
+  descriptor: PreviewDescriptor | undefined,
+): Promise<{ preview?: PreviewEntry; upload?: string }> {
+  if (!descriptor) return {};
+  const key = previewKey(ownerId, photoId);
+  return {
+    preview: { bucket: derivedBucket(), key, iv: descriptor.iv, bytes: descriptor.bytes },
+    upload: await presignPut(derivedBucket(), key),
+  };
 }
 
 async function primaryRoleOf(
@@ -348,6 +393,8 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
     if (Object.keys(thumbs).length > 0) {
       await setThumbs(ownerId, candidatePhotoId, thumbs);
     }
+    const previewResult = await presignedPreview(ownerId, candidatePhotoId, body.preview);
+    if (previewResult.preview) await setPreview(ownerId, candidatePhotoId, previewResult.preview);
     // Plan step 2.14: "devices are auto-registered on first sight" (design.md) — once
     // per new asset, not per rendition attach, so a RAW+JPEG pair counts as one photo.
     // Best-effort, same as setThumbs above: outside the create transaction, non-fatal
@@ -374,6 +421,7 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
         ),
       },
       thumbUploads: uploads,
+      ...(previewResult.upload ? { previewUpload: previewResult.upload } : {}),
     });
   } catch (err) {
     if (!(err instanceof ApiError && err.code === "CONFLICT") || body.noGroup) throw err;
@@ -480,6 +528,12 @@ async function attachAndRespond(args: AttachAndRespondArgs): Promise<ApiResponse
   if (becomesPrimary && Object.keys(thumbs).length > 0) {
     await setThumbs(ownerId, existing.photoId, thumbs);
   }
+  // Same rule for the preview: only a primary rendition's preview may replace what
+  // #META.preview points at, and a non-primary attach must not PUT one at all.
+  const previewResult = becomesPrimary
+    ? await presignedPreview(ownerId, existing.photoId, body.preview)
+    : {};
+  if (previewResult.preview) await setPreview(ownerId, existing.photoId, previewResult.preview);
 
   return ok({
     photoId: existing.photoId,
@@ -504,6 +558,7 @@ async function attachAndRespond(args: AttachAndRespondArgs): Promise<ApiResponse
       ),
     },
     thumbUploads: uploads,
+    ...(previewResult.upload ? { previewUpload: previewResult.upload } : {}),
   });
 }
 
@@ -523,6 +578,8 @@ async function resumeUpload(
   if (Object.keys(thumbs).length > 0) {
     await setThumbs(ownerId, photoId, thumbs);
   }
+  const previewResult = await presignedPreview(ownerId, photoId, body.preview);
+  if (previewResult.preview) await setPreview(ownerId, photoId, previewResult.preview);
 
   // The R# item's own encIv/encChunkSize were fixed by whichever attempt's
   // createAsset/attachRendition transaction actually committed, and are never
@@ -548,6 +605,7 @@ async function resumeUpload(
       }),
     },
     thumbUploads: uploads,
+    ...(previewResult.upload ? { previewUpload: previewResult.upload } : {}),
   });
 }
 
@@ -565,6 +623,24 @@ export async function setThumbs(
       Key: { pk: mediaPk(ownerId, photoId), sk: metaSk() },
       UpdateExpression: "SET thumbs = :thumbs",
       ExpressionAttributeValues: { ":thumbs": thumbs },
+    }),
+  );
+}
+
+/** Persists the video preview's descriptor on `#META`, the counterpart of
+ * [setThumbs] — same "keys depend on photoId, so it's a follow-up update rather than
+ * part of the create transaction" reasoning. */
+export async function setPreview(
+  ownerId: string,
+  photoId: string,
+  preview: PreviewEntry,
+): Promise<void> {
+  await ddb().send(
+    new UpdateCommand({
+      TableName: tableName(),
+      Key: { pk: mediaPk(ownerId, photoId), sk: metaSk() },
+      UpdateExpression: "SET preview = :preview",
+      ExpressionAttributeValues: { ":preview": preview },
     }),
   );
 }

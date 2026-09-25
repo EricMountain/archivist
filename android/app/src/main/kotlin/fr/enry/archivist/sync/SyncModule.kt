@@ -19,6 +19,10 @@ abstract class SyncModule {
 
     @Binds
     @Singleton
+    abstract fun bindPreviewGenerator(impl: TransformerPreviewGenerator): PreviewGenerator
+
+    @Binds
+    @Singleton
     abstract fun bindUploadScheduler(impl: WorkManagerUploadScheduler): UploadScheduler
 
     @Binds

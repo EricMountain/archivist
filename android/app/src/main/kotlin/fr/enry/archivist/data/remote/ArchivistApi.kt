@@ -384,6 +384,9 @@ data class PostUploadRequest(
     val encIv: String? = null,
     val encChunkSize: Long,
     val thumbs: Map<String, ThumbDescriptorDto>? = null,
+    /** The video preview clip's descriptor (video assets only) — same `{bytes, iv}` shape
+     * as a thumbnail's; left `null` (and so dropped from the JSON) for a still. */
+    val preview: ThumbDescriptorDto? = null,
     val reAddDeleted: Boolean? = null,
     val groupWith: String? = null,
     val noGroup: Boolean? = null,
@@ -403,6 +406,8 @@ data class TimelineEntryDto(
     val photoId: String,
     val takenAt: String,
     val thumbs: Map<String, fr.enry.archivist.data.local.db.ThumbEntry>,
+    /** Absent for stills and for videos without a preview clip. */
+    val preview: fr.enry.archivist.data.local.db.ThumbEntry? = null,
     val encDek: String,
     val encKeyId: String,
     val width: Int,
@@ -495,10 +500,17 @@ data class PhotoDetailResponse(val meta: PhotoMetaDto, val renditions: List<Rend
  * sizes actually included are touched server-side; the rest of `#META.thumbs` is left
  * alone (api.md). */
 @Serializable
-data class PostPhotoThumbsRequest(val thumbs: Map<String, ThumbDescriptorDto>)
+data class PostPhotoThumbsRequest(
+    val thumbs: Map<String, ThumbDescriptorDto>? = null,
+    /** The video preview clip, repaired alongside (or instead of) the stills. */
+    val preview: ThumbDescriptorDto? = null,
+)
 
 @Serializable
-data class PostPhotoThumbsResponse(val thumbUploads: Map<String, String>)
+data class PostPhotoThumbsResponse(
+    val thumbUploads: Map<String, String> = emptyMap(),
+    val previewUpload: String? = null,
+)
 
 @Serializable
 data class PostRenditionReplaceRequest(
@@ -635,4 +647,7 @@ data class PostUploadResponse(
     val encChunkSize: Long? = null,
     val originalUpload: OriginalUploadDto? = null,
     val thumbUploads: Map<String, String>? = null,
+    /** Present only when the request carried a `preview` descriptor and the server will
+     * keep it (never for a non-primary attach) — PUT the encrypted clip here. */
+    val previewUpload: String? = null,
 )

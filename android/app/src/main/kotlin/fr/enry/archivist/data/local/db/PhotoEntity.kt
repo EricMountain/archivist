@@ -32,8 +32,8 @@ enum class AssetStatus {
 
 /**
  * The timeline cache — mirrors `timeline_gsi`'s own projection (`design.md`'s
- * `Projection: INCLUDE [thumbs, encDek, encKeyId, width, height, mime, tzOffsetMin,
- * status]`) plus [photoId] and [takenAt], both recovered server-side from the GSI key
+ * `Projection: INCLUDE [thumbs, preview, encDek, encKeyId, width, height, mime,
+ * tzOffsetMin, status]`) plus [photoId] and [takenAt], both recovered server-side from the GSI key
  * (`pk` / `timelineSk`) rather than projected as their own attributes — see `dto.ts`.
  * `path`/`stem` are deliberately absent, matching the server projection: the grid
  * doesn't need them.
@@ -57,6 +57,11 @@ data class PhotoEntity(
     val thumbs: Map<Int, ThumbEntry>,
     val encDek: String,
     val encKeyId: String,
+    /** The video preview clip (design.md, "Video preview clip") — same
+     * `{bucket, key, iv, bytes}` shape as a [thumbs] entry, but a different kind of
+     * object (its own AAD, [fr.enry.archivist.crypto.ObjectRef.Preview]) and deliberately
+     * not one of the [thumbs] rungs. `null` for stills and for videos without one. */
+    val preview: ThumbEntry? = null,
 )
 
 /** [TimelinePagingSource]'s own paging key — the anchor item's own `takenAt#photoId`
@@ -77,8 +82,8 @@ interface PhotoDao {
      * sidesteps the whole exception-parsing path — SQLite resolves the conflict itself. */
     @Query(
         """
-        INSERT INTO photos (photoId, takenAt, tzOffsetMin, mime, width, height, status, thumbs, encDek, encKeyId)
-        VALUES (:photoId, :takenAt, :tzOffsetMin, :mime, :width, :height, :status, :thumbs, :encDek, :encKeyId)
+        INSERT INTO photos (photoId, takenAt, tzOffsetMin, mime, width, height, status, thumbs, encDek, encKeyId, preview)
+        VALUES (:photoId, :takenAt, :tzOffsetMin, :mime, :width, :height, :status, :thumbs, :encDek, :encKeyId, :preview)
         ON CONFLICT(photoId) DO UPDATE SET
             takenAt = excluded.takenAt,
             tzOffsetMin = excluded.tzOffsetMin,
@@ -88,7 +93,8 @@ interface PhotoDao {
             status = excluded.status,
             thumbs = excluded.thumbs,
             encDek = excluded.encDek,
-            encKeyId = excluded.encKeyId
+            encKeyId = excluded.encKeyId,
+            preview = excluded.preview
         """,
     )
     suspend fun upsertOne(
@@ -102,6 +108,7 @@ interface PhotoDao {
         thumbs: Map<Int, ThumbEntry>,
         encDek: String,
         encKeyId: String,
+        preview: ThumbEntry?,
     )
 
     @Transaction
@@ -118,6 +125,7 @@ interface PhotoDao {
                 photo.thumbs,
                 photo.encDek,
                 photo.encKeyId,
+                photo.preview,
             )
         }
     }

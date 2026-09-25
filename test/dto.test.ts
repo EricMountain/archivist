@@ -40,6 +40,25 @@ describe("timelineEntryDto", () => {
   });
 });
 
+describe("timelineEntryDto preview", () => {
+  const base: TimelineEntry = {
+    ...projection,
+    pk: `O#${OWNER}#M#${PHOTO_ID}`,
+    sk: "#META",
+    timelinePk: `O#${OWNER}`,
+    timelineSk: `${TAKEN_AT}#${PHOTO_ID}`,
+  };
+
+  it("passes a projected preview descriptor through", () => {
+    const preview = { bucket: "pa-derived", key: `th/${OWNER}/${PHOTO_ID}/preview`, iv: "ivp", bytes: 1_500_000 };
+    expect(timelineEntryDto({ ...base, preview })).toMatchObject({ preview });
+  });
+
+  it("omits the key entirely when there is no preview, rather than sending null", () => {
+    expect("preview" in timelineEntryDto(base)).toBe(false);
+  });
+});
+
 describe("facetEntryDto", () => {
   it("recovers photoId from pk, facetType/facetValue from facetPk, and takenAt from facetSk", () => {
     const entry: FacetEntry = {

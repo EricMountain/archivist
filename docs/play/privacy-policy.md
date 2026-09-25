@@ -33,7 +33,7 @@ below).
 Archivist transmits, **only to the server address you enter**:
 
 - Your photos and videos, encrypted on your device before they leave it
-- Reduced-size previews, encrypted the same way
+- Reduced-size previews, including a short silent preview clip of each video, encrypted the same way
 - Information about your photos: dates, image dimensions, file size and type, camera
   make and model, folder and file names, search labels, and albums or favourites you
   create
@@ -118,8 +118,9 @@ governed by the separate permission above — and it is encrypted before upload.
 
 ## Data stored on your device
 
-Archivist keeps a local cache of your library — thumbnails, metadata, an upload queue,
-and a record of files you have deleted so they are not re-uploaded. All of it lives in
+Archivist keeps a local cache of your library — thumbnails, short silent previews of your
+videos, metadata, an upload queue, and a record of files you have deleted so they are not
+re-uploaded. All of it lives in
 the app's private storage, and all of it is removed when you uninstall the app or clear
 its data.
 

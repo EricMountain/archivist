@@ -49,6 +49,12 @@ export interface ThumbEntry {
 
 export type ThumbMap = Record<number, ThumbEntry>;
 
+/** The video preview clip (design.md, "Video preview clip"): one per video asset, a
+ * different *kind* of object from a still thumbnail — its own AAD tag (`p`) and its
+ * own attribute, deliberately not an entry in [ThumbMap], so it can never be picked
+ * as a still rung or gate an asset's readiness. Same fields as a [ThumbEntry]. */
+export type PreviewEntry = ThumbEntry;
+
 // ---------------------------------------------------------------------------
 // Media partition items
 // ---------------------------------------------------------------------------
@@ -74,6 +80,8 @@ export interface MetaItem {
   takenAtSrc: TakenAtSrc;
   uploadedAt: string;
   thumbs: ThumbMap;
+  /** Absent for stills, and for videos whose client didn't (or couldn't) make one. */
+  preview?: PreviewEntry;
   exifEnc?: string;
   exifIv?: string;
   groupSrc: GroupSrc;
@@ -150,6 +158,9 @@ export interface GridProjectionFields {
 /** A timeline_gsi query result. `photoId` isn't projected — recover it from `pk`
  * with `photoIdFromMediaPk`. */
 export interface TimelineEntry extends GridProjectionFields {
+  /** Projected by timeline_gsi only (`local.timeline_projection`) — facet items carry
+   * no preview. */
+  preview?: PreviewEntry;
   pk: string;
   sk: "#META";
   timelinePk: string;

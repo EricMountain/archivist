@@ -97,18 +97,19 @@ Two properties hold this together, and both are load-bearing:
   that repeats.
 
 An asset carries on the order of ten objects (up to three renditions, three thumbnails,
-one EXIF blob), so the birthday bound on 96-bit random IVs under one DEK is not
+one EXIF blob, and for a video one preview clip), so the birthday bound on 96-bit random IVs under one DEK is not
 remotely a concern. What *is* a rule: **a DEK is never reused across assets**, and never
 used to encrypt more than 2^32 objects.
 
 ## Object encryption
 
-Three kinds of object are encrypted, all with the asset's DEK:
+Four kinds of object are encrypted, all with the asset's DEK:
 
 | Object | Where the ciphertext lives | Mode |
 | --- | --- | --- |
 | Rendition | S3, `s3Bucket` / `s3Key` on the `R#` item | either, per `encChunkSize` |
 | Thumbnail | S3, `thumbs[size].bucket` / `.key` on `#META` | always whole-object |
+| Video preview | S3, `preview.bucket` / `.key` on `#META` (video assets only) | always whole-object |
 | EXIF blob | `exifEnc` on `#META`, inline | always whole-object |
 
 ### Choosing a mode
@@ -126,7 +127,9 @@ actually used is recorded per object, the threshold can be retuned at any time w
 invalidating a single existing object. Nothing server-side is aware it exists.
 
 Thumbnails and EXIF blobs are always well under any plausible threshold and are always
-whole-object, which is why `thumbs[*]` carries an `iv` and no chunk size.
+whole-object, which is why `thumbs[*]` carries an `iv` and no chunk size. The video
+preview clip is capped at 60 s and a few hundred kbps — a couple of MB — so it is
+whole-object too, and `preview` likewise carries an `iv` and no chunk size.
 
 ### Associated data
 
@@ -137,6 +140,7 @@ aad = "archivist:" <version> ":" <photoId> ":" <objectRef>
 
 objectRef =  "r:" <renditionId>     a rendition
           |  "t:" <size>            a thumbnail, size as decimal longest edge
+          |  "p"                    the video preview clip (one per asset, no qualifier)
           |  "x"                    the EXIF blob
 ```
 
@@ -145,6 +149,7 @@ UTF-8, no trailing newline. For v1 the version field is the literal `1`. Example
 ```text
 archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:r:01K5A2Q8ZCW4MB7XKQNV2HTRF3
 archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:t:1024
+archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:p
 archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:x
 ```
 
@@ -162,7 +167,8 @@ failure mode you want.
 ```text
 key    = the asset DEK, used directly as the AES-256-GCM key
 iv     = 12 random bytes, stored base64 in encIv (renditions),
-         thumbs[size].iv (thumbnails), or exifIv (the EXIF blob)
+         thumbs[size].iv (thumbnails), preview.iv (the video preview clip),
+         or exifIv (the EXIF blob)
 aad    = the object context string above
 output = AES-256-GCM(key, iv, plaintext, aad)  =  ciphertext ‖ 16-byte tag
 ```
@@ -573,6 +579,8 @@ Required cases:
 | 21 | HKDF passkey KEK from a known PRF output | exact bytes |
 | 22 | Byte-range: for case 11, a table of plaintext ranges → ciphertext ranges | exact |
 | 23 | ECDH-ES+AES-KW unwrap: fixed static + ephemeral P-256 keypairs, checked from both agreement directions | exact bytes |
+| 24 | Whole-object video preview, `objectRef` `p` | decrypt |
+| 25 | Case 24's ciphertext, unmodified, presented as the 256px thumbnail (`t:256`) | **fail** |
 
 Cases 7 and 9 are the boundary cases that decide the "no empty trailing segment"
 question. Case 20 must use a transposition whose character values differ by something
@@ -581,6 +589,14 @@ stops a seeking bug from being found by a user scrubbing a video. Case 23 exists
 a wrap-only test of the RSA route it replaced would have shipped a decrypt that doesn't
 work — it checks both `ECDH(staticPrivate, ephemeralPublic)` and
 `ECDH(ephemeralPrivate, staticPublic)` land on the same secret, not just one direction.
+
+Case 25 is why a preview has its own `objectRef` instead of reusing `t:<size>`: a
+preview relabelled as a still (or a still as a preview) must fail authentication rather
+than decrypt to something plausible. Cases 24-25 were added after the original 23 and
+are the only ones whose fixtures `tools/gen-vectors/generate.py` will reproduce
+byte-for-byte on regeneration; the streaming and RSA fixtures use random salts/padding,
+so regenerating the whole set rewrites them. Add new cases to the manifest rather than
+re-running the generator over the committed files.
 
 ## Open items
 

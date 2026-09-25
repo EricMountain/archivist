@@ -41,7 +41,7 @@ resource "aws_dynamodb_table" "media" {
   global_secondary_index {
     name               = "timeline_gsi"
     projection_type    = "INCLUDE"
-    non_key_attributes = local.grid_projection
+    non_key_attributes = local.timeline_projection
 
     key_schema {
       attribute_name = "timelinePk"

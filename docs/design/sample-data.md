@@ -14,6 +14,8 @@ location stripped on upload.
 * Buckets: `pa-originals` and `pa-derived`.
 * `thumbs` is written on one line as `{size: bytes}` — each entry really holds
   `{bucket, key, iv, bytes}`, with keys of the form `th/<ownerId>/<photoId>/<size>`.
+* `preview` (video assets only) is written on one line as its byte count — it really
+  holds `{bucket, key, iv, bytes}` too, with the key `th/<ownerId>/<photoId>/preview`.
 
 ### Key
 
@@ -341,6 +343,7 @@ O#01J7X…#M#01K5A2QPF9XT2HMB5RKWNVQ3YD
                          tzSrc       exif-offset
                          takenAtSrc  exif
                          thumbs      {256: 12288, 1024: 141312, 2048: 331776}
+                         preview     1843216      ← 60 s cap, ≤200 px, no audio
 
                 R#01K5A2QPF94QXM7BND2VTKWRHG
                          role  display   path  2026/07-japan/VID_0009.MP4
@@ -357,6 +360,13 @@ The ciphertext is 7,736 bytes larger than the plaintext: a 40-byte stream header
 first segment, which therefore carries 1,048,520 plaintext bytes rather than 1,048,560
 — so the tail spills into one more segment. That's the overhead that makes the range
 arithmetic in `crypto-format.md` necessary.
+
+The `preview` is the video-only extra: the whole clip (capped at its first 60 s) shrunk
+to at most 200 px on the longest edge, H.264, no audio — 1,843,216 bytes here, whole-object
+mode so 16 bytes more than its 1,843,200-byte plaintext. This clip is 90 s long, so the
+preview covers its first minute and the client fades it out and loops. It is a separate
+attribute rather than a `thumbs` entry so that nothing iterating `thumbs` mistakes it for
+a still rung. A1–A7, A9 and A10 are stills and carry no `preview` at all.
 
 ---
 
@@ -575,7 +585,10 @@ it — three versions minted over this library's life, the third current.
 ## timeline_gsi
 
 Every `#META` item, one row each, no renditions, no facets, no pointers. Queried
-descending, this is the infinite scroll.
+descending, this is the infinite scroll. Each row carries the projection
+`[thumbs, preview, encDek, encKeyId, width, height, mime, tzOffsetMin, status]`; of the
+ten assets, only A8's row has a `preview` to project (`facet_gsi`, which projects the same
+list minus `preview`, is covered below).
 
 ```text
 timelinePk                    timelineSk                                          asset

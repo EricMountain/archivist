@@ -8,10 +8,15 @@ sealed class ObjectRef {
     data class Thumbnail(val longestEdge: Int) : ObjectRef()
     data object Exif : ObjectRef()
 
+    /** The video preview clip: one per asset, so no qualifier. A distinct kind from
+     * [Thumbnail] on purpose -- see crypto-format.md conformance cases 24-25. */
+    data object Preview : ObjectRef()
+
     internal fun encode(): String = when (this) {
         is Rendition -> "r:$renditionId"
         is Thumbnail -> "t:$longestEdge"
         is Exif -> "x"
+        is Preview -> "p"
     }
 }
 

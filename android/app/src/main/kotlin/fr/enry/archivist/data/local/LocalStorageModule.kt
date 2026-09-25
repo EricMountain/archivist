@@ -101,7 +101,10 @@ object LocalStorageModule {
         Room.databaseBuilder(context, AppDatabase::class.java, "archivist.db")
             // See AppDatabase's version-2 doc: no install has ever shipped version 1,
             // so there's nothing worth writing a real migration to preserve yet.
-            .addMigrations(fr.enry.archivist.data.local.db.MIGRATION_4_5)
+            .addMigrations(
+                fr.enry.archivist.data.local.db.MIGRATION_4_5,
+                fr.enry.archivist.data.local.db.MIGRATION_5_6,
+            )
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
 

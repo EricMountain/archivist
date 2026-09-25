@@ -42,6 +42,14 @@ export function thumbKey(ownerId: string, photoId: string, size: number): string
   return `th/${ownerId}/${photoId}/${size}`;
 }
 
+/** `th/<ownerId>/<photoId>/preview` — the video preview clip. Deterministic like
+ * [thumbKey], so likewise immutable once written; a repair mints a fresh key instead
+ * (see `presignedRepairPreview` in `routes/photos.ts`). Not matched by the S3-event
+ * Lambda's `th/.../<digits>` pattern, so a preview never gates readiness. */
+export function previewKey(ownerId: string, photoId: string): string {
+  return `th/${ownerId}/${photoId}/preview`;
+}
+
 const PRESIGN_EXPIRY_SECONDS = 15 * 60;
 
 /** Originals get INTELLIGENT_TIERING at PUT time — that's the storage class the

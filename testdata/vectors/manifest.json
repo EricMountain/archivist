@@ -362,6 +362,33 @@
       "expectedMasterKey": "b9324a197cd47a30f6982e8a97fe8464d71e5db2b9f004c8f3bc8b0684c14272",
       "expect": "exact",
       "note": "expectedSharedSecret must come out identically from both directions: ECDH(staticPrivateScalar, ephemeralPublicKey) and ECDH(ephemeralPrivateScalar, staticPublicKey). It is the X-coordinate only, big-endian, 32 bytes for P-256 -- no further KDF at the ECDH step itself. epk is SEC1 uncompressed (0x04||X||Y, 65 bytes) and doubles as the HKDF salt."
+    },
+    {
+      "case": 24,
+      "id": "24-whole-preview",
+      "mode": "whole",
+      "dek": "ebbad9b42e6241692fceffdb0c91334371f41d9dec4f82e6f482d3bf644bd2cf",
+      "iv": "09c353a46d82b3c764816faf",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:p",
+      "plainLength": 150000,
+      "plainPatternSeed": "whole-preview-mp4",
+      "files": {
+        "cipher": "24-whole-preview.cipher"
+      },
+      "expect": "decrypt"
+    },
+    {
+      "case": 25,
+      "id": "25-whole-preview-as-thumbnail",
+      "mode": "whole",
+      "dek": "ebbad9b42e6241692fceffdb0c91334371f41d9dec4f82e6f482d3bf644bd2cf",
+      "iv": "09c353a46d82b3c764816faf",
+      "aad": "archivist:1:01K5A2Q8ZCV1D9KXM3BQNR7T2F:t:256",
+      "files": {
+        "cipher": "25-whole-preview-as-thumbnail.cipher"
+      },
+      "expect": "fail",
+      "note": "cipher is case 24's, unmodified; aad names it as a 256px thumbnail"
     }
   ]
 }

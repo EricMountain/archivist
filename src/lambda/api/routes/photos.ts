@@ -15,9 +15,9 @@ import {
 import { correctTakenAt } from "@archivist/core/repo/timestamps";
 import { getHashPointer, getPathPointer } from "@archivist/core/repo/pointers";
 import { restoreAsset, trashAsset } from "@archivist/core/repo/trash";
-import { setThumbs, THUMB_SIZES } from "./uploads";
-import type { ThumbDescriptorMap } from "./uploads";
-import type { ThumbEntry } from "@archivist/core/items";
+import { setPreview, setThumbs, THUMB_SIZES, validatePreviewDescriptor } from "./uploads";
+import type { PreviewDescriptor, ThumbDescriptorMap } from "./uploads";
+import type { PreviewEntry, ThumbEntry } from "@archivist/core/items";
 import { timelineEntryDto } from "../dto";
 import { ifNoneMatch, noContent, notModified, ok, okCacheable, parseJsonBody } from "../http";
 import type { ApiRequest, ApiResponse, RouteHandler } from "../http";
@@ -366,6 +366,8 @@ export const postRestore: RouteHandler = async (req: ApiRequest) => {
 
 interface PhotoThumbsBody {
   thumbs?: ThumbDescriptorMap;
+  /** Video preview clip, repaired alongside (or instead of) the still ladder. */
+  preview?: PreviewDescriptor;
 }
 
 /**
@@ -393,8 +395,8 @@ async function presignedRepairThumbs(
   ownerId: string,
   photoId: string,
   descriptors: ThumbDescriptorMap,
+  generation: string,
 ): Promise<{ thumbs: Record<number, ThumbEntry>; uploads: Record<number, string> }> {
-  const generation = newUlid();
   const thumbs: Record<number, ThumbEntry> = {};
   const uploads: Record<number, string> = {};
   for (const size of THUMB_SIZES) {
@@ -428,9 +430,11 @@ export const postPhotoThumbs: RouteHandler = async (req: ApiRequest) => {
   if (!meta) throw ApiError.notFound("photo not found");
 
   const body = parseJsonBody<PhotoThumbsBody>(req);
-  if (!body.thumbs || Object.keys(body.thumbs).length === 0) {
-    throw ApiError.validation("thumbs is required");
+  const hasThumbs = !!body.thumbs && Object.keys(body.thumbs).length > 0;
+  if (!hasThumbs && !body.preview) {
+    throw ApiError.validation("thumbs or preview is required");
   }
+  validatePreviewDescriptor(body.preview);
 
   // Merged with the existing map, not a bare replace: unlike POST /uploads (whose
   // callers always send the full ladder together — see Thumbnailer's own "all three
@@ -438,8 +442,29 @@ export const postPhotoThumbs: RouteHandler = async (req: ApiRequest) => {
   // sizes that were actually missing/corrupt. setThumbs itself does a plain attribute
   // SET, so a caller here that omitted a still-good size would otherwise silently
   // erase it.
-  const { thumbs, uploads } = await presignedRepairThumbs(ownerId, photoId, body.thumbs);
-  await setThumbs(ownerId, photoId, { ...meta.thumbs, ...thumbs });
+  const generation = newUlid();
+  let thumbUploads: Record<number, string> = {};
+  if (hasThumbs) {
+    const { thumbs, uploads } = await presignedRepairThumbs(ownerId, photoId, body.thumbs!, generation);
+    await setThumbs(ownerId, photoId, { ...meta.thumbs, ...thumbs });
+    thumbUploads = uploads;
+  }
 
-  return ok({ thumbUploads: uploads });
+  // Same fresh-key-per-repair rule as the stills, for the same CloudFront reason: the
+  // preview is served through the year-long-immutable `/thumbs/*` behavior, so
+  // overwriting `previewKey` in place would leave every edge serving the stale bytes.
+  let previewUpload: string | undefined;
+  if (body.preview) {
+    const key = `th/${ownerId}/${photoId}/${generation}/preview`;
+    const entry: PreviewEntry = {
+      bucket: derivedBucket(),
+      key,
+      iv: body.preview.iv,
+      bytes: body.preview.bytes,
+    };
+    previewUpload = await presignPut(derivedBucket(), key);
+    await setPreview(ownerId, photoId, entry);
+  }
+
+  return ok({ thumbUploads, ...(previewUpload ? { previewUpload } : {}) });
 };

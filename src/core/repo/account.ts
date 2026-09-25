@@ -90,6 +90,8 @@ export async function deleteOwnerData(
         for (const thumb of Object.values(thumbs ?? {})) {
           addS3Object(thumb.bucket, thumb.key);
         }
+        const preview = item["preview"] as ThumbEntry | undefined;
+        if (preview) addS3Object(preview.bucket, preview.key);
       }
     }
 

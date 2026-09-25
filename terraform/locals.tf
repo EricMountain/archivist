@@ -43,6 +43,14 @@ locals {
     "status",
   ]
 
+  # timeline_gsi additionally projects `preview` (the video preview clip's descriptor:
+  # the grid autoplays it, so it must be readable without a second read per cell).
+  # facet_gsi deliberately keeps plain grid_projection — facet items carry no preview,
+  # and adding it there would force a pointless rebuild of that index too. NOTE:
+  # DynamoDB can't alter an existing GSI's projection in place, so applying this
+  # recreates timeline_gsi — see docs/ops/ (video-preview-rollout.md).
+  timeline_projection = concat(local.grid_projection, ["preview"])
+
   # fr.enry.archivist is the one hardcodable exception to "nothing deployment-specific
   # in the committed tree" — see CLAUDE.md. debug builds get `.debug` appended
   # (`applicationIdSuffix` in android/app/build.gradle.kts), which makes it a genuinely

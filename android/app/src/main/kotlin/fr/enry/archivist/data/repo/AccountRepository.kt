@@ -36,6 +36,7 @@ class AccountRepository
         private val masterKeyHolder: MasterKeyHolder,
         private val hashSecretHolder: HashSecretHolder,
         private val appDatabase: AppDatabase,
+        private val previewCache: PreviewCache,
     ) {
         suspend fun deleteAccount(): Result<Unit> {
             val instance = instanceStore.current.first() ?: return Result.failure(IllegalStateException("no connected instance"))
@@ -60,6 +61,9 @@ class AccountRepository
                 // otherwise run on viewModelScope's default Dispatchers.Main.immediate,
                 // which is exactly that thread.
                 withContext(Dispatchers.IO) { appDatabase.clearAllTables() }
+                // Decrypted video previews are plaintext under cacheDir (see PreviewCache):
+                // a deleted account must not leave them behind.
+                previewCache.clear()
                 authRepository.signOut()
                 Result.success(Unit)
             } catch (e: IOException) {

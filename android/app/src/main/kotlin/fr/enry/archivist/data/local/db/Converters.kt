@@ -20,6 +20,13 @@ class Converters {
     @TypeConverter
     fun thumbsFromJson(raw: String): Map<Int, ThumbEntry> = json.decodeFromString(raw)
 
+    /** [PhotoEntity.preview]: nullable, stored as one JSON column (SQL `NULL` when absent). */
+    @TypeConverter
+    fun previewToJson(preview: ThumbEntry?): String? = preview?.let { json.encodeToString(it) }
+
+    @TypeConverter
+    fun previewFromJson(raw: String?): ThumbEntry? = raw?.let { json.decodeFromString<ThumbEntry>(it) }
+
     @TypeConverter
     fun assetStatusToString(status: AssetStatus): String = status.name
 

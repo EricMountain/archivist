@@ -177,4 +177,76 @@ describe.skipIf(!RUN)("POST /photos/{photoId}/thumbs", () => {
       /thumbs/i,
     );
   });
+
+  describe("video preview", () => {
+    it("persists #META.preview and presigns a PUT under a fresh generation key", async () => {
+      const { userId, ownerId } = await newOwner();
+      const photoId = await newAsset(ownerId, userId);
+
+      const response = await postPhotoThumbs(
+        thumbsReq(ownerId, userId, photoId, { preview: { bytes: 2_000_000, iv: "preview-iv" } }),
+      );
+      const body = response.body as { thumbUploads: Record<string, string>; previewUpload?: string };
+      expect(body.thumbUploads).toEqual({});
+      expect(body.previewUpload).toMatch(/^https?:\/\//);
+
+      const { meta } = await getAssetPartition(ownerId, photoId);
+      expect(meta?.preview).toMatchObject({ iv: "preview-iv", bytes: 2_000_000 });
+      // Never the deterministic upload-time key: `/thumbs/*` is cached for a year.
+      expect(meta?.preview?.key).not.toBe(`th/${ownerId}/${photoId}/preview`);
+      expect(meta?.preview?.key).toMatch(new RegExp(`^th/${ownerId}/${photoId}/[^/]+/preview$`));
+      expect(body.previewUpload).toContain(meta!.preview!.key);
+      // A preview-only repair leaves the still ladder alone.
+      expect(meta?.thumbs).toEqual({});
+    });
+
+    it("a second repair mints a different preview key", async () => {
+      const { userId, ownerId } = await newOwner();
+      const photoId = await newAsset(ownerId, userId);
+
+      await postPhotoThumbs(thumbsReq(ownerId, userId, photoId, { preview: { bytes: 1, iv: "a" } }));
+      const first = (await getAssetPartition(ownerId, photoId)).meta?.preview?.key;
+      await postPhotoThumbs(thumbsReq(ownerId, userId, photoId, { preview: { bytes: 2, iv: "b" } }));
+      const second = (await getAssetPartition(ownerId, photoId)).meta?.preview?.key;
+
+      expect(first).toBeDefined();
+      expect(second).not.toBe(first);
+    });
+
+    it("repairs thumbs and preview together without one clobbering the other", async () => {
+      const { userId, ownerId } = await newOwner();
+      const photoId = await newAsset(ownerId, userId);
+
+      const response = await postPhotoThumbs(
+        thumbsReq(ownerId, userId, photoId, {
+          thumbs: { "256": { bytes: 10, iv: "t" } },
+          preview: { bytes: 20, iv: "p" },
+        }),
+      );
+      const body = response.body as { thumbUploads: Record<string, string>; previewUpload?: string };
+      expect(Object.keys(body.thumbUploads)).toEqual(["256"]);
+      expect(body.previewUpload).toBeTruthy();
+
+      const { meta } = await getAssetPartition(ownerId, photoId);
+      expect(meta?.thumbs[256]).toMatchObject({ iv: "t", bytes: 10 });
+      expect(meta?.preview).toMatchObject({ iv: "p", bytes: 20 });
+    });
+
+    it("rejects a descriptor with no iv, a non-positive size, or an oversized one", async () => {
+      const { userId, ownerId } = await newOwner();
+      const photoId = await newAsset(ownerId, userId);
+      for (const preview of [
+        { bytes: 10 },
+        { bytes: 10, iv: "" },
+        { bytes: 0, iv: "x" },
+        { bytes: -5, iv: "x" },
+        { bytes: 17 * 1024 * 1024, iv: "x" },
+      ]) {
+        await expect(
+          postPhotoThumbs(thumbsReq(ownerId, userId, photoId, { preview })),
+        ).rejects.toThrow(/preview/i);
+      }
+      expect((await getAssetPartition(ownerId, photoId)).meta?.preview).toBeUndefined();
+    });
+  });
 });

@@ -14,6 +14,7 @@ import fr.enry.archivist.data.repo.AccountRepository
 import fr.enry.archivist.data.repo.AuthRepository
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
+import fr.enry.archivist.data.repo.PreviewCache
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import java.io.File
@@ -121,6 +122,12 @@ class AccountViewModelTest {
                 masterKeyHolder = MasterKeyHolder(),
                 hashSecretHolder = HashSecretHolder(),
                 appDatabase = db,
+                previewCache =
+                    PreviewCache(
+                        context = org.mockito.kotlin.mock<android.content.Context>().also { org.mockito.kotlin.whenever(it.cacheDir).thenReturn(tempDir) },
+                        okHttpClient = OkHttpClient.Builder().build(),
+                        masterKeyHolder = MasterKeyHolder(),
+                    ),
             )
         viewModel = AccountViewModel(authRepository, accountRepository)
     }
@@ -179,6 +186,32 @@ class AccountViewModelTest {
             awaitUntil { viewModel.uiState.value.sessionEnded }
 
             assertTrue(viewModel.uiState.value.sessionEnded)
+        }
+
+    @Test
+    fun `deleteAccount wipes the decrypted preview cache`() =
+        runTest(dispatcher) {
+            val cached = File(tempDir, "previews/deadbeef.mp4").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"userId":"u1","ownerId":"o1","created":false}"""))
+            server.enqueue(MockResponse().setResponseCode(200))
+
+            viewModel.deleteAccount()
+            awaitUntil { viewModel.uiState.value.sessionEnded }
+
+            assertFalse(cached.exists())
+        }
+
+    @Test
+    fun `deleteAccount failure leaves the preview cache alone`() =
+        runTest(dispatcher) {
+            val cached = File(tempDir, "previews/deadbeef.mp4").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"userId":"u1","ownerId":"o1","created":false}"""))
+            server.enqueue(MockResponse().setResponseCode(500))
+
+            viewModel.deleteAccount()
+            awaitUntil { viewModel.uiState.value.error != null }
+
+            assertTrue(cached.exists())
         }
 
     @Test

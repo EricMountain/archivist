@@ -18,7 +18,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.CompositionLocalProvider
 import dagger.hilt.android.AndroidEntryPoint
+import fr.enry.archivist.data.repo.PreviewCache
+import fr.enry.archivist.ui.preview.LocalPreviewCache
+import javax.inject.Inject
 import fr.enry.archivist.ui.onboarding.ConnectScreen
 import fr.enry.archivist.ui.onboarding.ConnectUiState
 import fr.enry.archivist.ui.onboarding.ConnectViewModel
@@ -31,12 +35,19 @@ import fr.enry.archivist.ui.timeline.TimelineScreen
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    /** Handed to the composition via [LocalPreviewCache] rather than through the
+     * ViewModels — see its own doc. */
+    @Inject
+    lateinit var previewCache: PreviewCache
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            ArchivistTheme {
-                ArchivistApp()
+            CompositionLocalProvider(LocalPreviewCache provides previewCache) {
+                ArchivistTheme {
+                    ArchivistApp()
+                }
             }
         }
     }
