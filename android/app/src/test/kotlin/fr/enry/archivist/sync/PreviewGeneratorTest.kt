@@ -64,4 +64,18 @@ class PreviewGeneratorTest {
         assertTrue(needsTrim(60_001))
         assertTrue(needsTrim(600_000))
     }
+
+    @Test
+    fun `a short message is kept whole`() {
+        assertEquals("boom", headAndTail("boom"))
+    }
+
+    @Test
+    fun `a long message keeps its head and, more importantly, its tail`() {
+        val msg = "Codec exception: CodecInfo{" + "x".repeat(600) + "name=c2.exynos.h264.encoder}"
+        val out = headAndTail(msg)
+        assertTrue(out.startsWith("Codec exception: CodecInfo{"))
+        assertTrue(out.endsWith("name=c2.exynos.h264.encoder}"), out)
+        assertTrue(out.length < msg.length)
+    }
 }

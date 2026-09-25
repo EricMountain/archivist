@@ -1623,8 +1623,10 @@ list.
 
 Two encoder facts learned on a device and worth keeping here: the MP4 muxer must have
 "streamable output" **off** (its default reserves a `free` box before `mdat` that made a
-4 s preview 4x larger than its video), and the encode runs at constant bitrate so the 60 s
-cap really does bound the size.
+4 s preview 4x larger than its video). The encoder is given a target bitrate only, **not** a
+bitrate mode: constant bitrate was tried on a mistaken diagnosis (the padding above, not the
+encoder, was inflating the file) and a real phone's H.264 encoder then refused the whole
+format (`ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED`).
 
 **Problem.** A video's thumbnail is a single still. It can be uninformative (a poster
 frame that is black, or a static title card), and it says nothing about whether the

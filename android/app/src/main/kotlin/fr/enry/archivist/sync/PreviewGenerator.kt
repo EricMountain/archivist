@@ -1,7 +1,6 @@
 package fr.enry.archivist.sync
 
 import android.content.Context
-import android.media.MediaCodecInfo
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Handler
@@ -219,13 +218,15 @@ class TransformerPreviewGenerator
                 val encoderFactory =
                     DefaultEncoderFactory.Builder(context)
                         .setRequestedVideoEncoderSettings(
+                            // Deliberately only a target bitrate -- no bitrate *mode*. Constant
+                            // bitrate was once requested here on the mistaken belief that a
+                            // variable-bitrate encoder had overshot the target; the oversized
+                            // file was really the muxer's `moov` padding (see the muxer factory
+                            // below), and the video stream was on target either way. Requesting
+                            // CBR bought nothing and made a real phone's H.264 encoder refuse the
+                            // whole format (`ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED`).
                             VideoEncoderSettings.Builder()
                                 .setBitrate(PREVIEW_VIDEO_BITRATE)
-                                // Constant bitrate: the 60 s cap only bounds the *size* if the
-                                // encoder actually holds the bitrate. A variable-bitrate
-                                // encoder overshot a 250 kbps target by ~4x on detailed
-                                // content (measured on an emulator's software encoder).
-                                .setBitrateMode(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
                                 .build(),
                         )
                         .build()
@@ -262,7 +263,7 @@ class TransformerPreviewGenerator
                                             IOException(
                                                 // The error code name (ENCODER_INIT_FAILED, DECODING_FORMAT_UNSUPPORTED,
                                                 // ...) is what actually says what went wrong on a given device.
-                                                "${exportException.errorCodeName} (${exportException.message.orEmpty().take(110)})",
+                                                "${exportException.errorCodeName} (${headAndTail(exportException.message.orEmpty())})",
                                                 exportException,
                                             ),
                                         )
@@ -282,3 +283,9 @@ class TransformerPreviewGenerator
             }
         }
     }
+
+/** The head and tail of a long transformer message. `CodecInfo{...}` messages put the useful
+ * parts at the *end* (the encoder's name and the exact media format it rejected), so a plain
+ * `take(n)` -- as this once did -- shows only boilerplate. */
+internal fun headAndTail(message: String, head: Int = 70, tail: Int = 230): String =
+    if (message.length <= head + tail + 5) message else message.take(head) + " ... " + message.takeLast(tail)
