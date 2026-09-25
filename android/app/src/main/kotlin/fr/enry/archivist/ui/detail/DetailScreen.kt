@@ -71,6 +71,14 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
+ * [initialPhoto] is the grid cell that was tapped, passed whole rather than as an id:
+ * [DetailViewModel.photos] is retained across opens and can be stale (missing photos the
+ * grid has since loaded, e.g. after a far jump on the timeline rail), so the pager can't
+ * assume it contains the tapped photo. Until it does, the pager runs over just
+ * [initialPhoto] -- same layout, same (already Coil-cached) thumbnail as the grid cell,
+ * so nothing visibly changes when the real list arrives; the pager's keyed items
+ * carry the position over.
+ *
  * Plan step 2.12: full-screen single-photo view reached by tapping a grid cell in
  * [fr.enry.archivist.ui.timeline.TimelineScreen]. Swiping is over
  * [DetailViewModel.photos] (Room's plain timeline order), not the grid's own `Paging`
@@ -78,7 +86,7 @@ import java.util.Locale
  */
 @Composable
 fun DetailScreen(
-    initialPhotoId: String,
+    initialPhoto: PhotoEntity,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: DetailViewModel = hiltViewModel(),
@@ -113,22 +121,28 @@ fun DetailScreen(
     LaunchedEffect(Unit) { viewModel.dismissTakenAt() }
     LaunchedEffect(Unit) { viewModel.dismissRotate() }
 
-    if (photos.isEmpty()) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+    // Latched once the list has caught up so a later removal of this photo (a delete
+    // finishing, before the screen closes) doesn't swap the pager back to the placeholder.
+    var listReady by remember { mutableStateOf(false) }
+    val listHasInitial = photos.any { it.photoId == initialPhoto.photoId }
+    if (listHasInitial) listReady = true
+    val pagerPhotos = if (listReady || listHasInitial) photos else listOf(initialPhoto)
+    // Only reachable once the last photo has been deleted, just before onBack fires.
+    if (pagerPhotos.isEmpty()) {
+        Box(modifier.fillMaxSize())
         return
     }
 
-    // Computed once, from the list as it stood when the screen opened -- a photo
-    // arriving or leaving mid-session (a concurrent upload, a delete on another
-    // device) can shift indices under the pager, same known limitation as any plain
-    // index-based swipe view; not something plan step 2.12's "Done when" calls out.
-    val initialPage = remember { photos.indexOfFirst { it.photoId == initialPhotoId }.coerceAtLeast(0) }
-    val pagerState = rememberPagerState(initialPage = initialPage) { photos.size }
-    val currentPhoto = photos.getOrNull(pagerState.currentPage.coerceIn(0, photos.lastIndex))
+    // Computed once, from whichever list is showing at first composition -- a photo
+    // arriving or leaving mid-session shifts indices, but the pager's `key` follows the
+    // current photo through that.
+    val initialPage = remember { pagerPhotos.indexOfFirst { it.photoId == initialPhoto.photoId }.coerceAtLeast(0) }
+    val pagerState = rememberPagerState(initialPage = initialPage) { pagerPhotos.size }
+    val currentPhoto = pagerPhotos.getOrNull(pagerState.currentPage.coerceIn(0, pagerPhotos.lastIndex))
     val currentDetail = currentPhoto?.let { photo -> (details[photo.photoId] as? PhotoDetailUiState.Loaded)?.detail }
 
-    LaunchedEffect(pagerState.currentPage, photos.size) {
-        photos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
+    LaunchedEffect(pagerState.currentPage, pagerPhotos.size) {
+        pagerPhotos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
     }
 
     // Plan step 2.13: once DeleteRepository.delete succeeds, the photo's Room row is
@@ -347,9 +361,9 @@ fun DetailScreen(
                 HorizontalPager(
                     state = pagerState,
                     modifier = Modifier.weight(1f).fillMaxHeight(),
-                    key = { photos[it].photoId },
+                    key = { pagerPhotos[it].photoId },
                 ) { page ->
-                    ZoomableThumb(photo = photos[page], host = host)
+                    ZoomableThumb(photo = pagerPhotos[page], host = host)
                 }
 
                 currentPhoto?.let { photo ->
@@ -366,9 +380,9 @@ fun DetailScreen(
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                key = { photos[it].photoId },
+                key = { pagerPhotos[it].photoId },
             ) { page ->
-                ZoomableThumb(photo = photos[page], host = host)
+                ZoomableThumb(photo = pagerPhotos[page], host = host)
             }
 
             currentPhoto?.let { photo ->

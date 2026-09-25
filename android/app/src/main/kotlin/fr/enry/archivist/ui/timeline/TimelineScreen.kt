@@ -204,14 +204,16 @@ fun TimelineScreen(
     // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
     // state, not a nav-library back stack -- this app has none yet (see MainActivity's
     // own note), same pattern every other screen transition here already uses.
-    var selectedPhotoId by remember { mutableStateOf<String?>(null) }
-    val openPhotoId = selectedPhotoId
-    if (openPhotoId != null) {
+    // The whole entity, not just its id: DetailScreen shows this photo's own thumbnail
+    // while its swipe list catches up (see DetailScreen's initialPhoto doc).
+    var selectedPhoto by remember { mutableStateOf<PhotoEntity?>(null) }
+    val openPhoto = selectedPhoto
+    if (openPhoto != null) {
         // A repair's own effect on the grid (re-settling on the repaired photo) is
         // handled independently of this navigation -- see
         // TimelineJumpCoordinator.stageAndAnnounceLanding's own doc -- so this stays the
         // plain "close the screen" it always was, with no repair-awareness needed here.
-        DetailScreen(initialPhotoId = openPhotoId, onBack = { selectedPhotoId = null }, modifier = modifier)
+        DetailScreen(initialPhoto = openPhoto, onBack = { selectedPhoto = null }, modifier = modifier)
         return
     }
 
@@ -250,7 +252,7 @@ fun TimelineScreen(
             bounds = bounds,
             histogram = histogram,
             hasStartedLoading = hasStartedLoading,
-            onPhotoClick = { selectedPhotoId = it },
+            onPhotoClick = { selectedPhoto = it },
             onScrub = viewModel::onScrubTo,
             onCommit = viewModel::onJumpCommitted,
             modifier = Modifier.weight(1f),
@@ -328,7 +330,7 @@ private fun TimelineGrid(
     bounds: TimelineBounds?,
     histogram: TimelineHistogram?,
     hasStartedLoading: Boolean,
-    onPhotoClick: (String) -> Unit,
+    onPhotoClick: (PhotoEntity) -> Unit,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
@@ -389,7 +391,7 @@ private fun TimelineItemGrid(
     items: LazyPagingItems<TimelineItem>,
     host: String?,
     gridState: LazyGridState,
-    onPhotoClick: (String) -> Unit,
+    onPhotoClick: (PhotoEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyVerticalGrid(
@@ -409,7 +411,7 @@ private fun TimelineItemGrid(
         ) { index ->
             when (val item = items[index]) {
                 is TimelineItem.Header -> DateHeader(item)
-                is TimelineItem.Photo -> PhotoCell(item.photo, host, onClick = { onPhotoClick(item.photo.photoId) })
+                is TimelineItem.Photo -> PhotoCell(item.photo, host, onClick = { onPhotoClick(item.photo) })
                 null -> PlaceholderCell()
             }
         }
