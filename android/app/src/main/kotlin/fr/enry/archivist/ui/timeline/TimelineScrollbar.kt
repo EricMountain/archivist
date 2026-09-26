@@ -468,7 +468,7 @@ private const val PEEK_LINGER_MS = 1200L
 /** How long the rail stays put where the finger left it after release or a tap. Longer
  * than [PEEK_LINGER_MS]: the committed jump has to fetch and scroll before the idle
  * position catches up, and the user wants time to see where they landed. */
-private const val RELEASE_LINGER_MS = 2500L
+private const val RELEASE_LINGER_MS = 2000L
 
 /**
  * The whole library laid out along the track, so the drag has something to aim at.
