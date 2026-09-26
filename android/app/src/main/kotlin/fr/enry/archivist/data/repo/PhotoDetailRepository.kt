@@ -11,6 +11,8 @@ import fr.enry.archivist.data.remote.PhotoDetailResponse
 import fr.enry.archivist.data.remote.RenditionDto
 import fr.enry.archivist.domain.ExifBlob
 import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.InputStream
 import java.io.IOException
 import java.util.Base64
 import javax.inject.Inject
@@ -152,18 +154,25 @@ class PhotoDetailRepository
             }.getOrNull()?.let(::DecryptedExif)
         }
 
-        /** Fetches and decrypts one rendition's full ciphertext — the "original on
-         * demand only" of plan step 2.12: never called from [fetchDetail] itself, only
-         * from an explicit user action, since it's a paid retrieval against a tiered S3
-         * object (`design.md`). Reads the whole plaintext into memory rather than
-         * streaming to a file: this app's originals are individual photos/short videos,
-         * not the kind of size where that matters, and every other decrypt path in this
-         * codebase (thumbnails, EXIF) already does the same. */
+        /** Fetches and decrypts one rendition **into memory**. Only for things that are small
+         * enough to hold whole: a still image, say. For anything that might be a video use
+         * [downloadOriginalToFile], which never holds more than one crypto segment.
+         *
+         * This used to be the only path, on the stated assumption that originals are "individual
+         * photos/short videos, not the kind of size where that matters". That was wrong: it read
+         * the whole ciphertext into a `ByteArrayOutputStream` (whose buffer doubles), so a
+         * phone video past ~100 MB needed a single 128 MiB allocation and killed the app with
+         * an `OutOfMemoryError` on Android's 256 MB heap -- reported as "repairing thumbnails of
+         * some videos crashes the app". It now refuses an oversized rendition with an ordinary
+         * error instead of crashing. */
         suspend fun downloadOriginal(
             photoId: String,
             encDek: String,
             rendition: RenditionSummary,
         ): ByteArray {
+            if (rendition.plainBytes > MAX_IN_MEMORY_ORIGINAL_BYTES) {
+                throw IOException("this file is too large to open in memory (${rendition.plainBytes / 1_048_576} MB)")
+            }
             val instance = instanceStore.current.first() ?: throw IOException("no connected instance")
             val masterKey = masterKeyHolder.current.value ?: throw ImageLockedException()
             val dek = masterKey.unwrapDek(decode(encDek))
@@ -186,7 +195,76 @@ class PhotoDetailRepository
                 StreamingCipher.decryptingStream(dek, aad, ByteArrayInputStream(ciphertext)).use { it.readBytes() }
             }
         }
+
+        /**
+         * Fetches one rendition and decrypts it **into [target]** without ever holding it whole:
+         * the HTTP body is piped straight through [StreamingCipher.decryptingStream] into the
+         * file, so memory use is one crypto segment (1 MiB) regardless of the video's size. This
+         * is what repair (when it falls back to the server copy) and "View original" of a video
+         * use. On any failure [target] is deleted, never left half-written.
+         */
+        suspend fun downloadOriginalToFile(
+            photoId: String,
+            encDek: String,
+            rendition: RenditionSummary,
+            target: File,
+        ) {
+            val instance = instanceStore.current.first() ?: throw IOException("no connected instance")
+            val masterKey = masterKeyHolder.current.value ?: throw ImageLockedException()
+            val dek = masterKey.unwrapDek(decode(encDek))
+            val url = "https://${instance.host}/media/${rendition.s3Key}"
+            val aad = Aad.of(photoId, ObjectRef.Rendition(rendition.renditionId))
+
+            withContext(Dispatchers.IO) {
+                try {
+                    okHttpClient.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                        if (!response.isSuccessful) throw IOException("GET $url failed: HTTP ${response.code}")
+                        val body = response.body ?: throw IOException("empty response body for $url")
+                        decryptToFile(body.byteStream(), dek, aad, rendition.encChunkSize, rendition.encIv, target)
+                    }
+                } catch (e: Throwable) {
+                    target.delete()
+                    throw e
+                }
+            }
+        }
     }
+
+/** Largest rendition [PhotoDetailRepository.downloadOriginal] will hold in memory: the
+ * ciphertext, the plaintext, and (for an image) the decoded bitmap all coexist, on a heap of
+ * ~256 MB. */
+internal const val MAX_IN_MEMORY_ORIGINAL_BYTES = 48L * 1024 * 1024
+
+/** crypto-format.md's whole-object mode is only ever used below the 32 MiB streaming threshold;
+ * anything claiming to be whole-object and bigger than this (plus its tag) is refused rather
+ * than buffered. */
+private const val MAX_WHOLE_OBJECT_BYTES = 33_554_432L + 16
+
+/**
+ * The decrypt-to-file half of [PhotoDetailRepository.downloadOriginalToFile], separated so it is
+ * testable without a network: streaming mode (`encChunkSize > 0`) copies through the decrypting
+ * stream in 64 KiB pieces; whole-object mode (necessarily small) is read bounded and decrypted
+ * in one go.
+ */
+internal fun decryptToFile(
+    source: InputStream,
+    dek: ByteArray,
+    aad: ByteArray,
+    encChunkSize: Long,
+    encIv: String?,
+    target: File,
+) {
+    if (encChunkSize == 0L) {
+        val iv = encIv?.let(::decode) ?: throw IOException("whole-object rendition missing encIv")
+        val ciphertext = source.readNBytes((MAX_WHOLE_OBJECT_BYTES + 1).toInt())
+        if (ciphertext.size > MAX_WHOLE_OBJECT_BYTES) throw IOException("whole-object rendition is larger than the format allows")
+        target.writeBytes(WholeObjectCipher.decrypt(dek, iv, aad, ciphertext))
+    } else {
+        StreamingCipher.decryptingStream(dek, aad, source).use { plain ->
+            target.outputStream().use { out -> plain.copyTo(out, 64 * 1024) }
+        }
+    }
+}
 
 /** Wraps a successfully-decrypted [ExifBlob] purely so [decryptExif] can return "ran,
  * produced nothing" ([ExifBlob]-shaped but all-null never actually happens — see

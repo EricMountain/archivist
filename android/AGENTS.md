@@ -317,6 +317,29 @@ a healthy `state`/`isPlaying`, is the whole tell. Measure "is it really animatin
 pixel diff of the cell across screenshots against a static control region (PIL is enough;
 numpy isn't installed here) rather than eyeballing two frames.
 
+**With a real phone attached, `./gradlew :app:connectedDebugAndroidTest` runs on it too — and
+uninstalls the app afterwards, taking its data.** Two devices (the user's phone over USB plus an
+emulator) means Gradle targets both. Pin the run with `ANDROID_SERIAL=emulator-5554` (after
+verifying that serial really is the AVD you mean: `adb -s emulator-5554 shell getprop
+ro.boot.qemu.avd_name`), and give every `adb` call an explicit `-s <serial>` — a bare `adb` is
+"more than one device" at best and the phone at worst. Also filter to the classes you mean
+(`-Pandroid.testInstrumentationRunnerArguments.class=...`): a whole package pulled in
+`LoadTestInstrumentedTest`/`CrossDeviceReuploadInstrumentedTest`, which skip themselves only
+because their env vars aren't set.
+
+**Never read a whole media file into memory — `body.bytes()`, `readBytes()` and
+`ByteArrayOutputStream` on a video are an `OutOfMemoryError` waiting for a big enough file.**
+Android's heap here is 192-256 MB, and a `ByteArrayOutputStream`'s buffer *doubles*, so a video
+past ~64 MB needs one 128 MiB allocation and the app dies (`FATAL EXCEPTION ... Failed to
+allocate a 134217744 byte allocation`, stack in `ByteArrayOutputStream.grow`). It was
+`PhotoDetailRepository.downloadOriginal` ("originals are short videos, size doesn't matter" —
+false), hit by repair's server-copy fallback. Stream: `downloadOriginalToFile` pipes the HTTP body
+through `StreamingCipher.decryptingStream` into a file. Near-OOM can also present as an unrelated
+error: on the emulator the same code ended in `Couldn't repair: timeout`, because GC stalls
+starved the network read thread before the OOM was thrown. Find such crashes with `adb -s
+<serial> logcat -d -b crash` (the buffer is shared with every other app — filter on `Process:
+fr.enry`).
+
 **`MediaMetadataRetriever.setDataSource` throws `IllegalArgumentException` (or a bare
 `RuntimeException`), not `IOException`,** for a missing or unreadable source. Anything whose
 contract says "throws `IOException`" has to wrap it — `TransformerPreviewGenerator.probe`

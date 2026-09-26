@@ -175,6 +175,14 @@ class AndroidThumbnailer
                     retriever.setDataSource(context, uri)
                     val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
                     pickPosterFrame(retriever, posterFrameCandidatesUs(durationMs))
+                } catch (e: RuntimeException) {
+                    // A missing or unreadable source makes MediaMetadataRetriever throw
+                    // IllegalArgumentException / RuntimeException ("could not access
+                    // content://..."), never IOException -- but IOException is the contract
+                    // callers rely on: RepairRepository only falls back to the server copy when
+                    // the local file "can no longer be opened" (an IOException), so without this
+                    // a video whose local file was gone failed the whole repair instead.
+                    throw IOException("cannot read $contentUri: ${e.message}", e)
                 } finally {
                     retriever.release()
                 }

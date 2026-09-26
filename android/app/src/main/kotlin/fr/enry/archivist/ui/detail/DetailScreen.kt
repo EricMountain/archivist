@@ -659,7 +659,7 @@ private fun OriginalOverlay(
                     val isVideo = state.mime.startsWith("video/")
                     val bitmap =
                         remember(state.bytes, isVideo) {
-                            if (isVideo) null else decodeOrientedBitmap(state.bytes)
+                            if (isVideo) null else state.bytes?.let { decodeOrientedBitmap(it) }
                         }
                     var scale by remember { mutableFloatStateOf(1f) }
                     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -680,7 +680,7 @@ private fun OriginalOverlay(
                             // No pinch-zoom here -- PlayerView owns its own touch
                             // surface (playback controls, scrubbing), and there's no
                             // "zoomed video" concept the way there is for a still image.
-                            VideoPlayer(bytes = state.bytes, ext = state.ext, modifier = Modifier.fillMaxSize())
+                            state.file?.let { VideoPlayer(file = it, modifier = Modifier.fillMaxSize()) }
                         } else if (bitmap != null) {
                             // Same pinch-zoom as ZoomableThumb (see detectPinchZoom's
                             // doc) -- this is the actual "zoom the original" behavior

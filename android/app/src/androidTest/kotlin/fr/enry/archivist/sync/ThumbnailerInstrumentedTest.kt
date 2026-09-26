@@ -55,6 +55,20 @@ class ThumbnailerInstrumentedTest {
             }
         }
 
+    /** Repair falls back to the server copy only on an `IOException`. A video whose local file
+     * is gone used to surface `MediaMetadataRetriever`'s `IllegalArgumentException` instead, so
+     * the fallback never ran and the repair just failed ("could not access content://..."). */
+    @Test
+    fun aMissingVideoSourceFailsWithAnIOExceptionSoRepairCanFallBack() {
+        val missing = android.net.Uri.fromFile(java.io.File(context.cacheDir, "no-such-video.mp4")).toString()
+        try {
+            runBlocking { thumbnailer.generate(missing, "video/mp4") }
+            org.junit.Assert.fail("expected an IOException")
+        } catch (expected: java.io.IOException) {
+            // fine
+        }
+    }
+
     @Test
     fun neverUpscalesASourceSmallerThanEveryRung() =
         runBlocking {

@@ -22,6 +22,9 @@ import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.launch
 import androidx.lifecycle.ViewModel
+import java.io.File
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -114,7 +117,21 @@ sealed interface OriginalUiState {
      * list at render time) so [fr.enry.archivist.ui.detail.OriginalOverlay] can tell a
      * video rendition from an image one, and show its file name, without needing the
      * rendition itself in scope. */
-    data class Ready(val bytes: ByteArray, val mime: String, val ext: String, val fileName: String) : OriginalUiState
+    data class Ready(
+        /** A still image, held whole. `null` for a video, which lives in [file] instead. */
+        val bytes: ByteArray?,
+        val mime: String,
+        val ext: String,
+        val fileName: String,
+        /** A video's decrypted plaintext, streamed to a private cache file rather than held in
+         * memory (a phone video can be hundreds of MB -- that OOM'd the app). The player that
+         * shows it deletes it when it leaves the screen. */
+        val file: File? = null,
+    ) : OriginalUiState {
+        init {
+            require(bytes != null || file != null) { "an original needs bytes or a file" }
+        }
+    }
 
     data class Error(val message: String) : OriginalUiState
 }
@@ -138,6 +155,7 @@ class DetailViewModel
         private val takenAtRepository: TakenAtRepository,
         private val rotateRepository: RotateRepository,
         instanceStore: InstanceStore,
+        @ApplicationContext private val context: Context,
     ) : ViewModel() {
         val photos: StateFlow<List<PhotoEntity>> =
             photoRepository.observeTimeline()
@@ -186,8 +204,15 @@ class DetailViewModel
             viewModelScope.launch {
                 val state =
                     try {
-                        val bytes = photoDetailRepository.downloadOriginal(photoId, encDek, rendition)
-                        OriginalUiState.Ready(bytes, mime = rendition.mime, ext = rendition.ext, fileName = rendition.fileName())
+                        if (rendition.mime.startsWith("video/")) {
+                            context.cacheDir.mkdirs()
+                            val file = File.createTempFile("original-", ".${rendition.ext}", context.cacheDir)
+                            photoDetailRepository.downloadOriginalToFile(photoId, encDek, rendition, file)
+                            OriginalUiState.Ready(null, mime = rendition.mime, ext = rendition.ext, fileName = rendition.fileName(), file = file)
+                        } else {
+                            val bytes = photoDetailRepository.downloadOriginal(photoId, encDek, rendition)
+                            OriginalUiState.Ready(bytes, mime = rendition.mime, ext = rendition.ext, fileName = rendition.fileName())
+                        }
                     } catch (e: IOException) {
                         OriginalUiState.Error(e.message ?: "couldn't download the original")
                     } catch (e: HttpException) {

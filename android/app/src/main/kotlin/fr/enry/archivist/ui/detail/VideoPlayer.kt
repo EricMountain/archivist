@@ -11,33 +11,22 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import java.io.File
-import java.io.FileOutputStream
 
 /**
- * Plays a video original whose whole plaintext [bytes] were already decrypted by
- * [fr.enry.archivist.data.repo.PhotoDetailRepository.downloadOriginal] — see
- * [OriginalUiState.Ready]. ExoPlayer plays from a [Uri], not a byte array, so this writes
- * the plaintext once to a private cache file rather than adding a custom `DataSource`
- * just to avoid that; matches [OriginalOverlay]'s own image path, which likewise decodes
- * the whole in-memory byte array synchronously (`BitmapFactory.decodeByteArray`) rather
- * than streaming. The file lives under `cacheDir` (never `filesDir`/external storage) and
- * is deleted as soon as the player is released, so a decrypted plaintext frame never
- * outlives this screen on disk.
+ * Plays a video original whose plaintext was streamed to [file] by
+ * [fr.enry.archivist.data.repo.PhotoDetailRepository.downloadOriginalToFile] -- see
+ * [OriginalUiState.Ready]. The file lives under `cacheDir` (never `filesDir`/external storage)
+ * and is deleted as soon as the player is released, so a decrypted plaintext frame never
+ * outlives this screen on disk. (This used to take the whole plaintext as a `ByteArray` and
+ * write it out itself, which is what ran the app out of memory on a large video.)
  */
 @Composable
 internal fun VideoPlayer(
-    bytes: ByteArray,
-    ext: String,
+    file: File,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
 
-    val file =
-        remember(bytes) {
-            File.createTempFile("original-", ".$ext", context.cacheDir).apply {
-                FileOutputStream(this).use { it.write(bytes) }
-            }
-        }
     val exoPlayer =
         remember(file) {
             ExoPlayer.Builder(context).build().apply {

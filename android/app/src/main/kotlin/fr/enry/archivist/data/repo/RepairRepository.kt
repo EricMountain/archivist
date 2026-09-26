@@ -233,10 +233,13 @@ class RepairRepository
             encDek: String,
             rendition: RenditionSummary,
         ): Derived {
-            val bytes = photoDetailRepository.downloadOriginal(photoId, encDek, rendition)
+            // Streamed straight to the temp file, never through a ByteArray: a phone video can be
+            // hundreds of MB, and holding it (plus its ciphertext) in memory killed the app with
+            // an OutOfMemoryError -- "repairing some videos crashes". See downloadOriginalToFile.
+            context.cacheDir.mkdirs()
             val file = File.createTempFile("repair-", ".${rendition.ext}", context.cacheDir)
             return try {
-                withContext(Dispatchers.IO) { file.writeBytes(bytes) }
+                photoDetailRepository.downloadOriginalToFile(photoId, encDek, rendition, file)
                 derive(Uri.fromFile(file).toString(), rendition.mime)
             } finally {
                 file.delete()

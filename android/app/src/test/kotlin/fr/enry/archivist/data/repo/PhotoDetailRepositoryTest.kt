@@ -235,4 +235,50 @@ class PhotoDetailRepositoryTest {
     // extra certificate bootstrapping this test doesn't set up. Same gap as
     // `fr.enry.archivist.crypto.EncryptedImageFetcher`, which has no JVM test either --
     // see this step's STATUS.md note.
+
+    // ------------------------------------------------------------------
+    // downloadOriginal holds a rendition in memory, so it must refuse a big one with an ordinary
+    // error *before* touching the network -- a 128 MiB buffer allocation is what OOM-killed the
+    // app when repairing large videos.
+    // ------------------------------------------------------------------
+
+    private fun bigRendition(plainBytes: Long) =
+        RenditionSummary(
+            renditionId = "r-big",
+            role = "display",
+            path = "camera/VID_BIG.mp4",
+            ext = "mp4",
+            mime = "video/mp4",
+            s3Key = "raw/o/$photoId/r-big",
+            contentHash = "hmac-sha256:big",
+            bytes = plainBytes + 1_000,
+            plainBytes = plainBytes,
+            width = 3840,
+            height = 2160,
+            encIv = null,
+            encChunkSize = 1_048_576,
+            addedAt = "2019-11-22T10:00:00.000Z",
+        )
+
+    @Test
+    fun `downloadOriginal refuses a rendition too large to hold in memory, without any network call`() =
+        runTest {
+            connectInstance()
+            masterKeyHolder.set(MasterKey.of(ByteArray(32) { it.toByte() }))
+            val before = server.requestCount
+
+            val error =
+                org.junit.jupiter.api.Assertions.assertThrows(java.io.IOException::class.java) {
+                    kotlinx.coroutines.runBlocking { repository.downloadOriginal(photoId, "irrelevant", bigRendition(300L * 1024 * 1024)) }
+                }
+
+            org.junit.jupiter.api.Assertions.assertTrue(error.message!!.contains("too large"), error.message)
+            org.junit.jupiter.api.Assertions.assertEquals(before, server.requestCount)
+        }
+
+    @Test
+    fun `the in-memory limit sits well under what the heap can hold`() {
+        // ciphertext + plaintext + a decoded bitmap must coexist on a ~256 MB heap.
+        org.junit.jupiter.api.Assertions.assertTrue(MAX_IN_MEMORY_ORIGINAL_BYTES * 3 < 256L * 1024 * 1024)
+    }
 }
