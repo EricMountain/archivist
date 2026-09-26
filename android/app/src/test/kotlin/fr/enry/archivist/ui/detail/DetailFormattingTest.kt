@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test
 
 /** Plan step 2.12's pure formatting helpers, pulled out to `internal` visibility
  * specifically so they're testable with no Compose/Android framework involved — same
- * convention as `TimelineViewModel.localDate()`/`toTimelineItems()`. */
+ * convention as `PhotoEntity.localDate()`. */
 class DetailFormattingTest {
     private fun rendition(
         renditionId: String,

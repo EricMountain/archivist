@@ -4,13 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
-import androidx.paging.insertSeparators
-import androidx.paging.map
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.TimelineKey
-import fr.enry.archivist.data.local.db.localDate
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
 import fr.enry.archivist.data.repo.TimelineBounds
@@ -41,41 +38,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
-
-/** One grid cell — either a photo or a date header inserted ahead of the first photo
- * of a new *local* day (`tzOffsetMin`, not UTC — plan step 2.11's own "Done when").
- * [Header.anchorPhotoId] — the photoId of the photo immediately following this header —
- * exists purely so the grid can give each header a globally unique key (see
- * `TimelineScreen.kt`): the same calendar [Header.date] can legitimately recur
- * *non-adjacently* in the list, because the list is sorted by UTC `takenAt` but grouped
- * by *local* day, and those two orderings aren't monotonic with each other once photos
- * carry different `tzOffsetMin` values (e.g. one photo at UTC 23:30 with a +02:00
- * offset lands on the *next* local day, sorting ahead of an earlier-UTC photo that's
- * still on the *previous* local day) — confirmed for real, not hypothetically: a
- * 1,000-photo live run against the `dev` instance crashed Compose with "Key
- * 'header-2026-08-22' was already used" the first time two same-date headers landed
- * in one loaded window, before this field existed. */
-sealed interface TimelineItem {
-    data class Photo(val photo: PhotoEntity) : TimelineItem
-
-    data class Header(val date: LocalDate, val anchorPhotoId: String) : TimelineItem
-}
-
-/** Inserts a [TimelineItem.Header] ahead of the first photo of each new *local* day —
- * pulled out of [TimelineViewModel] as a standalone function so it's testable directly
- * against a fake [PagingSource][androidx.paging.PagingSource]/`Pager`, with no
- * `PhotoRepository`/Hilt/Room in the loop. */
-internal fun Flow<PagingData<PhotoEntity>>.toTimelineItems(): Flow<PagingData<TimelineItem>> =
-    map { pagingData ->
-        pagingData
-            .map<PhotoEntity, TimelineItem> { TimelineItem.Photo(it) }
-            .insertSeparators { before, after ->
-                val afterPhoto = (after as? TimelineItem.Photo)?.photo ?: return@insertSeparators null
-                val afterDate = afterPhoto.localDate()
-                val beforeDate = (before as? TimelineItem.Photo)?.photo?.localDate()
-                if (beforeDate != afterDate) TimelineItem.Header(afterDate, afterPhoto.photoId) else null
-            }
-    }
 
 /**
  * Plan step 2.11. [locked] gates the whole screen off the grid the moment the master
@@ -147,10 +109,9 @@ class TimelineViewModel
         private var livePagerKey: TimelineKey? = null
 
         @OptIn(ExperimentalCoroutinesApi::class)
-        val timeline: Flow<PagingData<TimelineItem>> =
+        val timeline: Flow<PagingData<PhotoEntity>> =
             pagerGeneration
                 .flatMapLatest { photoRepository.timeline(it.initialKey) }
-                .toTimelineItems()
                 .cachedIn(viewModelScope)
 
         /** The fast-scroll range — `null` until the first successful fetch, or if it

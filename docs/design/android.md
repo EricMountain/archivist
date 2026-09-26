@@ -360,8 +360,13 @@ battery, so "only while charging" should be genuinely offered rather than buried
 
 ## Screens
 
-* **Timeline** — the justified grid, Paging 3 over Room, date headers by *local* day
-  using `tzOffsetMin`, not UTC.
+* **Timeline** — an immersive (system bars hidden, swipe from an edge to reveal), edge-to-edge
+  grid of squares, Paging 3 over Room, flowing continuously with no header rows. While the
+  position is changing, and for 2 s after, semi-transparent date bubbles float at the top-left
+  of a row when its date differs from the row above's; the topmost row's bubble is sticky and
+  is pushed off by the next. A row's date is the latest *local* date in it (via
+  `tzOffsetMin`, not UTC). The menu is a floating `⋮` button at top-end; the fast-scroll rail
+  starts below it.
 * **Photo detail** — 2048 thumbnail, pinch-zoom, original on demand, rendition list
   ("JPEG · RAW") with per-rendition delete.
 * **Search** — facet browse (labels, cameras, devices, years). No free text; the

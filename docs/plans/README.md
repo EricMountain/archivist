@@ -6,6 +6,7 @@ Ordered, implementable plans. Work through them in sequence.
 | --- | --- |
 | [01-aws-backend.md](01-aws-backend.md) | Every AWS resource: Cognito, API Gateway, Lambdas, CloudFront, plus the shared key-building library and the crypto format spec |
 | [02-android-mvp.md](02-android-mvp.md) | Archivist MVP: connect, sign in, back up, browse |
+| [timeline-date-bubbles.md](timeline-date-bubbles.md) | Follow-up to 2.11: immersive, continuously-flowing grid with floating date bubbles and a floating menu |
 
 **[STATUS.md](STATUS.md) tracks progress against both, step by step.** Read it before
 starting work here; update it in the same change when you finish. It is the source of

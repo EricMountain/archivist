@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.paging.compose.LazyPagingItems
@@ -141,12 +142,16 @@ import kotlinx.coroutines.withTimeoutOrNull
 @Composable
 fun TimelineScrollbar(
     gridState: LazyGridState,
-    items: LazyPagingItems<TimelineItem>,
+    items: LazyPagingItems<PhotoEntity>,
     bounds: TimelineBounds?,
     histogram: TimelineHistogram?,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
+    // Where the rail's track begins, measured from the top of this composable: keeps the
+    // floating menu button off the rail's "present" end, and touches beside the button
+    // (above this) out of the gesture.
+    trackTopInset: Dp = 0.dp,
     content: @Composable () -> Unit,
 ) {
     // Density-weighted once the histogram is cached, linear in time until then — see
@@ -314,15 +319,17 @@ fun TimelineScrollbar(
     // events (Initial pass) before its children and consumes them only once a long press
     // has confirmed, so everything else reaches the grid untouched.
     Box(
-        modifier.pointerInput(scale) {
+        modifier.pointerInput(scale, trackTopInset) {
             val stripStartPx = { size.width - HIT_TARGET_WIDTH.toPx() }
+            // Gestures arrive in this outer Box's coordinates; the track starts lower.
+            val trackTopPx = trackTopInset.toPx()
             detectFastScrollGesture(
-                inStrip = { it.x >= stripStartPx() },
+                inStrip = { it.x >= stripStartPx() && it.y >= trackTopPx },
                 tapEnabled = { peekingNow },
                 onTap = { y ->
                     // What's drawn at the tap is warped around the anchor the rail is
                     // showing, so select the underlying position that tick stands for.
-                    val f = fractionAt(y, trackHeightPx)
+                    val f = fractionAt(y - trackTopPx, trackHeightPx)
                     val anchor = lingering?.anchor ?: idleFraction
                     val selected = anchor?.let { lensUnwarp(f, it) } ?: f
                     val day = scale.dayAt(selected)
@@ -333,7 +340,7 @@ fun TimelineScrollbar(
                 onSwipe = { stripSwipe = true },
                 onRelease = { if (!gridState.isScrollInProgress) stripSwipe = false },
                 onStart = { y ->
-                    val f = fractionAt(y, trackHeightPx)
+                    val f = fractionAt(y - trackTopPx, trackHeightPx)
                     heldRaw = f
                     lingering = null
                     stripSwipe = false
@@ -357,7 +364,7 @@ fun TimelineScrollbar(
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
                 onDrag = { y ->
-                    val f = fractionAt(y, trackHeightPx)
+                    val f = fractionAt(y - trackTopPx, trackHeightPx)
                     heldRaw = f
                     val now = System.nanoTime()
                     val elapsedMs = (now - lastDragNanos) / 1_000_000f
@@ -397,7 +404,7 @@ fun TimelineScrollbar(
     ) {
         content()
 
-        Box(Modifier.align(Alignment.TopEnd).fillMaxHeight().width(RAIL_WIDTH)) {
+        Box(Modifier.align(Alignment.TopEnd).padding(top = trackTopInset).fillMaxHeight().width(RAIL_WIDTH)) {
         if (peeking) {
             TimelineRail(scale = scale, trackHeightPx = trackHeightPx, anchor = visualAnchor)
         }
@@ -845,18 +852,17 @@ private suspend fun PointerInputScope.detectFastScrollGesture(
     }
 }
 
-/** The idle thumb's own row: nearest photo at or after [startIndex] (skipping a
- * [TimelineItem.Header], which isn't a photo), read via [LazyPagingItems.peek] so drawing
+/** The idle thumb's own row: nearest loaded photo at or after [startIndex]
+ * (the first non-placeholder in a 3-item window), read via [LazyPagingItems.peek] so drawing
  * a scrollbar never triggers a page load. The whole entity rather than its `takenAt`,
  * because placing the thumb on a density-weighted rail needs the photo's *day*, and that
  * depends on its own recorded offset too. */
 internal fun nearestPhoto(
-    items: LazyPagingItems<TimelineItem>,
+    items: LazyPagingItems<PhotoEntity>,
     startIndex: Int,
 ): PhotoEntity? {
     for (i in startIndex until minOf(startIndex + 3, items.itemCount)) {
-        val item = items.peek(i) ?: continue
-        if (item is TimelineItem.Photo) return item.photo
+        items.peek(i)?.let { return it }
     }
     return null
 }

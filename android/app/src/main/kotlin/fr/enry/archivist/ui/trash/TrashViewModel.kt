@@ -20,7 +20,7 @@ import kotlinx.coroutines.launch
 import retrofit2.HttpException
 
 /** One `GET /trash` entry, trimmed to what [TrashScreen] shows — same shape as
- * [fr.enry.archivist.ui.timeline.TimelineItem.Photo], minus the fields the trash list
+ * [fr.enry.archivist.data.local.db.PhotoEntity], minus the fields the trash list
  * doesn't need, plus the blocked-re-upload warning fields. */
 data class TrashItem(
     val photoId: String,

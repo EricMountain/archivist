@@ -1,17 +1,32 @@
 package fr.enry.archivist.ui.timeline
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.runtime.DisposableEffect
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -22,7 +37,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,8 +69,6 @@ import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.onboarding.PermissionOnboardingScreen
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
 import androidx.compose.runtime.snapshotFlow
 import fr.enry.archivist.ui.preview.GRID_PREVIEW_SETTLE_MS
 import fr.enry.archivist.ui.preview.VideoPreview
@@ -100,9 +112,13 @@ private const val JUMP_SCROLL_SETTLE_WINDOW_MS = 2000L
 @Composable
 fun TimelineScreen(
     onSessionEnded: () -> Unit,
+    contentPadding: PaddingValues = PaddingValues(),
     modifier: Modifier = Modifier,
     viewModel: TimelineViewModel = hiltViewModel(),
 ) {
+    // Every branch but the grid's own CONTENT state sits inside the caller's insets; the
+    // grid goes edge to edge, in immersive mode (see [TimelineGrid]).
+    val padded = modifier.padding(contentPadding)
     val locked by viewModel.locked.collectAsStateWithLifecycle()
 
     // hiltViewModel() here resolves to the *same* EnrolmentViewModel instance the
@@ -145,7 +161,7 @@ fun TimelineScreen(
     // continuously instead.
     val enrolmentIsSpinning = locked && (enrolmentState is EnrolmentUiState.Checking || enrolmentState is EnrolmentUiState.Unlocked)
     if (locked && !enrolmentIsSpinning) {
-        EnrolmentScreen(onUnlocked = {}, modifier = modifier, viewModel = enrolmentViewModel)
+        EnrolmentScreen(onUnlocked = {}, modifier = padded, viewModel = enrolmentViewModel)
         return
     }
 
@@ -172,7 +188,7 @@ fun TimelineScreen(
     // which only compiles if `PermissionOnboardingScreen` is `inline`, and it isn't (no
     // need to be: a labelled return out of just this lambda has the identical effect,
     // since the wrapper call is already the last thing `TimelineScreen` does).
-    PermissionOnboardingScreen(modifier = modifier) {
+    PermissionOnboardingScreen(modifier = padded) {
         // Collected unconditionally -- even while locked, during `enrolmentIsSpinning`
         // -- for the same reason: per `TimelineViewModel.locked`'s own doc, the lock
         // exists purely so thumbnails (which *do* need the master key) are never shown
@@ -238,12 +254,12 @@ fun TimelineScreen(
         // `enrolmentIsSpinning`) once per lock cycle too -- not something that recurs
         // mid-browsing with the top bar already up.
         if (enrolmentIsSpinning || contentState == TimelineContentState.LOADING) {
-            Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            Box(padded.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             return@PermissionOnboardingScreen
         }
 
         // Hoisted above the selectedPhotoId branch below (rather than left for
-        // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so
+        // LazyVerticalGrid to create its own default one down in TimelinePhotoGrid) so
         // it survives a round trip through DetailScreen: a composable that leaves
         // composition entirely -- which TimelineGrid does whenever DetailScreen is
         // showing, since the `return` below skips over it -- has its own `remember`ed
@@ -332,7 +348,7 @@ fun TimelineScreen(
             // handled independently of this navigation -- see
             // TimelineJumpCoordinator.stageAndAnnounceLanding's own doc -- so this stays the
             // plain "close the screen" it always was, with no repair-awareness needed here.
-            DetailScreen(initialPhoto = openPhoto, onBack = { selectedPhoto = null }, modifier = modifier)
+            DetailScreen(initialPhoto = openPhoto, onBack = { selectedPhoto = null }, modifier = padded)
             return@PermissionOnboardingScreen
         }
 
@@ -341,29 +357,16 @@ fun TimelineScreen(
         // toggle" pattern as selectedPhotoId above.
         var showSettings by remember { mutableStateOf(false) }
         if (showSettings) {
-            SettingsScreen(onBack = { showSettings = false }, onSessionEnded = onSessionEnded, modifier = modifier)
+            SettingsScreen(onBack = { showSettings = false }, onSessionEnded = onSessionEnded, modifier = padded)
             return@PermissionOnboardingScreen
         }
 
-        Column(modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                // A 3-dot menu rather than a bare "Settings" button — for consistency with
-                // DetailScreen's own top bar (plan step 2.12's repair/delete menu), even
-                // though Settings is currently its only entry.
-                var showMenu by remember { mutableStateOf(false) }
-                Box {
-                    TextButton(onClick = { showMenu = true }) { Text("⋮") }
-                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Settings") },
-                            onClick = {
-                                showMenu = false
-                                showSettings = true
-                            },
-                        )
-                    }
-                }
-            }
+        // The grid is edge to edge and immersive only while it is CONTENT; the spinner,
+        // error and empty states keep their normal bars, so the menu button clears them.
+        val cutoutTop = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
+        val topInset = if (contentState == TimelineContentState.CONTENT) cutoutTop else contentPadding.calculateTopPadding()
+
+        Box(modifier.fillMaxSize()) {
             TimelineGrid(
                 items = items,
                 host = host,
@@ -371,14 +374,46 @@ fun TimelineScreen(
                 bounds = bounds,
                 histogram = histogram,
                 contentState = contentState,
+                topInset = topInset,
+                contentPadding = contentPadding,
                 onPhotoClick = { selectedPhoto = it },
                 onScrub = viewModel::onScrubTo,
                 onCommit = viewModel::onJumpCommitted,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxSize(),
             )
+            // A floating 3-dot menu rather than a bare "Settings" button — for consistency
+            // with DetailScreen's own top bar (plan step 2.12's repair/delete menu), even
+            // though Settings is currently its only entry. A text glyph: the project has
+            // no material-icons dependency.
+            var showMenu by remember { mutableStateOf(false) }
+            Box(Modifier.align(Alignment.TopEnd).padding(top = topInset + MENU_MARGIN, end = MENU_MARGIN)) {
+                Box(
+                    Modifier
+                        .size(MENU_BUTTON_SIZE)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+                        .clickable { showMenu = true }
+                        .semantics { contentDescription = "More options" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("⋮", style = MaterialTheme.typography.titleLarge)
+                }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Settings") },
+                        onClick = {
+                            showMenu = false
+                            showSettings = true
+                        },
+                    )
+                }
+            }
         }
     }
 }
+
+private val MENU_MARGIN = 8.dp
+private val MENU_BUTTON_SIZE = 40.dp
 
 /**
  * Where [landing] currently sits in [items] — a bounded [LazyPagingItems.peek] scan, so
@@ -393,13 +428,12 @@ fun TimelineScreen(
  * scrolls to whatever this resolves to rather than hardcoding index `0`.
  */
 private fun landingIndex(
-    items: LazyPagingItems<TimelineItem>,
+    items: LazyPagingItems<PhotoEntity>,
     landing: TimelineKey?,
 ): Int? {
     if (landing == null) return 0
     for (i in 0 until items.itemCount) {
-        val item = items.peek(i)
-        if (item is TimelineItem.Photo && item.photo.photoId == landing.photoId) return i
+        if (items.peek(i)?.photoId == landing.photoId) return i
     }
     return null
 }
@@ -463,7 +497,7 @@ internal fun timelineContentState(
 
 @Composable
 private fun TimelineGrid(
-    items: LazyPagingItems<TimelineItem>,
+    items: LazyPagingItems<PhotoEntity>,
     host: String?,
     gridState: LazyGridState,
     bounds: TimelineBounds?,
@@ -474,6 +508,10 @@ private fun TimelineGrid(
     // TimelineContentState's exhaustiveness and as a defensive fallback, not because
     // this branch is expected to run in practice.
     contentState: TimelineContentState,
+    // Top inset of the CONTENT grid (display cutout only, since the bars are hidden).
+    topInset: Dp,
+    // For the non-grid states, which keep their normal bars and so their normal padding.
+    contentPadding: PaddingValues,
     onPhotoClick: (PhotoEntity) -> Unit,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
@@ -481,10 +519,10 @@ private fun TimelineGrid(
 ) {
     when (contentState) {
         TimelineContentState.LOADING ->
-            Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            Box(modifier.padding(contentPadding).fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
 
         TimelineContentState.ERROR ->
-            Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(modifier.padding(contentPadding).fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Couldn't load your photos", style = MaterialTheme.typography.titleMedium)
                     Text(
@@ -497,7 +535,7 @@ private fun TimelineGrid(
             }
 
         TimelineContentState.EMPTY ->
-            Box(modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+            Box(modifier.padding(contentPadding).fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
                     "No photos yet. Back up a folder in Settings to get started.",
                     style = MaterialTheme.typography.bodyLarge,
@@ -516,6 +554,17 @@ private fun TimelineGrid(
                     view.isVerticalScrollBarEnabled = false
                     view.isHorizontalScrollBarEnabled = false
                 }
+                // Immersive while the grid itself shows. This branch leaves composition
+                // whenever Detail or Settings opens, so onDispose brings the bars back
+                // for them. A swipe from an edge reveals them transiently, over the
+                // content, without re-laying anything out.
+                DisposableEffect(view) {
+                    val window = view.context.findActivity()?.window
+                    val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+                    controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller?.hide(WindowInsetsCompat.Type.systemBars())
+                    onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+                }
                 TimelineScrollbar(
                     gridState = gridState,
                     items = items,
@@ -524,18 +573,25 @@ private fun TimelineGrid(
                     onScrub = onScrub,
                     onCommit = onCommit,
                     modifier = Modifier.fillMaxSize(),
+                    trackTopInset = topInset + MENU_MARGIN + MENU_BUTTON_SIZE + MENU_MARGIN,
                 ) {
-                    TimelineItemGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
+                    Box(Modifier.fillMaxSize()) {
+                        TimelinePhotoGrid(items, host, gridState, topInset, onPhotoClick, Modifier.fillMaxSize())
+                        // Above the grid, below the rail (which the scrollbar draws after
+                        // this slot).
+                        DateBubbleOverlay(items, gridState, topInset, Modifier.fillMaxSize())
+                    }
                 }
             }
     }
 }
 
 @Composable
-private fun TimelineItemGrid(
-    items: LazyPagingItems<TimelineItem>,
+private fun TimelinePhotoGrid(
+    items: LazyPagingItems<PhotoEntity>,
     host: String?,
     gridState: LazyGridState,
+    topInset: Dp,
     onPhotoClick: (PhotoEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -558,7 +614,7 @@ private fun TimelineItemGrid(
                 if (index !in 0 until items.itemCount) {
                     null
                 } else {
-                    (items.peek(index) as? TimelineItem.Photo)?.photo?.takeIf { it.preview != null }
+                    items.peek(index)?.takeIf { it.preview != null }
                 }
             playingIds =
                 selectPlayingIndices(
@@ -572,40 +628,27 @@ private fun TimelineItemGrid(
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 96.dp),
         state = gridState,
+        contentPadding = PaddingValues(top = topInset),
         modifier = modifier,
     ) {
         items(
             count = items.itemCount,
-            // A Header's date alone isn't a unique key: the same calendar date can
-            // recur non-adjacently in the list (UTC sort order vs. local-day
-            // grouping aren't monotonic once tzOffsetMin varies between photos) --
-            // see TimelineItem.Header's own doc for why anchorPhotoId exists.
-            key = items.itemKey { item -> if (item is TimelineItem.Header) "header-${item.anchorPhotoId}" else (item as TimelineItem.Photo).photo.photoId },
-            contentType = items.itemContentType { item -> if (item is TimelineItem.Header) "header" else "photo" },
-            span = { index -> if (items.peek(index) is TimelineItem.Header) GridItemSpan(maxLineSpan) else GridItemSpan(1) },
+            key = items.itemKey { it.photoId },
+            contentType = items.itemContentType { "photo" },
         ) { index ->
-            when (val item = items[index]) {
-                is TimelineItem.Header -> DateHeader(item)
-                is TimelineItem.Photo ->
-                    PhotoCell(
-                        item.photo,
-                        host,
-                        playPreview = item.photo.photoId in playingIds,
-                        onClick = { onPhotoClick(item.photo) },
-                    )
-                null -> PlaceholderCell()
+            val photo = items[index]
+            if (photo != null) {
+                PhotoCell(
+                    photo,
+                    host,
+                    playPreview = photo.photoId in playingIds,
+                    onClick = { onPhotoClick(photo) },
+                )
+            } else {
+                PlaceholderCell()
             }
         }
     }
-}
-
-@Composable
-private fun DateHeader(header: TimelineItem.Header) {
-    Text(
-        text = header.date.format(HEADER_FORMATTER),
-        style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-    )
 }
 
 /** Prefers [GRID_THUMB_SIZE]; falls back to the smallest available rung for an asset
@@ -663,4 +706,10 @@ private fun PlaceholderCell(onClick: (() -> Unit)? = null) {
     )
 }
 
-private val HEADER_FORMATTER = DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG)
+/** The hosting [android.app.Activity], unwrapping any [ContextWrapper] on the way. */
+private tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }

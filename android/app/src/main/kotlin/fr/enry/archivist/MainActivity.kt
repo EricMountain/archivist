@@ -82,7 +82,7 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                     // right after sign-in, and never again for the rest of the process.
                     TimelineScreen(
                         onSessionEnded = { signedIn = false },
-                        modifier = Modifier.padding(innerPadding),
+                        contentPadding = innerPadding,
                     )
                 } else {
                     SignInScreen(
