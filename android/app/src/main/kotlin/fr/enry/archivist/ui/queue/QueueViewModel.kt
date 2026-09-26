@@ -7,6 +7,7 @@ import fr.enry.archivist.data.local.SyncSettingsStore
 import fr.enry.archivist.data.local.db.UploadQueueDao
 import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
+import fr.enry.archivist.data.local.db.failedRowCutoff
 import fr.enry.archivist.sync.DeviceStateMonitor
 import fr.enry.archivist.sync.QueueIdleReason
 import fr.enry.archivist.sync.UploadScheduler
@@ -65,6 +66,11 @@ class QueueViewModel
                     idleReason = if (active) queueIdleReason(settings, deviceState) else QueueIdleReason.NONE,
                 )
             }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), QueueUiState(emptyList(), QueueIdleReason.NONE))
+
+        init {
+            // Expire long-dead permanent failures (see UploadQueueDao.deleteFailedBefore).
+            viewModelScope.launch { uploadQueueDao.deleteFailedBefore(failedRowCutoff()) }
+        }
 
         fun retry(id: Long) {
             viewModelScope.launch {

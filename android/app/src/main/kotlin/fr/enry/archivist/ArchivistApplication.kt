@@ -17,6 +17,7 @@ import fr.enry.archivist.crypto.EncryptedImageFetcher
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.local.db.UploadQueueDao
+import fr.enry.archivist.data.local.db.failedRowCutoff
 import fr.enry.archivist.sync.UploadScheduler
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -62,6 +63,7 @@ class ArchivistApplication : Application(), Configuration.Provider, SingletonIma
         CoroutineScope(Dispatchers.Default).launch {
             val holders = EntryPointAccessors.fromApplication(this@ArchivistApplication, MasterKeyHolderEntryPoint::class.java)
             holders.uploadScheduler().enqueueAll(holders.uploadQueueDao().getActiveIds())
+            holders.uploadQueueDao().deleteFailedBefore(failedRowCutoff())
         }
     }
 

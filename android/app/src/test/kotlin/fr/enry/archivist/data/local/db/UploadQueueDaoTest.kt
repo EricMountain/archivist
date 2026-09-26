@@ -132,4 +132,28 @@ class UploadQueueDaoTest {
             val all = dao.observeAll().first()
             assertEquals(listOf("content://media/2"), all.map { it.localUri })
         }
+
+    @Test
+    fun `deleteFailedBefore expires only old FAILED rows`() =
+        runTest {
+            val old = "2026-08-01T10:00:00.000Z"
+            val recent = "2026-08-30T10:00:00.000Z"
+            dao.insert(entry("content://media/1", state = UploadState.FAILED, createdAt = old))
+            dao.insert(entry("content://media/2", state = UploadState.FAILED, createdAt = recent))
+            dao.insert(entry("content://media/3", state = UploadState.PENDING, createdAt = old))
+
+            val removed = dao.deleteFailedBefore("2026-08-20T00:00:00.000Z")
+
+            assertEquals(1, removed)
+            assertEquals(
+                listOf("content://media/3", "content://media/2"), // ordered by createdAt
+                dao.observeAll().first().map { it.localUri },
+            )
+        }
+
+    @Test
+    fun `failedRowCutoff is the TTL before now`() {
+        val now = java.time.Instant.parse("2026-09-25T12:00:00Z")
+        assertEquals("2026-09-25T10:00:00Z", failedRowCutoff(now))
+    }
 }

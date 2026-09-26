@@ -8,6 +8,8 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 /**
  * Purely local — no server counterpart. Tracks one candidate file through
@@ -217,6 +219,22 @@ interface UploadQueueDao {
     @Query("DELETE FROM upload_queue WHERE state = :state")
     suspend fun deleteByState(state: UploadState)
 
+    /** Expires permanent failures (e.g. a 409/4xx rejection) nobody retried or dismissed:
+     * without this they sit in the queue forever. [cutoff] is an ISO-8601 UTC instant —
+     * fixed-width, so string comparison against [UploadQueueEntity.updatedAt] (stamped
+     * when the row failed) is chronological. Safe against re-queueing: the scanner's
+     * per-folder `skipBefore` cutoff keeps an already-scanned file from being picked up
+     * again. Returns the number of rows removed. */
+    @Query("DELETE FROM upload_queue WHERE state = 'FAILED' AND updatedAt < :cutoff")
+    suspend fun deleteFailedBefore(cutoff: String): Int
+
     @Query("DELETE FROM upload_queue")
     suspend fun clear()
 }
+
+/** How long a [UploadState.FAILED] row stays visible before being expired. */
+const val FAILED_ROW_TTL_HOURS = 2L
+
+/** ISO-8601 UTC cutoff before which a [UploadState.FAILED] row counts as expired. */
+fun failedRowCutoff(now: Instant = Instant.now()): String =
+    now.minus(FAILED_ROW_TTL_HOURS, ChronoUnit.HOURS).truncatedTo(ChronoUnit.MILLIS).toString()
