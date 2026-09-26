@@ -83,11 +83,13 @@ internal fun Flow<PagingData<PhotoEntity>>.toTimelineItems(): Flow<PagingData<Ti
  * `ArchivistApplication`'s own doc — per "Locked state" in android.md: the timeline is
  * metadata and renders fine with no key at all, so without this the app would look
  * healthy while every thumbnail failed to decrypt. This is also what actually fixes the
- * staleness plan step 2.5's own STATUS.md note flagged: `MainActivity`'s local
- * `unlocked` boolean never re-checks [MasterKeyHolder] after the first unlock, but this
- * screen does, continuously — see [TimelineScreen]'s own `locked` branch for how it
- * forces [fr.enry.archivist.ui.onboarding.EnrolmentViewModel]
- * to re-check rather than trusting a possibly-stale cached instance.
+ * staleness plan step 2.5's own STATUS.md note originally flagged against a one-shot
+ * `unlocked` boolean in `MainActivity` that never re-checked [MasterKeyHolder] after the
+ * first unlock (since removed there entirely — `MainActivity` now defers to this
+ * [locked] StateFlow for the whole signed-in experience, not a local flag of its own) —
+ * see [TimelineScreen]'s own `locked` branch for how it forces
+ * [fr.enry.archivist.ui.onboarding.EnrolmentViewModel] to re-check rather than trusting
+ * a possibly-stale cached instance.
  */
 @HiltViewModel
 class TimelineViewModel

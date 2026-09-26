@@ -50,7 +50,9 @@ import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.ui.detail.DetailScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
+import fr.enry.archivist.ui.onboarding.EnrolmentUiState
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
+import fr.enry.archivist.ui.onboarding.PermissionOnboardingScreen
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -83,7 +85,16 @@ private const val JUMP_SCROLL_SETTLE_WINDOW_MS = 2000L
  * [EnrolmentScreen] wholesale for the locked state's "unlock action" (its own
  * `determineStep()` already tries a silent unlock first) rather than building a second
  * unlock ceremony — see [TimelineViewModel.locked]'s doc for why this screen is what
- * actually checks the master key continuously, unlike `MainActivity`'s own gate.
+ * actually checks the master key continuously, rather than trusting a one-shot flag
+ * from further up the tree.
+ *
+ * `MainActivity`'s `ArchivistApp` mounts this screen exactly once, right after sign-in,
+ * and never unmounts it again for the rest of the process (see its own doc for why that
+ * used to be split into a separate `unlocked` boolean gating a second, separately-
+ * mounted `EnrolmentScreen`, and why that split was removed 2026-09-26): everything
+ * from "signed in but not yet unlocked" through "unlocked and loaded" is this screen's
+ * own concern from here on, including the `PermissionOnboardingScreen` gate further
+ * down, not something the caller decides by remounting a different screen underneath.
  */
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 @Composable
@@ -93,183 +104,279 @@ fun TimelineScreen(
     viewModel: TimelineViewModel = hiltViewModel(),
 ) {
     val locked by viewModel.locked.collectAsStateWithLifecycle()
-    if (locked) {
-        // hiltViewModel() here resolves to the *same* EnrolmentViewModel instance the
-        // original sign-in flow created -- this app has no navigation library, so every
-        // call site is keyed only by class name against MainActivity's own
-        // ViewModelStore (see AGENTS.md's "hiltViewModel() ... resolves to the
-        // Activity's own ViewModelStore" note, same bug class as DetailViewModel's
-        // dismissDelete()). Its uiState can therefore still read Unlocked from *before*
-        // this lock, and init{} won't rerun on a cached instance -- so this screen has
-        // to force a fresh checkStep() itself rather than trust the stale state, or the
-        // app hangs on a spinner forever with nothing left to re-check it. checkStep()
-        // is what actually re-populates MasterKeyHolder; onUnlocked is deliberately a
-        // no-op here since TimelineViewModel.locked flipping back to false (once
-        // checkStep() succeeds) is what un-mounts this branch on its own.
-        val enrolmentViewModel: EnrolmentViewModel = hiltViewModel()
-        LaunchedEffect(Unit) { enrolmentViewModel.checkStep() }
+
+    // hiltViewModel() here resolves to the *same* EnrolmentViewModel instance the
+    // original sign-in flow created -- this app has no navigation library, so every
+    // call site is keyed only by class name against MainActivity's own ViewModelStore
+    // (see AGENTS.md's "hiltViewModel() ... resolves to the Activity's own
+    // ViewModelStore" note, same bug class as DetailViewModel's dismissDelete()). Its
+    // uiState can therefore still read Unlocked from *before* this lock, and init{}
+    // won't rerun on a cached instance -- so this screen has to force a fresh
+    // checkStep() itself rather than trust the stale state, or the app hangs on a
+    // spinner forever with nothing left to re-check it. checkStep() is what actually
+    // re-populates MasterKeyHolder; onUnlocked is deliberately a no-op here since
+    // TimelineViewModel.locked flipping back to false (once checkStep() succeeds) is
+    // what un-mounts the EnrolmentScreen delegation below on its own.
+    //
+    // Obtained -- and its state collected -- unconditionally now, not just while
+    // locked, so the "Checking"/"Unlocked" sub-states can share the exact same spinner
+    // call as the timeline's own loading state further down instead of each mounting
+    // their own separate `CircularProgressIndicator`. See [enrolmentIsSpinning]'s own
+    // doc for why that sharing is the actual point, not just a style choice.
+    val enrolmentViewModel: EnrolmentViewModel = hiltViewModel()
+    val enrolmentState by enrolmentViewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(locked) { if (locked) enrolmentViewModel.checkStep() }
+
+    // `Checking` (a silent-unlock attempt in flight) and `Unlocked` (the one-frame
+    // terminal state before `TimelineViewModel.locked` itself catches up and flips this
+    // screen's own `locked` false) are the only two `EnrolmentUiState`s that render as a
+    // bare spinner inside `EnrolmentScreen` -- every other one (recovery code entry, a
+    // device-unlock prompt, a network error, ...) needs its own real screen and stays
+    // delegated to it below. Folding just these two into this screen's own spinner
+    // (further down) instead is what actually makes the unlock-then-load spinner
+    // sequence read as one spinner: reported live 2026-09-26 that even after the two
+    // were positioned identically (previous pass), they still looked like two distinct
+    // spinners -- because they were two distinct `CircularProgressIndicator`
+    // composables, each inside its own separately-mounted subtree (one in
+    // `EnrolmentScreen`'s own composition, one in this screen's), so each restarted its
+    // indeterminate rotation animation from scratch on mount, a visible jump in the
+    // spinning arc even at the same screen position. Routing both phases through one
+    // shared call site that's never unmounted between them keeps that animation running
+    // continuously instead.
+    val enrolmentIsSpinning = locked && (enrolmentState is EnrolmentUiState.Checking || enrolmentState is EnrolmentUiState.Unlocked)
+    if (locked && !enrolmentIsSpinning) {
         EnrolmentScreen(onUnlocked = {}, modifier = modifier, viewModel = enrolmentViewModel)
         return
     }
 
-    val items = viewModel.timeline.collectAsLazyPagingItems()
-    val host by viewModel.cdnHost.collectAsStateWithLifecycle()
-    val bounds by viewModel.bounds.collectAsStateWithLifecycle()
-    val histogram by viewModel.histogram.collectAsStateWithLifecycle()
+    // Plan step 2.19's media/notification permission gate. Wrapped around this whole
+    // remaining tail (rather than from `ArchivistApp`, which used to wrap this screen
+    // from outside) so it applies to both the shared spinner right below and the real
+    // grid further down, but *not* the `EnrolmentScreen` delegation just above -- a
+    // real, interactive form (recovery code entry, device-unlock prompt, ...) still
+    // never gets permission prompts stacked on top of it, matching plan step 2.19's own
+    // "not any earlier" than actually needed. The one deliberate, narrow change from
+    // before: permissions can now first be requested a little earlier than strict
+    // confirmed-unlock -- as early as `enrolmentIsSpinning`'s brief, non-interactive
+    // silent-unlock-attempt window -- rather than only once `TimelineViewModel.locked`
+    // itself flips false. That's the direct cost of `PermissionOnboardingScreen` no
+    // longer living at `ArchivistApp`'s own level: see this function's own top-of-file
+    // doc and [enrolmentIsSpinning]'s for why keeping it there was the actual remaining
+    // spinner-continuity gap, reported live 2026-09-26 a second time -- `ArchivistApp`
+    // used to mount a *second*, separately-composed `EnrolmentScreen` (and, behind it,
+    // its own `PermissionOnboardingScreen`) before ever reaching this screen at all, so
+    // even a perfectly unified spinner in here still looked like two spinners next to
+    // that separate mount. The early exits below are `return@PermissionOnboardingScreen`
+    // rather than the bare `return`s they were before this wrapper existed -- a plain
+    // `return` from inside this lambda would try to return from `TimelineScreen` itself,
+    // which only compiles if `PermissionOnboardingScreen` is `inline`, and it isn't (no
+    // need to be: a labelled return out of just this lambda has the identical effect,
+    // since the wrapper call is already the last thing `TimelineScreen` does).
+    PermissionOnboardingScreen(modifier = modifier) {
+        // Collected unconditionally -- even while locked, during `enrolmentIsSpinning`
+        // -- for the same reason: per `TimelineViewModel.locked`'s own doc, the lock
+        // exists purely so thumbnails (which *do* need the master key) are never shown
+        // undecryptable, not because metadata fetching needs it. Starting the fetch
+        // immediately rather than waiting for unlock to resolve overlaps the two waits
+        // instead of serialising them (metadata is often ready before the unlock
+        // ceremony finishes), on top of being what lets the loading state below share
+        // the spinner used during `enrolmentIsSpinning` in the first place.
+        val items = viewModel.timeline.collectAsLazyPagingItems()
+        val host by viewModel.cdnHost.collectAsStateWithLifecycle()
+        val bounds by viewModel.bounds.collectAsStateWithLifecycle()
+        val histogram by viewModel.histogram.collectAsStateWithLifecycle()
 
-    // LazyPagingItems starts at NotLoading(false)/itemCount==0 -- the same shape a
-    // verified-empty library has -- until the LaunchedEffect inside
-    // collectAsLazyPagingItems actually begins collecting the Flow, so without this the
-    // "No photos yet." text flashed on every cold start before the real load began (see
-    // timelineContentState's own doc). Hoisted at this level, same reasoning as
-    // gridState just below: a Settings or Detail round trip un-mounts TimelineGrid, and
-    // a `remember` scoped there would forget a real Loading was already observed and
-    // get stuck re-showing the spinner forever instead of resolving to "No photos yet."
-    // once the genuinely-empty result already arrived. One-way by construction: it only
-    // ever reads the current LoadState and latches true, never resets to false.
-    //
-    // Reads `source`/`mediator` directly rather than the convenience `refresh` field --
-    // see timelineContentState's own doc for why `refresh` alone isn't enough here either.
-    var hasStartedLoading by remember { mutableStateOf(false) }
-    items.loadState.let { state ->
-        if (state.source.refresh is LoadState.Loading || state.mediator?.refresh is LoadState.Loading) {
-            hasStartedLoading = true
+        // LazyPagingItems starts at NotLoading(false)/itemCount==0 -- the same shape a
+        // verified-empty library has -- until the LaunchedEffect inside
+        // collectAsLazyPagingItems actually begins collecting the Flow, so without this
+        // the "No photos yet." text flashed on every cold start before the real load
+        // began (see timelineContentState's own doc). Hoisted at this level, same
+        // reasoning as gridState just below: a Settings or Detail round trip un-mounts
+        // TimelineGrid, and a `remember` scoped there would forget a real Loading was
+        // already observed and get stuck re-showing the spinner forever instead of
+        // resolving to "No photos yet." once the genuinely-empty result already
+        // arrived. One-way by construction: it only ever reads the current LoadState
+        // and latches true, never resets to false.
+        //
+        // Reads `source`/`mediator` directly rather than the convenience `refresh`
+        // field -- see timelineContentState's own doc for why `refresh` alone isn't
+        // enough here either.
+        var hasStartedLoading by remember { mutableStateOf(false) }
+        items.loadState.let { state ->
+            if (state.source.refresh is LoadState.Loading || state.mediator?.refresh is LoadState.Loading) {
+                hasStartedLoading = true
+            }
         }
-    }
 
-    // Hoisted above the selectedPhotoId branch below (rather than left for
-    // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so it
-    // survives a round trip through DetailScreen: a composable that leaves composition
-    // entirely -- which TimelineGrid does whenever DetailScreen is showing, since the
-    // `return` below skips over it -- has its own `remember`ed state discarded and
-    // recreated from scratch next time, which without this hoist reset scroll position
-    // to the top on every "open a photo, then back out".
-    val gridState = rememberLazyGridState()
+        val loadState = items.loadState
+        val contentState = timelineContentState(items.itemCount, loadState.source.refresh, loadState.mediator?.refresh, hasStartedLoading)
 
-    // A jumped-to window *starts* at the requested instant (TimelineJumpCoordinator), so
-    // landing on it used to just mean "go to index 0" once the window was committed to
-    // Room. That stopped being true once `TimelineRemoteMediator.loadNewerThanCache`
-    // (PREPEND) is taken into account: it inserts newer content *ahead* of the landing by
-    // design (so a jumped-to position can be scrolled back out of toward the present, per
-    // that mediator's own doc), and — confirmed live, 2026-09-13 — it can start doing so
-    // within a couple of hundred milliseconds of the landing committing, sometimes before
-    // the very first `scrollToItem` here even runs. "Index 0" is a moving target once
-    // that's happening; the landing's *own* identity isn't. [landingIndex] finds where
-    // the landing photo currently sits (a bounded `peek`-only scan, never triggers a
-    // load) and this scrolls there instead of blindly to 0 — so PREPEND growing the
-    // window ahead of it no longer matters at all, rather than being raced against.
-    //
-    // Deliberately a one-shot event rather than a LaunchedEffect keyed on load state,
-    // too: keying on items.itemCount re-ran this on every page that loaded afterwards,
-    // yanking the grid back mid-scroll.
-    LaunchedEffect(Unit) {
-        viewModel.jumpCompleted.collect { landing ->
-            gridState.scrollToItem(landingIndex(items, landing) ?: 0)
-            // One reassert isn't enough: a jump's fresh PagingData generation streams in
-            // over several subsequent page loads, not one shot, and *each* one can
-            // retrigger LazyVerticalGrid's own key-based position-preservation, nudging
-            // the scroll away from the landing again — confirmed live via instrumentation,
-            // itemCount still growing (168 -> 257 -> 258) well after an earlier reassert
-            // had already reported reaching the landing, with the position drifting again
-            // on the next page. Reported as "Latest doesn't quite get me to the top... I
-            // can't scroll to the top date label itself", and later (2026-09-13) as "the
-            // timeline jumps off to a random place" the instant a rail drag is released.
-            //
-            // So this keeps reasserting on every single itemCount change — no debounce:
-            // `PREPEND`'s own local (network-free) round trips land in ~30-90ms each, well
-            // inside what a "wait for a lull" debounce would have waited out, so a
-            // debounce meant letting a whole burst run before the very first check ever
-            // got a chance to catch it — for a bounded window after the jump, rather than
-            // trusting a single delayed retry. Bounded so it stops fighting the user's own
-            // scrolling once real browsing resumes — an APPEND from an ordinary scroll
-            // also changes itemCount, and this must not snap that back to the landing.
-            //
-            // Launched as its own coroutine, deliberately not awaited inline: this
-            // collector is also what `_jumpCompleted.emit(...)` suspends on in
-            // `TimelineViewModel.applyJump`, which runs under the same lock every scrub
-            // in a drag shares. Awaiting the full window here serialised every later
-            // scrub behind this one's own settle time, which — confirmed live — was
-            // enough to stall a continuous drag almost completely; several seconds of a
-            // finger sweeping across the rail rendered as the grid barely moving.
-            // Reasserting to the same index from several overlapping launches at once is
-            // harmless (they agree on the target), so nothing here needs the ordering
-            // that awaiting would have provided anyway.
-            //
-            // `mapNotNull`/`distinctUntilChanged` rather than a `takeWhile`-guarded
-            // `scrollToItem(0)`: the old version gave up reasserting entirely the instant
-            // index 0 stopped being the landing, unable to tell "still catching up to my
-            // own landing's settling pages" apart from "chasing content PREPEND is
-            // autonomously adding" — since both changed itemCount and moved whatever was
-            // at 0 identically. Tracking the landing's own index sidesteps the ambiguity
-            // outright: there's nothing to give up on, since PREPEND changing the
-            // landing's index *is* the correct new answer, not a signal to stop.
-            launch {
-                withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
-                    snapshotFlow { items.itemCount }
-                        .mapNotNull { landingIndex(items, landing) }
-                        .distinctUntilChanged()
-                        .collect { gridState.scrollToItem(it) }
+        // Rendered full-screen with no top bar, deliberately matching EnrolmentScreen's
+        // own "Checking" spinner (same `modifier`, same plain full-size centering, same
+        // shared call site as [enrolmentIsSpinning] above falls through to) rather than
+        // nesting it below the 3-dot-menu Row the way TimelineGrid's other three states
+        // are -- that Row eats real height, so a loading spinner rendered there used to
+        // sit visibly lower than the unlock spinner shown right before it. Checked
+        // here, before the DetailScreen/Settings branches below, for the same reason
+        // `enrolmentIsSpinning` is checked before them further up: while either spinner
+        // condition holds, this screen must never fall through to Detail/Settings even
+        // if `selectedPhoto`/`showSettings` happen to still be `true` from before a
+        // relock (both survive a lock cycle, since they're `remember`ed at this
+        // composable's own top level, not reset by it).
+        //
+        // Reported live 2026-09-26 that even once the two spinners were positioned
+        // identically (previous pass), they still read as two distinct spinners --
+        // because they were, literally: two different `CircularProgressIndicator`
+        // composables in two different subtrees, each restarting its indeterminate
+        // rotation animation from scratch on mount. `enrolmentIsSpinning || contentState
+        // == LOADING` is one shared boolean gating one shared call, so once true it
+        // stays the same composition node across the whole locked-spinning ->
+        // unlocked-loading transition -- no unmount, no animation restart, actually one
+        // continuous spinner rather than two aligned ones. Narrowly safe to keep this
+        // simple (no extra latch needed): [hasStartedLoading] only ever flips true once
+        // per mount, so `contentState` can only be `LOADING` on its own (rather than via
+        // `enrolmentIsSpinning`) once per lock cycle too -- not something that recurs
+        // mid-browsing with the top bar already up.
+        if (enrolmentIsSpinning || contentState == TimelineContentState.LOADING) {
+            Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            return@PermissionOnboardingScreen
+        }
+
+        // Hoisted above the selectedPhotoId branch below (rather than left for
+        // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so
+        // it survives a round trip through DetailScreen: a composable that leaves
+        // composition entirely -- which TimelineGrid does whenever DetailScreen is
+        // showing, since the `return` below skips over it -- has its own `remember`ed
+        // state discarded and recreated from scratch next time, which without this
+        // hoist reset scroll position to the top on every "open a photo, then back
+        // out".
+        val gridState = rememberLazyGridState()
+
+        // A jumped-to window *starts* at the requested instant (TimelineJumpCoordinator), so
+        // landing on it used to just mean "go to index 0" once the window was committed to
+        // Room. That stopped being true once `TimelineRemoteMediator.loadNewerThanCache`
+        // (PREPEND) is taken into account: it inserts newer content *ahead* of the landing by
+        // design (so a jumped-to position can be scrolled back out of toward the present, per
+        // that mediator's own doc), and — confirmed live, 2026-09-13 — it can start doing so
+        // within a couple of hundred milliseconds of the landing committing, sometimes before
+        // the very first `scrollToItem` here even runs. "Index 0" is a moving target once
+        // that's happening; the landing's *own* identity isn't. [landingIndex] finds where
+        // the landing photo currently sits (a bounded `peek`-only scan, never triggers a
+        // load) and this scrolls there instead of blindly to 0 — so PREPEND growing the
+        // window ahead of it no longer matters at all, rather than being raced against.
+        //
+        // Deliberately a one-shot event rather than a LaunchedEffect keyed on load state,
+        // too: keying on items.itemCount re-ran this on every page that loaded afterwards,
+        // yanking the grid back mid-scroll.
+        LaunchedEffect(Unit) {
+            viewModel.jumpCompleted.collect { landing ->
+                gridState.scrollToItem(landingIndex(items, landing) ?: 0)
+                // One reassert isn't enough: a jump's fresh PagingData generation streams in
+                // over several subsequent page loads, not one shot, and *each* one can
+                // retrigger LazyVerticalGrid's own key-based position-preservation, nudging
+                // the scroll away from the landing again — confirmed live via instrumentation,
+                // itemCount still growing (168 -> 257 -> 258) well after an earlier reassert
+                // had already reported reaching the landing, with the position drifting again
+                // on the next page. Reported as "Latest doesn't quite get me to the top... I
+                // can't scroll to the top date label itself", and later (2026-09-13) as "the
+                // timeline jumps off to a random place" the instant a rail drag is released.
+                //
+                // So this keeps reasserting on every single itemCount change — no debounce:
+                // `PREPEND`'s own local (network-free) round trips land in ~30-90ms each, well
+                // inside what a "wait for a lull" debounce would have waited out, so a
+                // debounce meant letting a whole burst run before the very first check ever
+                // got a chance to catch it — for a bounded window after the jump, rather than
+                // trusting a single delayed retry. Bounded so it stops fighting the user's own
+                // scrolling once real browsing resumes — an APPEND from an ordinary scroll
+                // also changes itemCount, and this must not snap that back to the landing.
+                //
+                // Launched as its own coroutine, deliberately not awaited inline: this
+                // collector is also what `_jumpCompleted.emit(...)` suspends on in
+                // `TimelineViewModel.applyJump`, which runs under the same lock every scrub
+                // in a drag shares. Awaiting the full window here serialised every later
+                // scrub behind this one's own settle time, which — confirmed live — was
+                // enough to stall a continuous drag almost completely; several seconds of a
+                // finger sweeping across the rail rendered as the grid barely moving.
+                // Reasserting to the same index from several overlapping launches at once is
+                // harmless (they agree on the target), so nothing here needs the ordering
+                // that awaiting would have provided anyway.
+                //
+                // `mapNotNull`/`distinctUntilChanged` rather than a `takeWhile`-guarded
+                // `scrollToItem(0)`: the old version gave up reasserting entirely the instant
+                // index 0 stopped being the landing, unable to tell "still catching up to my
+                // own landing's settling pages" apart from "chasing content PREPEND is
+                // autonomously adding" — since both changed itemCount and moved whatever was
+                // at 0 identically. Tracking the landing's own index sidesteps the ambiguity
+                // outright: there's nothing to give up on, since PREPEND changing the
+                // landing's index *is* the correct new answer, not a signal to stop.
+                launch {
+                    withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
+                        snapshotFlow { items.itemCount }
+                            .mapNotNull { landingIndex(items, landing) }
+                            .distinctUntilChanged()
+                            .collect { gridState.scrollToItem(it) }
+                    }
                 }
             }
         }
-    }
 
-    // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
-    // state, not a nav-library back stack -- this app has none yet (see MainActivity's
-    // own note), same pattern every other screen transition here already uses.
-    // The whole entity, not just its id: DetailScreen shows this photo's own thumbnail
-    // while its swipe list catches up (see DetailScreen's initialPhoto doc).
-    var selectedPhoto by remember { mutableStateOf<PhotoEntity?>(null) }
-    val openPhoto = selectedPhoto
-    if (openPhoto != null) {
-        // A repair's own effect on the grid (re-settling on the repaired photo) is
-        // handled independently of this navigation -- see
-        // TimelineJumpCoordinator.stageAndAnnounceLanding's own doc -- so this stays the
-        // plain "close the screen" it always was, with no repair-awareness needed here.
-        DetailScreen(initialPhoto = openPhoto, onBack = { selectedPhoto = null }, modifier = modifier)
-        return
-    }
+        // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
+        // state, not a nav-library back stack -- this app has none yet (see MainActivity's
+        // own note), same pattern every other screen transition here already uses.
+        // The whole entity, not just its id: DetailScreen shows this photo's own thumbnail
+        // while its swipe list catches up (see DetailScreen's initialPhoto doc).
+        var selectedPhoto by remember { mutableStateOf<PhotoEntity?>(null) }
+        val openPhoto = selectedPhoto
+        if (openPhoto != null) {
+            // A repair's own effect on the grid (re-settling on the repaired photo) is
+            // handled independently of this navigation -- see
+            // TimelineJumpCoordinator.stageAndAnnounceLanding's own doc -- so this stays the
+            // plain "close the screen" it always was, with no repair-awareness needed here.
+            DetailScreen(initialPhoto = openPhoto, onBack = { selectedPhoto = null }, modifier = modifier)
+            return@PermissionOnboardingScreen
+        }
 
-    // Plan step 2.14: Settings (which now also hosts Trash — see its own doc) is the
-    // permanent entry point 2.13 deferred. Same "standalone screen, plain local
-    // toggle" pattern as selectedPhotoId above.
-    var showSettings by remember { mutableStateOf(false) }
-    if (showSettings) {
-        SettingsScreen(onBack = { showSettings = false }, onSessionEnded = onSessionEnded, modifier = modifier)
-        return
-    }
+        // Plan step 2.14: Settings (which now also hosts Trash — see its own doc) is the
+        // permanent entry point 2.13 deferred. Same "standalone screen, plain local
+        // toggle" pattern as selectedPhotoId above.
+        var showSettings by remember { mutableStateOf(false) }
+        if (showSettings) {
+            SettingsScreen(onBack = { showSettings = false }, onSessionEnded = onSessionEnded, modifier = modifier)
+            return@PermissionOnboardingScreen
+        }
 
-    Column(modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            // A 3-dot menu rather than a bare "Settings" button — for consistency with
-            // DetailScreen's own top bar (plan step 2.12's repair/delete menu), even
-            // though Settings is currently its only entry.
-            var showMenu by remember { mutableStateOf(false) }
-            Box {
-                TextButton(onClick = { showMenu = true }) { Text("⋮") }
-                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Settings") },
-                        onClick = {
-                            showMenu = false
-                            showSettings = true
-                        },
-                    )
+        Column(modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                // A 3-dot menu rather than a bare "Settings" button — for consistency with
+                // DetailScreen's own top bar (plan step 2.12's repair/delete menu), even
+                // though Settings is currently its only entry.
+                var showMenu by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { showMenu = true }) { Text("⋮") }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = {
+                                showMenu = false
+                                showSettings = true
+                            },
+                        )
+                    }
                 }
             }
+            TimelineGrid(
+                items = items,
+                host = host,
+                gridState = gridState,
+                bounds = bounds,
+                histogram = histogram,
+                contentState = contentState,
+                onPhotoClick = { selectedPhoto = it },
+                onScrub = viewModel::onScrubTo,
+                onCommit = viewModel::onJumpCommitted,
+                modifier = Modifier.weight(1f),
+            )
         }
-        TimelineGrid(
-            items = items,
-            host = host,
-            gridState = gridState,
-            bounds = bounds,
-            histogram = histogram,
-            hasStartedLoading = hasStartedLoading,
-            onPhotoClick = { selectedPhoto = it },
-            onScrub = viewModel::onScrubTo,
-            onCommit = viewModel::onJumpCommitted,
-            modifier = Modifier.weight(1f),
-        )
     }
 }
 
@@ -361,14 +468,18 @@ private fun TimelineGrid(
     gridState: LazyGridState,
     bounds: TimelineBounds?,
     histogram: TimelineHistogram?,
-    hasStartedLoading: Boolean,
+    // Computed once by the caller (TimelineScreen), not re-derived here: LOADING is
+    // special-cased there to render full-screen with no top bar, before this composable
+    // is even reached -- see that call site's own doc for why. Still handled below for
+    // TimelineContentState's exhaustiveness and as a defensive fallback, not because
+    // this branch is expected to run in practice.
+    contentState: TimelineContentState,
     onPhotoClick: (PhotoEntity) -> Unit,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val loadState = items.loadState
-    when (timelineContentState(items.itemCount, loadState.source.refresh, loadState.mediator?.refresh, hasStartedLoading)) {
+    when (contentState) {
         TimelineContentState.LOADING ->
             Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
 

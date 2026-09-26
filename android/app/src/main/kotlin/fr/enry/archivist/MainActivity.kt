@@ -26,7 +26,6 @@ import javax.inject.Inject
 import fr.enry.archivist.ui.onboarding.ConnectScreen
 import fr.enry.archivist.ui.onboarding.ConnectUiState
 import fr.enry.archivist.ui.onboarding.ConnectViewModel
-import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.PermissionOnboardingScreen
 import fr.enry.archivist.ui.onboarding.SignInScreen
 import fr.enry.archivist.ui.reviewer.ReviewerPreviewScreen
@@ -57,7 +56,6 @@ class MainActivity : ComponentActivity() {
 private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
     val connectState by connectViewModel.uiState.collectAsStateWithLifecycle()
     var signedIn by remember { mutableStateOf(false) }
-    var unlocked by remember { mutableStateOf(false) }
 
     Scaffold { innerPadding ->
         when (val s = connectState) {
@@ -65,40 +63,33 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                 Centered(Modifier.padding(innerPadding)) { CircularProgressIndicator() }
 
             is ConnectUiState.Connected ->
-                when {
-                    unlocked ->
-                        // TimelineViewModel re-checks MasterKeyHolder continuously (see
-                        // its own doc), so this stale local `unlocked` boolean staying
-                        // true after a later lock (sign-out/delete-account -- see
-                        // ArchivistApplication's own doc for why backgrounding alone no
-                        // longer counts) no longer matters -- the screen itself falls
-                        // back to the locked state. onSessionEnded
-                        // (plan step 2.14's Account > sign out / delete account) resets
-                        // both local flags so the next recomposition falls through to
-                        // SignInScreen, same as a fresh launch.
-                        //
-                        // Plan step 2.19: media/notification permissions are asked here,
-                        // after registration and key unlock, not any earlier -- this is
-                        // the first point backup/sync actually needs them.
-                        PermissionOnboardingScreen(modifier = Modifier.padding(innerPadding)) {
-                            TimelineScreen(
-                                onSessionEnded = {
-                                    unlocked = false
-                                    signedIn = false
-                                },
-                                modifier = Modifier.padding(innerPadding),
-                            )
-                        }
-
-                    signedIn ->
-                        EnrolmentScreen(onUnlocked = { unlocked = true }, modifier = Modifier.padding(innerPadding))
-
-                    else ->
-                        SignInScreen(
-                            onSignedIn = { signedIn = true },
-                            onChangeServer = connectViewModel::changeInstance,
-                            modifier = Modifier.padding(innerPadding),
-                        )
+                if (signedIn) {
+                    // TimelineScreen owns the entire signed-in experience end to end now
+                    // -- locked (silent-unlock attempt, or a real recovery-code/device-
+                    // unlock form if silent unlock fails), unlocked-but-still-loading,
+                    // and the real grid, including its own `PermissionOnboardingScreen`
+                    // gate once genuinely past the locked forms (see its own top-of-file
+                    // doc). This used to be split here instead: an `unlocked` boolean
+                    // gated a *second*, separately-mounted `EnrolmentScreen` call (and,
+                    // behind it, a *second* `PermissionOnboardingScreen`) before ever
+                    // reaching `TimelineScreen` at all. That meant a fresh sign-in always
+                    // showed two distinct, separately-composed `CircularProgressIndicator`
+                    // spinners in sequence -- TimelineScreen's own unification (see its
+                    // doc) only ever covered a *relock* while already mounted, not this
+                    // very first mount -- reported live 2026-09-26 as "still 2 distinct
+                    // spinners" even after that first fix. Removing the split here is
+                    // what actually closes the gap: TimelineScreen mounts exactly once,
+                    // right after sign-in, and never again for the rest of the process.
+                    TimelineScreen(
+                        onSessionEnded = { signedIn = false },
+                        modifier = Modifier.padding(innerPadding),
+                    )
+                } else {
+                    SignInScreen(
+                        onSignedIn = { signedIn = true },
+                        onChangeServer = connectViewModel::changeInstance,
+                        modifier = Modifier.padding(innerPadding),
+                    )
                 }
 
             is ConnectUiState.NeedsConnection ->
@@ -110,8 +101,9 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                 )
 
             // Plan step 2.17: structurally parallel to Connected above, not a branch of
-            // it — this path touches neither `signedIn` nor `unlocked`, and nothing
-            // reachable from ReviewerPreviewScreen can construct a network client at all.
+            // it — this path touches neither `signedIn` here nor anything inside
+            // `TimelineScreen`'s own lock state, and nothing reachable from
+            // ReviewerPreviewScreen can construct a network client at all.
             //
             // Plan step 2.19: preview mode needs the media-library permission just as
             // much as a real session does -- MediaStoreSource can't see anything beyond
