@@ -127,8 +127,15 @@ fun TimelineScreen(
     // get stuck re-showing the spinner forever instead of resolving to "No photos yet."
     // once the genuinely-empty result already arrived. One-way by construction: it only
     // ever reads the current LoadState and latches true, never resets to false.
+    //
+    // Reads `source`/`mediator` directly rather than the convenience `refresh` field --
+    // see timelineContentState's own doc for why `refresh` alone isn't enough here either.
     var hasStartedLoading by remember { mutableStateOf(false) }
-    if (items.loadState.refresh is LoadState.Loading) hasStartedLoading = true
+    items.loadState.let { state ->
+        if (state.source.refresh is LoadState.Loading || state.mediator?.refresh is LoadState.Loading) {
+            hasStartedLoading = true
+        }
+    }
 
     // Hoisted above the selectedPhotoId branch below (rather than left for
     // LazyVerticalGrid to create its own default one down in TimelineItemGrid) so it
@@ -266,32 +273,6 @@ fun TimelineScreen(
     }
 }
 
-/** What [TimelineGrid] should render for the current combination of item count, refresh
- * state, and whether a real load has ever actually started. Pulled out as a pure
- * function — mirrors [fr.enry.archivist.ui.timeline.TimelineScale]/`queueIdleReason`'s
- * own "testable decision table with no Compose in the loop" convention — because this
- * repo has no Compose UI test harness (see `TimelineViewModelTest`'s own gap note in
- * STATUS.md), so the branching itself has to be verifiable without one. */
-internal enum class TimelineContentState { LOADING, ERROR, EMPTY, CONTENT }
-
-/**
- * A brand-new library (nothing uploaded yet — the ordinary state right after signing in
- * on a fresh device, per this session's own live check against the `dev` instance's
- * DynamoDB table) looks identical to a stuck loading spinner or a silently-failed
- * `RemoteMediator` unless the three are told apart explicitly. `LazyPagingItems.loadState.refresh`
- * is the only signal that distinguishes "still loading page one" from "loaded, and
- * there's truly nothing" from "the fetch failed" — `itemCount == 0` alone can't.
- *
- * `refresh` itself isn't enough on its own, though: [LazyPagingItems] starts life at
- * `NotLoading(false)` — the same shape a genuinely empty, already-resolved library has
- * — for however long it takes the underlying `Flow<PagingData>` to actually start being
- * collected (a `LaunchedEffect`, so at least one frame after first composition, longer
- * if the ViewModel/Hilt graph is slow to spin up). Without [hasStartedLoading] gating
- * that window too, a cold app start flashed "No photos yet." before the real load ever
- * began — reported live, this pass's actual fix. [hasStartedLoading] only ever flips
- * true (never back), because it's a one-way "has a real load state update arrived yet",
- * not a live reflection of the current one.
- */
 /**
  * Where [landing] currently sits in [items] — a bounded [LazyPagingItems.peek] scan, so
  * it never triggers a page load. `null` for [landing] means "back to the present", which
@@ -316,15 +297,60 @@ private fun landingIndex(
     return null
 }
 
+/** What [TimelineGrid] should render for the current combination of item count, refresh
+ * state, and whether a real load has ever actually started. Pulled out as a pure
+ * function — mirrors [fr.enry.archivist.ui.timeline.TimelineScale]/`queueIdleReason`'s
+ * own "testable decision table with no Compose in the loop" convention — because this
+ * repo has no Compose UI test harness (see `TimelineViewModelTest`'s own gap note in
+ * STATUS.md), so the branching itself has to be verifiable without one. */
+internal enum class TimelineContentState { LOADING, ERROR, EMPTY, CONTENT }
+
+/**
+ * A brand-new library (nothing uploaded yet — the ordinary state right after signing in
+ * on a fresh device, per this session's own live check against the `dev` instance's
+ * DynamoDB table) looks identical to a stuck loading spinner or a silently-failed
+ * `RemoteMediator` unless the three are told apart explicitly. `LazyPagingItems.loadState`
+ * is the only signal that distinguishes "still loading page one" from "loaded, and
+ * there's truly nothing" from "the fetch failed" — `itemCount == 0` alone can't.
+ *
+ * Two separate gaps, both reported live against a real cold start, neither fixed by
+ * reading the convenience `CombinedLoadStates.refresh` field alone:
+ *
+ * 1. [LazyPagingItems] starts life at `NotLoading(false)` — the same shape a genuinely
+ *    empty, already-resolved library has — for however long it takes the underlying
+ *    `Flow<PagingData>` to actually start being collected (a `LaunchedEffect`, so at
+ *    least one frame after first composition, longer if the ViewModel/Hilt graph is slow
+ *    to spin up). [hasStartedLoading] gates this: it only ever flips true (never back),
+ *    once a real `Loading` state has actually been observed on either [sourceRefresh] or
+ *    [mediatorRefresh] — see [TimelineScreen]'s own latch for why it has to watch both.
+ * 2. Even after that, `CombinedLoadStates.refresh`'s own KDoc admits it "generally defers
+ *    to mediator if it exists" — key word *if*: `MutableCombinedLoadStateCollection`'s
+ *    actual merge (`computeHelperState` in the Paging 3.5.1 sources) falls straight back
+ *    to the *source*'s state whenever `mediator == null`, i.e. whenever the
+ *    `RemoteMediator` hasn't reported anything for this `LoadType` yet at all — not
+ *    merely "not loading". Room's own local query resolves fast (often to zero rows, on
+ *    a device with nothing cached yet) before the `RemoteMediator`'s network `REFRESH`
+ *    has been dispatched into that state, so the combined `refresh` genuinely reports
+ *    `NotLoading` for a real stretch of wall-clock time — a live 401/network round trip,
+ *    not a single frame — while the actual fetch is still in flight. Confirmed against
+ *    Paging's own KDoc, which names exactly this: "for use cases that require reacting to
+ *    LoadState of source and mediator specifically... LoadStates exposed via source and
+ *    mediator should be used directly" instead of the convenience field. Fixed by doing
+ *    exactly that: [sourceRefresh] and [mediatorRefresh] are read and checked
+ *    independently, so a `Loading` `RemoteMediator` fetch keeps the spinner up even while
+ *    Room's own `source.refresh` has already resolved to an empty `NotLoading`.
+ */
 internal fun timelineContentState(
     itemCount: Int,
-    refresh: LoadState,
+    sourceRefresh: LoadState,
+    mediatorRefresh: LoadState?,
     hasStartedLoading: Boolean,
 ): TimelineContentState =
     when {
         itemCount > 0 -> TimelineContentState.CONTENT
-        refresh is LoadState.Loading || !hasStartedLoading -> TimelineContentState.LOADING
-        refresh is LoadState.Error -> TimelineContentState.ERROR
+        sourceRefresh is LoadState.Loading || mediatorRefresh is LoadState.Loading || !hasStartedLoading ->
+            TimelineContentState.LOADING
+        sourceRefresh is LoadState.Error || mediatorRefresh is LoadState.Error -> TimelineContentState.ERROR
         else -> TimelineContentState.EMPTY
     }
 
@@ -341,7 +367,8 @@ private fun TimelineGrid(
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    when (timelineContentState(items.itemCount, items.loadState.refresh, hasStartedLoading)) {
+    val loadState = items.loadState
+    when (timelineContentState(items.itemCount, loadState.source.refresh, loadState.mediator?.refresh, hasStartedLoading)) {
         TimelineContentState.LOADING ->
             Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
 
