@@ -209,7 +209,20 @@ fun TimelineScrollbar(
         derivedStateOf { idlePhoto?.let { scale.fractionOfDay(it.localDate()) } }
     }
 
-    val thumbFraction = heldRaw ?: idleFraction ?: 0f
+    // Where the finger last was, kept on screen for [RELEASE_LINGER_MS] after lift-off (or a
+    // tap). Without it the thumb/label/rail snap straight back to the idle position, which
+    // still describes the *old* scroll position until the commit's fetch and scroll land —
+    // so a tap on the rail showed the line where it was tapped for one frame and then
+    // yanked it back to the current date.
+    var lingering by remember { mutableStateOf<LingeringSelection?>(null) }
+    LaunchedEffect(lingering) {
+        if (lingering != null) {
+            delay(RELEASE_LINGER_MS)
+            lingering = null
+        }
+    }
+
+    val thumbFraction = heldRaw ?: lingering?.fraction ?: idleFraction ?: 0f
     // The *selected* fraction: what heldRaw actually names once the lens is applied.
     // Equal to heldRaw itself with no lens engaged (peeking, or heldRaw null entirely).
     //
@@ -243,7 +256,7 @@ fun TimelineScrollbar(
     }
     // Gated on idleFraction being non-null too: an enlarged thumb pinned at the top with
     // a label reading nothing would-be-misleading before the first photo has loaded.
-    val peeking = heldRaw != null || (scrollPeekVisible && idleFraction != null)
+    val peeking = heldRaw != null || lingering != null || (scrollPeekVisible && idleFraction != null)
 
     // What TimelineRail actually warps around: idleFraction while just peeking (so the
     // rail is *already* magnified around wherever the grid currently is, before any
@@ -254,7 +267,7 @@ fun TimelineScrollbar(
     // rendering eases toward the new anchor rather than snapping to it — while heldRaw
     // (drawn separately, always absolute) and heldSelected (driven by lensAnchor, not
     // railAnchor) are both correct from the very first frame regardless.
-    val visualAnchor = if (heldRaw != null) railAnchor else idleFraction
+    val visualAnchor = if (heldRaw != null) railAnchor else lingering?.anchor ?: idleFraction
 
     // Scrolling the grid along with the finger, as fast as the network allows and no
     // faster. The whole library is on the rail but only the visited window is in Room, so
@@ -302,10 +315,11 @@ fun TimelineScrollbar(
                         // long press for, so it can be grabbed immediately. `heldRaw`
                         // isn't part of this check: it can't be true yet, this decides
                         // whether a *new* gesture becomes one.
-                        skipConfirmation = { scrollPeekVisible && idlePhoto != null },
+                        skipConfirmation = { lingering != null || (scrollPeekVisible && idlePhoto != null) },
                         onStart = { y ->
                             val f = fractionAt(y, trackHeightPx)
                             heldRaw = f
+                            lingering = null
                             // lensAnchor is seeded exactly at the touch point — not
                             // idleFraction — so the very first frame's selection matches
                             // where the finger actually is; anything else measurably
@@ -351,6 +365,10 @@ fun TimelineScrollbar(
                             // raw final sample can't be trusted on its own.
                             val settled = settledSample(releaseHistory, System.nanoTime(), RELEASE_SETTLE_MS) ?: heldSelected
                             settled?.let { onCommit(scale.dayAt(it)) }
+                            val at = heldRaw
+                            if (at != null && settled != null) {
+                                lingering = LingeringSelection(at, railAnchor ?: at, scale.dayAt(settled))
+                            }
                             heldRaw = null
                             lensAnchor = null
                             railAnchor = null
@@ -396,6 +414,13 @@ fun TimelineScrollbar(
                     trackHeightPx = trackHeightPx,
                     modifier = Modifier.align(Alignment.TopStart),
                 )
+            lingering != null ->
+                SelectedDateLabel(
+                    day = lingering!!.day,
+                    fraction = lingering!!.fraction,
+                    trackHeightPx = trackHeightPx,
+                    modifier = Modifier.align(Alignment.TopStart),
+                )
             peeking ->
                 SelectedDateLabel(
                     day = idleDay,
@@ -411,6 +436,9 @@ fun TimelineScrollbar(
  * because `null` means "back to the present" — a real destination, distinct from "not
  * dragging". */
 private data class Scrub(val day: LocalDate?)
+
+/** Where a released touch was, and what it selected — see `lingering` in [TimelineScrollbar]. */
+private data class LingeringSelection(val fraction: Float, val anchor: Float, val day: LocalDate?)
 
 private val HIT_TARGET_WIDTH = 148.dp
 // Wide enough that a tick label — drawn growing left from just past the touch strip,
@@ -436,6 +464,11 @@ private val HELD_THUMB = RAIL_WIDTH - (COARSE_TICK_GAP * 2) to 2.dp
  * actually read a date, short enough that it reads as "while scrolling" rather than a
  * fixture that's just always there. */
 private const val PEEK_LINGER_MS = 1200L
+
+/** How long the rail stays put where the finger left it after release or a tap. Longer
+ * than [PEEK_LINGER_MS]: the committed jump has to fetch and scroll before the idle
+ * position catches up, and the user wants time to see where they landed. */
+private const val RELEASE_LINGER_MS = 2500L
 
 /**
  * The whole library laid out along the track, so the drag has something to aim at.
