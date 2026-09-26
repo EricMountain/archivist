@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -276,6 +277,7 @@ fun TimelineScrollbar(
     // rendering eases toward the new anchor rather than snapping to it — while heldRaw
     // (drawn separately, always absolute) and heldSelected (driven by lensAnchor, not
     // railAnchor) are both correct from the very first frame regardless.
+    val peekingNow by rememberUpdatedState(peeking)
     val visualAnchor = if (heldRaw != null) railAnchor else lingering?.anchor ?: idleFraction
 
     // Scrolling the grid along with the finger, as fast as the network allows and no
@@ -316,6 +318,18 @@ fun TimelineScrollbar(
             val stripStartPx = { size.width - HIT_TARGET_WIDTH.toPx() }
             detectFastScrollGesture(
                 inStrip = { it.x >= stripStartPx() },
+                tapEnabled = { peekingNow },
+                onTap = { y ->
+                    // What's drawn at the tap is warped around the anchor the rail is
+                    // showing, so select the underlying position that tick stands for.
+                    val f = fractionAt(y, trackHeightPx)
+                    val anchor = lingering?.anchor ?: idleFraction
+                    val selected = anchor?.let { lensUnwarp(f, it) } ?: f
+                    val day = scale.dayAt(selected)
+                    lingering = LingeringSelection(f, anchor ?: f, day)
+                    onCommit(day)
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                },
                 onSwipe = { stripSwipe = true },
                 onRelease = { if (!gridState.isScrollInProgress) stripSwipe = false },
                 onStart = { y ->
@@ -757,7 +771,7 @@ internal fun settledSample(
  * Long-press on the rail, then drag. Always — even while the rail is peeking: a touch on
  * the strip has to stay an ordinary swipe that scrolls the grid, and the only thing
  * telling the two apart is the long press. Nothing is consumed until it confirms, so a
- * swipe that starts on the rail scrolls the grid normally —
+ * swipe that starts on the rail scrolls the grid normally, and a tap ([tapEnabled], i.e. the rail is showing) calls [onTap] and swallows the lift so the cell underneath isn't opened —
  * [LazyGridState]'s own `scrollable` modifier sees the same unconsumed events, and this
  * detector just times out having claimed nothing. [onSwipe]/[onRelease] bracket a touch
  * that did *not* become a drag, so the caller can tell a strip swipe from a peek. Everything after confirmation *is*
@@ -768,6 +782,8 @@ internal fun settledSample(
  */
 private suspend fun PointerInputScope.detectFastScrollGesture(
     inStrip: (Offset) -> Boolean,
+    tapEnabled: () -> Boolean,
+    onTap: (y: Float) -> Unit,
     onSwipe: () -> Unit,
     onRelease: () -> Unit,
     onStart: (y: Float) -> Unit,
@@ -783,12 +799,22 @@ private suspend fun PointerInputScope.detectFastScrollGesture(
         // slop, for the full duration — that is the long press. Any early return
         // means the gesture resolved as something else and this must not claim it.
         var swiped = false
+        val tapGoes = tapEnabled()
         val abortedEarly =
             withTimeoutOrNull(LONG_PRESS_MS) {
                 while (true) {
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull
-                    if (!change.pressed) return@withTimeoutOrNull
+                    if (!change.pressed) {
+                        // A tap. On a visible rail it means "go there", so the lift is
+                        // consumed (Initial pass, before the grid) to stop it also opening
+                        // the photo underneath — a consumed up cancels the cell's click.
+                        if (tapGoes) {
+                            change.consume()
+                            onTap(change.position.y)
+                        }
+                        return@withTimeoutOrNull
+                    }
                     if ((change.position - downPosition).getDistance() > viewConfiguration.touchSlop) {
                         swiped = true
                         return@withTimeoutOrNull
