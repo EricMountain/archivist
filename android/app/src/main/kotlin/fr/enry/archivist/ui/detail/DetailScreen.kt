@@ -43,6 +43,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -140,6 +143,25 @@ fun DetailScreen(
     // current photo through that.
     val initialPage = remember { pagerPhotos.indexOfFirst { it.photoId == initialPhoto.photoId }.coerceAtLeast(0) }
     val pagerState = rememberPagerState(initialPage = initialPage) { pagerPhotos.size }
+
+    // `initialPage` above is an *index* into whichever list was showing at first
+    // composition, and the pager can only follow a photo across a list change by key once
+    // it has measured at least once. A `photos` re-emission before that (Room's window
+    // shifts a lot after a long scroll) leaves the index pointing at a different photo --
+    // reported as "tapped one photo, the preview opened another". So the tapped photo's
+    // *identity* is tracked separately: whenever the list changes and the pager isn't on
+    // it, snap back. It only follows the user (not the list) once they swipe.
+    var focusedId by remember { mutableStateOf(initialPhoto.photoId) }
+    LaunchedEffect(pagerPhotos) {
+        val target = pagerPhotos.indexOfFirst { it.photoId == focusedId }
+        if (target >= 0 && target != pagerState.currentPage) pagerState.scrollToPage(target)
+    }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.isScrollInProgress }
+            .drop(1)
+            .filter { !it }
+            .collect { pagerPhotos.getOrNull(pagerState.currentPage)?.let { focusedId = it.photoId } }
+    }
     val currentPhoto = pagerPhotos.getOrNull(pagerState.currentPage.coerceIn(0, pagerPhotos.lastIndex))
     val currentDetail = currentPhoto?.let { photo -> (details[photo.photoId] as? PhotoDetailUiState.Loaded)?.detail }
 
