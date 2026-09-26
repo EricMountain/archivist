@@ -378,7 +378,6 @@ private fun TimelineGrid(
                     view.isVerticalScrollBarEnabled = false
                     view.isHorizontalScrollBarEnabled = false
                 }
-                TimelineItemGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
                 TimelineScrollbar(
                     gridState = gridState,
                     items = items,
@@ -386,8 +385,10 @@ private fun TimelineGrid(
                     histogram = histogram,
                     onScrub = onScrub,
                     onCommit = onCommit,
-                    modifier = Modifier.align(Alignment.TopEnd),
-                )
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    TimelineItemGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
+                }
             }
     }
 }
@@ -413,7 +414,14 @@ private fun TimelineItemGrid(
                 return@collectLatest
             }
             delay(GRID_PREVIEW_SETTLE_MS)
-            fun previewPhotoAt(index: Int) = (items.peek(index) as? TimelineItem.Photo)?.photo?.takeIf { it.preview != null }
+            // Bounds-checked: after a rail commit rebuilds the pager the list can be shorter
+            // than the grid's layoutInfo still says, until the next layout pass.
+            fun previewPhotoAt(index: Int) =
+                if (index !in 0 until items.itemCount) {
+                    null
+                } else {
+                    (items.peek(index) as? TimelineItem.Photo)?.photo?.takeIf { it.preview != null }
+                }
             playingIds =
                 selectPlayingIndices(
                     visibleIndices = gridState.layoutInfo.visibleItemsInfo.map { it.index },

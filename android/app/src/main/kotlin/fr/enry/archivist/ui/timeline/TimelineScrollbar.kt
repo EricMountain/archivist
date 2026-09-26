@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
@@ -92,14 +93,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  * the same continuous chase used everywhere else in this file, so nothing about the
  * rail's own rendering ever jumps.
  *
- * Peeking is also what lets grabbing the rail skip the long press entirely — see
- * [detectFastScrollGesture]'s `skipConfirmation`. The cursor drawn across the touch
- * strip during a peek is the point of the whole thing: it gives a finger something
- * specific to aim at, so putting it down there and starting to drag continues smoothly
- * from wherever the grid already was, rather than the long-press gesture's old
- * behaviour of snapping straight to whatever arbitrary height the finger first touched.
+ * Grabbing the rail always takes a long press, peeking or not: a swipe on the strip must
+ * scroll the grid like anywhere else. A swipe that starts on the strip suppresses the peek
+ * for its own duration (`stripSwipe`), so the rail doesn't appear under the finger doing it.
  *
- * Held: a long press (or, while peeking, any touch on the strip at all) turns the rail
+ * Held: a long press turns the rail
  * into this same labelled synthesis with the thumb tracking the finger **absolutely** —
  * the y it is touched at is *where it is drawn*, always. The first version accumulated
  * per-frame deltas through a velocity-dependent gain instead, which meant a full-height
@@ -148,10 +146,15 @@ fun TimelineScrollbar(
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (LocalDate?) -> Unit,
     modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
 ) {
     // Density-weighted once the histogram is cached, linear in time until then — see
     // RailScale. Null only on a first launch that hasn't reached the server at all.
-    val scale = remember(histogram, bounds) { railScale(histogram, bounds) } ?: return
+    val scale =
+        remember(histogram, bounds) { railScale(histogram, bounds) } ?: run {
+            content()
+            return
+        }
 
     val haptics = LocalHapticFeedback.current
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
@@ -246,7 +249,13 @@ fun TimelineScrollbar(
     // hide and show immediately" when scrolling resumes mid-linger, with no explicit
     // cancellation logic to get wrong.
     var scrollPeekVisible by remember { mutableStateOf(false) }
+    // True from a swipe on the strip being recognised until the scroll it started has
+    // stopped. Swiping *on* the strip scrolls the grid like anywhere else, and the rail
+    // must not pop up under the very finger doing it — it would suggest the strip is a
+    // control (it is, but only after a long press) and cover what's being scrolled.
+    var stripSwipe by remember { mutableStateOf(false) }
     LaunchedEffect(gridState.isScrollInProgress) {
+        if (!gridState.isScrollInProgress) stripSwipe = false
         if (gridState.isScrollInProgress) {
             scrollPeekVisible = true
         } else {
@@ -256,7 +265,7 @@ fun TimelineScrollbar(
     }
     // Gated on idleFraction being non-null too: an enlarged thumb pinned at the top with
     // a label reading nothing would-be-misleading before the first photo has loaded.
-    val peeking = heldRaw != null || lingering != null || (scrollPeekVisible && idleFraction != null)
+    val peeking = heldRaw != null || lingering != null || (scrollPeekVisible && !stripSwipe && idleFraction != null)
 
     // What TimelineRail actually warps around: idleFraction while just peeking (so the
     // rail is *already* magnified around wherever the grid currently is, before any
@@ -296,7 +305,85 @@ fun TimelineScrollbar(
     // narrow touch strip (which clipped the background and wrapped the date pill onto
     // four lines). Only the strip inside it takes pointer input — the rest of this is
     // transparent and non-interactive, so photos underneath stay tappable.
-    Box(modifier.fillMaxHeight().width(RAIL_WIDTH)) {
+    //
+    // The gesture is detected on this outer Box, wrapping the grid, not on a strip laid
+    // over it: siblings don't share pointer events, so a strip on top swallowed every
+    // touch in that area and the grid could never be scrolled from there. A parent sees
+    // events (Initial pass) before its children and consumes them only once a long press
+    // has confirmed, so everything else reaches the grid untouched.
+    Box(
+        modifier.pointerInput(scale) {
+            val stripStartPx = { size.width - HIT_TARGET_WIDTH.toPx() }
+            detectFastScrollGesture(
+                inStrip = { it.x >= stripStartPx() },
+                onSwipe = { stripSwipe = true },
+                onRelease = { if (!gridState.isScrollInProgress) stripSwipe = false },
+                onStart = { y ->
+                    val f = fractionAt(y, trackHeightPx)
+                    heldRaw = f
+                    lingering = null
+                    stripSwipe = false
+                    // lensAnchor is seeded exactly at the touch point — not
+                    // idleFraction — so the very first frame's selection matches
+                    // where the finger actually is; anything else measurably
+                    // mis-selects (a touch far from the idle position would
+                    // otherwise select whatever the lens's compressed far side,
+                    // centred on the old idle spot, happens to map it to, rather
+                    // than the touched day itself) until the chase below caught
+                    // up, which for a short drag might not happen at all.
+                    lensAnchor = f
+                    // railAnchor, by contrast, starts from wherever the rail was
+                    // already showing (idleFraction) and chases lensAnchor exactly
+                    // like lensAnchor chases heldRaw — see its own doc above for
+                    // why the rendering can afford this lag when selection can't.
+                    railAnchor = idleFraction ?: f
+                    lastDragNanos = System.nanoTime()
+                    releaseHistory.clear()
+                    releaseHistory.addLast(lastDragNanos to f)
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                },
+                onDrag = { y ->
+                    val f = fractionAt(y, trackHeightPx)
+                    heldRaw = f
+                    val now = System.nanoTime()
+                    val elapsedMs = (now - lastDragNanos) / 1_000_000f
+                    lastDragNanos = now
+                    lensAnchor = chaseAnchor(lensAnchor ?: f, f, elapsedMs)
+                    railAnchor = chaseAnchor(railAnchor ?: lensAnchor!!, lensAnchor!!, elapsedMs)
+                    releaseHistory.addLast(now to lensUnwarp(f, lensAnchor!!))
+                    while (releaseHistory.size > 1 && now - releaseHistory.first().first > RELEASE_HISTORY_WINDOW_NS) {
+                        releaseHistory.removeFirst()
+                    }
+                },
+                onEnd = {
+                    // Always commits, even when the finger settled here long
+                    // enough that the window is already loaded: the commit is
+                    // also what rebuilds the pager, and that is what clears
+                    // PREPEND's latched end-of-pagination so the timeline can be
+                    // scrolled back toward the present. The repository skips the
+                    // refetch when the day is unchanged, so that costs nothing.
+                    //
+                    // Uses settledSample rather than heldSelected directly — see
+                    // this composable's own doc, "Release" paragraph, for why the
+                    // raw final sample can't be trusted on its own.
+                    val settled = settledSample(releaseHistory, System.nanoTime(), RELEASE_SETTLE_MS) ?: heldSelected
+                    settled?.let { onCommit(scale.dayAt(it)) }
+                    val at = heldRaw
+                    if (at != null && settled != null) {
+                        lingering = LingeringSelection(at, railAnchor ?: at, scale.dayAt(settled))
+                    }
+                    heldRaw = null
+                    lensAnchor = null
+                    railAnchor = null
+                    lastDragNanos = 0L
+                    releaseHistory.clear()
+                },
+            )
+        },
+    ) {
+        content()
+
+        Box(Modifier.align(Alignment.TopEnd).fillMaxHeight().width(RAIL_WIDTH)) {
         if (peeking) {
             TimelineRail(scale = scale, trackHeightPx = trackHeightPx, anchor = visualAnchor)
         }
@@ -306,77 +393,7 @@ fun TimelineScrollbar(
                 .align(Alignment.TopEnd)
                 .fillMaxHeight()
                 .width(HIT_TARGET_WIDTH)
-                .onSizeChanged { trackHeightPx = it.height.toFloat() }
-                .pointerInput(scale) {
-                    detectFastScrollGesture(
-                        // A touch during a peek is landing on a rail that's already on
-                        // screen, cursor and all — there's nothing left to disambiguate
-                        // from an ordinary swipe the way an invisible strip needs the
-                        // long press for, so it can be grabbed immediately. `heldRaw`
-                        // isn't part of this check: it can't be true yet, this decides
-                        // whether a *new* gesture becomes one.
-                        skipConfirmation = { lingering != null || (scrollPeekVisible && idlePhoto != null) },
-                        onStart = { y ->
-                            val f = fractionAt(y, trackHeightPx)
-                            heldRaw = f
-                            lingering = null
-                            // lensAnchor is seeded exactly at the touch point — not
-                            // idleFraction — so the very first frame's selection matches
-                            // where the finger actually is; anything else measurably
-                            // mis-selects (a touch far from the idle position would
-                            // otherwise select whatever the lens's compressed far side,
-                            // centred on the old idle spot, happens to map it to, rather
-                            // than the touched day itself) until the chase below caught
-                            // up, which for a short drag might not happen at all.
-                            lensAnchor = f
-                            // railAnchor, by contrast, starts from wherever the rail was
-                            // already showing (idleFraction) and chases lensAnchor exactly
-                            // like lensAnchor chases heldRaw — see its own doc above for
-                            // why the rendering can afford this lag when selection can't.
-                            railAnchor = idleFraction ?: f
-                            lastDragNanos = System.nanoTime()
-                            releaseHistory.clear()
-                            releaseHistory.addLast(lastDragNanos to f)
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        },
-                        onDrag = { y ->
-                            val f = fractionAt(y, trackHeightPx)
-                            heldRaw = f
-                            val now = System.nanoTime()
-                            val elapsedMs = (now - lastDragNanos) / 1_000_000f
-                            lastDragNanos = now
-                            lensAnchor = chaseAnchor(lensAnchor ?: f, f, elapsedMs)
-                            railAnchor = chaseAnchor(railAnchor ?: lensAnchor!!, lensAnchor!!, elapsedMs)
-                            releaseHistory.addLast(now to lensUnwarp(f, lensAnchor!!))
-                            while (releaseHistory.size > 1 && now - releaseHistory.first().first > RELEASE_HISTORY_WINDOW_NS) {
-                                releaseHistory.removeFirst()
-                            }
-                        },
-                        onEnd = {
-                            // Always commits, even when the finger settled here long
-                            // enough that the window is already loaded: the commit is
-                            // also what rebuilds the pager, and that is what clears
-                            // PREPEND's latched end-of-pagination so the timeline can be
-                            // scrolled back toward the present. The repository skips the
-                            // refetch when the day is unchanged, so that costs nothing.
-                            //
-                            // Uses settledSample rather than heldSelected directly — see
-                            // this composable's own doc, "Release" paragraph, for why the
-                            // raw final sample can't be trusted on its own.
-                            val settled = settledSample(releaseHistory, System.nanoTime(), RELEASE_SETTLE_MS) ?: heldSelected
-                            settled?.let { onCommit(scale.dayAt(it)) }
-                            val at = heldRaw
-                            if (at != null && settled != null) {
-                                lingering = LingeringSelection(at, railAnchor ?: at, scale.dayAt(settled))
-                            }
-                            heldRaw = null
-                            lensAnchor = null
-                            railAnchor = null
-                            lastDragNanos = 0L
-                            releaseHistory.clear()
-                        },
-                    )
-                },
+                .onSizeChanged { trackHeightPx = it.height.toFloat() },
         )
 
 //        if (peeking) {
@@ -428,6 +445,7 @@ fun TimelineScrollbar(
                     trackHeightPx = trackHeightPx,
                     modifier = Modifier.align(Alignment.TopStart),
                 )
+        }
         }
     }
 }
@@ -736,46 +754,59 @@ internal fun settledSample(
 }
 
 /**
- * Long-press on the rail, then drag — unless [skipConfirmation] says the rail is already
- * visible (a peek), in which case a touch on the strip is unambiguous and starts the
- * drag immediately. Nothing is consumed until one or the other confirms, so an ordinary
- * swipe that happens to start on the rail scrolls the grid normally —
+ * Long-press on the rail, then drag. Always — even while the rail is peeking: a touch on
+ * the strip has to stay an ordinary swipe that scrolls the grid, and the only thing
+ * telling the two apart is the long press. Nothing is consumed until it confirms, so a
+ * swipe that starts on the rail scrolls the grid normally —
  * [LazyGridState]'s own `scrollable` modifier sees the same unconsumed events, and this
- * detector just times out having claimed nothing. Everything after confirmation *is*
+ * detector just times out having claimed nothing. [onSwipe]/[onRelease] bracket a touch
+ * that did *not* become a drag, so the caller can tell a strip swipe from a peek. Everything after confirmation *is*
  * consumed, which is what stops the grid reacting to the same drag.
  *
  * Positions are handed on raw and absolute; the caller maps y to a fraction of the
  * track. There is deliberately no delta accumulation and no gain here.
  */
 private suspend fun PointerInputScope.detectFastScrollGesture(
-    skipConfirmation: () -> Boolean,
+    inStrip: (Offset) -> Boolean,
+    onSwipe: () -> Unit,
+    onRelease: () -> Unit,
     onStart: (y: Float) -> Unit,
     onDrag: (y: Float) -> Unit,
     onEnd: () -> Unit,
 ) {
     awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         val downPosition = down.position
+        if (!inStrip(downPosition)) return@awaitEachGesture
 
-        if (!skipConfirmation()) {
-            // Times out (returns null) only if the pointer stayed down, within touch
-            // slop, for the full duration — that is the long press. Any early return
-            // means the gesture resolved as something else and this must not claim it.
-            val abortedEarly =
-                withTimeoutOrNull(LONG_PRESS_MS) {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull
-                        if (!change.pressed) return@withTimeoutOrNull
-                        if ((change.position - downPosition).getDistance() > viewConfiguration.touchSlop) return@withTimeoutOrNull
+        // Times out (returns null) only if the pointer stayed down, within touch
+        // slop, for the full duration — that is the long press. Any early return
+        // means the gesture resolved as something else and this must not claim it.
+        var swiped = false
+        val abortedEarly =
+            withTimeoutOrNull(LONG_PRESS_MS) {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull
+                    if (!change.pressed) return@withTimeoutOrNull
+                    if ((change.position - downPosition).getDistance() > viewConfiguration.touchSlop) {
+                        swiped = true
+                        return@withTimeoutOrNull
                     }
-                } != null
-            if (abortedEarly) return@awaitEachGesture
+                }
+            } != null
+        if (abortedEarly) {
+            // Let the grid have the swipe; wait out the rest of it so `onRelease` fires
+            // when the finger lifts rather than the instant the swipe is recognised.
+            if (swiped) onSwipe()
+            while (currentEvent.changes.any { it.pressed }) awaitPointerEvent(PointerEventPass.Final)
+            onRelease()
+            return@awaitEachGesture
         }
 
         onStart(downPosition.y)
         while (true) {
-            val event = awaitPointerEvent()
+            val event = awaitPointerEvent(PointerEventPass.Initial)
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
             if (!change.pressed) {
                 change.consume()
