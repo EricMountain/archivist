@@ -91,6 +91,10 @@ class PhotoRepository
                 pagingSourceFactory = { TimelinePagingSource(db, db.photoDao(), jumpCoordinator) },
             ).flow
 
+        /** Whether the local cache holds any photos at all — see
+         * [fr.enry.archivist.ui.timeline.TimelineViewModel]'s cold-start reseed. */
+        suspend fun hasCachedPhotos(): Boolean = !db.photoDao().isEmpty()
+
         /**
          * A fast-scroll drag was released on [target] — replace the cache with a window
          * anchored there. A null [target] means "back to the present", which is both the

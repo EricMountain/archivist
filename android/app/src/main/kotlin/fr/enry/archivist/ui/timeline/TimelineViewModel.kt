@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -263,6 +264,17 @@ class TimelineViewModel
 
         init {
             refreshBounds()
+            // A fresh start begins at the present. Room outlives the process, so the cache
+            // still holds whatever window the last session ended in (often a fast-scroll
+            // landing, with everything newer cleared), and a null-keyed pager starts at that
+            // window's first row — reported as "the start position is random". An empty
+            // cache is left alone: the mediator's own initial REFRESH already fetches the
+            // newest page. Waits for unlock since the reseed needs the master key; offline
+            // failures are swallowed by [applyJump], leaving the cache as it was.
+            viewModelScope.launch {
+                locked.first { !it }
+                if (photoRepository.hasCachedPhotos()) applyJump(null, scrub = false)
+            }
             // See UploadEvents' own doc for why the timeline needs this at all (unlike
             // the queue screen, which observes `upload_queue` directly): the upload
             // pipeline never writes to the `photos` table itself, so nothing else here
