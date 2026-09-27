@@ -208,20 +208,16 @@ fun TimelineScrollbar(
     // Both derived from one photo lookup, not two separate ones, so the label and the
     // thumb's position can never disagree about which photo they're describing.
     //
-    // Sticky on the last non-null result, rather than tracking [nearestPhoto] verbatim:
-    // confirmed live via logcat that a `LazyPagingItems` diff/generation swap can
-    // transiently regress an *already-resolved* index back to a placeholder for a
-    // single frame — even with the grid sitting still, `isScrollInProgress` already
-    // false — which made [nearestPhoto] return null for exactly one recomposition and
-    // `idleFraction` (below) go null with it. Since [peeking] is gated on `idleFraction
-    // != null`, that one frame was enough to blink the whole rail off and back on;
-    // repeated swiping repeats the diff and repeats the blink, reported live as "the
-    // rail bubbles and guide flicker a few times before disappearing". A brand-new
-    // `items`/`scale` identity (a jump rebuilding the pager) resets this, same as
-    // everything else keyed on them — nothing here claims a stale photo across that.
+    // Read through the grid's own layout (the item actually at the top of the screen),
+    // and only when that layout agrees with [items] — see [syncedVisiblePhotos]. When
+    // they disagree the last answer stands: the photo on screen hasn't moved, only the
+    // list's indices have.
     val idlePhoto by remember(items, scale) {
-        var lastNonNull: PhotoEntity? = null
-        derivedStateOf { nearestPhoto(items, gridState.firstVisibleItemIndex)?.also { lastNonNull = it } ?: lastNonNull }
+        var last: PhotoEntity? = null
+        derivedStateOf {
+            val first = gridState.layoutInfo.visibleItemsInfo.firstOrNull()
+            first?.let { syncedVisiblePhotos(listOf(it), items)?.single() }?.also { last = it } ?: last
+        }
     }
     val idleDay = idlePhoto?.localDate()
 
@@ -879,21 +875,6 @@ private suspend fun PointerInputScope.detectFastScrollGesture(
         }
         onEnd()
     }
-}
-
-/** The idle thumb's own row: nearest loaded photo at or after [startIndex]
- * (the first non-placeholder in a 3-item window), read via [LazyPagingItems.peek] so drawing
- * a scrollbar never triggers a page load. The whole entity rather than its `takenAt`,
- * because placing the thumb on a density-weighted rail needs the photo's *day*, and that
- * depends on its own recorded offset too. */
-internal fun nearestPhoto(
-    items: LazyPagingItems<PhotoEntity>,
-    startIndex: Int,
-): PhotoEntity? {
-    for (i in startIndex until minOf(startIndex + 3, items.itemCount)) {
-        items.peek(i)?.let { return it }
-    }
-    return null
 }
 
 internal fun fractionAt(

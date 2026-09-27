@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.grid.LazyGridItemInfo
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +40,7 @@ import java.time.format.FormatStyle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 
 /** One laid-out row as the grid currently has it. [dates] has one entry per cell,
  * `null` for a paging placeholder that hasn't loaded yet. */
@@ -115,6 +117,28 @@ internal fun placeBubbles(
     return result
 }
 
+/**
+ * The photo in each of [infos], or null if the grid's last layout and [items] disagree.
+ *
+ * `layoutInfo` describes the last layout pass; [items] can already hold a newer list.
+ * With placeholders disabled, Paging reloading or dropping a page above the viewport
+ * shifts every index (confirmed live: 180 -> 176 -> 236 items ~500 ms after a swipe
+ * settled, top item at index 84, then 20, then 80, never moving on screen). For the
+ * frame in between, `peek(info.index)` is some other photo, and anything built on it
+ * showed another row's date. Checking each cell's key catches exactly that frame.
+ */
+internal fun syncedVisiblePhotos(
+    infos: List<LazyGridItemInfo>,
+    items: LazyPagingItems<PhotoEntity>,
+): List<PhotoEntity>? {
+    val count = items.itemCount
+    return infos.map { info ->
+        val photo = if (info.index < count) items.peek(info.index) else null
+        if (photo == null || photo.photoId != info.key) return null
+        photo
+    }
+}
+
 /** How long the bubbles stay after the grid's scroll position last changed. */
 internal const val BUBBLE_LINGER_MS = 2000L
 
@@ -139,9 +163,13 @@ internal fun DateBubbleOverlay(
 ) {
     var lingering by remember { mutableStateOf(false) }
     LaunchedEffect(gridState) {
-        // drop(1): no flash on first composition. A jump's scrollToItem is a position
-        // change, so it does show them.
-        snapshotFlow { gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset }
+        // Keyed on the top item's identity and offset, not firstVisibleItemIndex: Paging
+        // reloading or dropping pages above the viewport renumbers every index while
+        // nothing on screen moves, and that must not bring the bubbles back.
+        // drop(1) (after the first real layout): no flash on first composition. A jump's
+        // scrollToItem does change what's on top, so it shows them.
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.let { it.key to it.offset.y } }
+            .filterNotNull()
             .drop(1)
             .collectLatest {
                 lingering = true
@@ -158,42 +186,36 @@ internal fun DateBubbleOverlay(
     val stickyTopPx = with(density) { (topInset + BUBBLE_MARGIN).roundToPx() }
 
     // Only read inside the AnimatedVisibility content below, so nothing is computed
-    // while the bubbles are hidden.
-    //
-    // Sticky per index on the last resolved date, rather than a bare items.peek() read:
-    // a LazyPagingItems diff/generation swap can transiently regress an already-loaded
-    // index back to a placeholder for a single frame (confirmed live via logcat against
-    // the rail's own idlePhoto, which reads the same way — see its own doc). Since
-    // rowDate treats any null cell as "unknown" (by design: better no bubble than a
-    // wrong one), that one frame was enough to drop the sticky top bubble entirely and
-    // pop it back the next — reported live as flicker during continuous swiping. The
-    // cache only ever fills in a *previously seen* index, so a row that's never
-    // resolved at all still gets no bubble, same as before.
+    // while the bubbles are hidden. When the grid's last layout and [items] disagree
+    // (see [syncedVisiblePhotos]) the previous placement stands.
     val bubbles by remember(gridState, items, heightPx, gapPx, marginPx, stickyTopPx) {
-        val lastKnownDate = mutableMapOf<Int, LocalDate>()
+        var last = emptyList<Bubble>()
         derivedStateOf {
-            val count = items.itemCount
-            fun dateAt(i: Int): LocalDate? {
-                if (i !in 0 until count) return null
-                val live = items.peek(i)?.localDate()
-                if (live != null) lastKnownDate[i] = live
-                return live ?: lastKnownDate[i]
-            }
             val infos = gridState.layoutInfo.visibleItemsInfo
             if (infos.isEmpty()) return@derivedStateOf emptyList()
+            val photos = syncedVisiblePhotos(infos, items) ?: return@derivedStateOf last
+            val dateOf = infos.indices.associate { infos[it].index to photos[it].localDate() }
             val columns = infos.maxOf { it.column } + 1
             val rows =
                 infos
                     .groupBy { it.row }
                     .toSortedMap()
                     .map { (row, cells) ->
-                        RowGeom(row, cells.first().offset.y, cells.sortedBy { it.index }.map { dateAt(it.index) })
+                        RowGeom(row, cells.first().offset.y, cells.sortedBy { it.index }.map { dateOf[it.index] })
                     }
             val firstRow = rows.first()
             val firstIndex = infos.filter { it.row == firstRow.row }.minOf { it.index }
+            // Not on screen, so there's no key to check these against, but the visible
+            // cells just proved this snapshot of [items] matches the layout.
             val above =
-                if (firstRow.row == 0) null else (maxOf(0, firstIndex - columns) until firstIndex).map { dateAt(it) }
-            placeBubbles(rows, above, stickyTopPx, heightPx, gapPx, marginPx)
+                if (firstRow.row == 0) {
+                    null
+                } else {
+                    (maxOf(0, firstIndex - columns) until firstIndex).map { i ->
+                        if (i < items.itemCount) items.peek(i)?.localDate() else null
+                    }
+                }
+            placeBubbles(rows, above, stickyTopPx, heightPx, gapPx, marginPx).also { last = it }
         }
     }
 
