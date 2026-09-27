@@ -42,6 +42,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.drop
@@ -156,11 +157,17 @@ fun DetailScreen(
         val target = pagerPhotos.indexOfFirst { it.photoId == focusedId }
         if (target >= 0 && target != pagerState.currentPage) pagerState.scrollToPage(target)
     }
+    // Read through rememberUpdatedState: this collector is launched once, so a plain
+    // `pagerPhotos` here would be the list from first composition -- often the
+    // one-photo placeholder. A swipe then resolved to no photo (or the wrong one),
+    // focusedId stayed on the tapped photo, and the next `photos` re-emission (e.g. a
+    // repair rewriting the row) snapped the pager back to it.
+    val latestPagerPhotos by rememberUpdatedState(pagerPhotos)
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.isScrollInProgress }
             .drop(1)
             .filter { !it }
-            .collect { pagerPhotos.getOrNull(pagerState.currentPage)?.let { focusedId = it.photoId } }
+            .collect { latestPagerPhotos.getOrNull(pagerState.currentPage)?.let { focusedId = it.photoId } }
     }
     val currentPhoto = pagerPhotos.getOrNull(pagerState.currentPage.coerceIn(0, pagerPhotos.lastIndex))
     val currentDetail = currentPhoto?.let { photo -> (details[photo.photoId] as? PhotoDetailUiState.Loaded)?.detail }
