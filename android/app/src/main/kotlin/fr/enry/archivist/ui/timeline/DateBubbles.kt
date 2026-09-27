@@ -159,10 +159,26 @@ internal fun DateBubbleOverlay(
 
     // Only read inside the AnimatedVisibility content below, so nothing is computed
     // while the bubbles are hidden.
+    //
+    // Sticky per index on the last resolved date, rather than a bare items.peek() read:
+    // a LazyPagingItems diff/generation swap can transiently regress an already-loaded
+    // index back to a placeholder for a single frame (confirmed live via logcat against
+    // the rail's own idlePhoto, which reads the same way — see its own doc). Since
+    // rowDate treats any null cell as "unknown" (by design: better no bubble than a
+    // wrong one), that one frame was enough to drop the sticky top bubble entirely and
+    // pop it back the next — reported live as flicker during continuous swiping. The
+    // cache only ever fills in a *previously seen* index, so a row that's never
+    // resolved at all still gets no bubble, same as before.
     val bubbles by remember(gridState, items, heightPx, gapPx, marginPx, stickyTopPx) {
+        val lastKnownDate = mutableMapOf<Int, LocalDate>()
         derivedStateOf {
             val count = items.itemCount
-            fun dateAt(i: Int): LocalDate? = if (i in 0 until count) items.peek(i)?.localDate() else null
+            fun dateAt(i: Int): LocalDate? {
+                if (i !in 0 until count) return null
+                val live = items.peek(i)?.localDate()
+                if (live != null) lastKnownDate[i] = live
+                return live ?: lastKnownDate[i]
+            }
             val infos = gridState.layoutInfo.visibleItemsInfo
             if (infos.isEmpty()) return@derivedStateOf emptyList()
             val columns = infos.maxOf { it.column } + 1

@@ -207,8 +207,21 @@ fun TimelineScrollbar(
 
     // Both derived from one photo lookup, not two separate ones, so the label and the
     // thumb's position can never disagree about which photo they're describing.
+    //
+    // Sticky on the last non-null result, rather than tracking [nearestPhoto] verbatim:
+    // confirmed live via logcat that a `LazyPagingItems` diff/generation swap can
+    // transiently regress an *already-resolved* index back to a placeholder for a
+    // single frame — even with the grid sitting still, `isScrollInProgress` already
+    // false — which made [nearestPhoto] return null for exactly one recomposition and
+    // `idleFraction` (below) go null with it. Since [peeking] is gated on `idleFraction
+    // != null`, that one frame was enough to blink the whole rail off and back on;
+    // repeated swiping repeats the diff and repeats the blink, reported live as "the
+    // rail bubbles and guide flicker a few times before disappearing". A brand-new
+    // `items`/`scale` identity (a jump rebuilding the pager) resets this, same as
+    // everything else keyed on them — nothing here claims a stale photo across that.
     val idlePhoto by remember(items, scale) {
-        derivedStateOf { nearestPhoto(items, gridState.firstVisibleItemIndex) }
+        var lastNonNull: PhotoEntity? = null
+        derivedStateOf { nearestPhoto(items, gridState.firstVisibleItemIndex)?.also { lastNonNull = it } ?: lastNonNull }
     }
     val idleDay = idlePhoto?.localDate()
 
