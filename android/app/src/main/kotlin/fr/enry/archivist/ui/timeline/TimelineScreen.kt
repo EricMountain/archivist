@@ -4,6 +4,17 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
+import androidx.compose.foundation.layout.systemGestures
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -544,7 +555,7 @@ private fun TimelineGrid(
             }
 
         TimelineContentState.CONTENT ->
-            Box(modifier.fillMaxSize()) {
+            Box(modifier.fillMaxSize().leaveSystemBarSwipesToTheSystem()) {
                 // The host view draws its own fading scroll indicator over any scrollable
                 // content, which has nothing to do with (and doesn't agree with) the
                 // time-based one below — Compose exposes no way to opt a single lazy
@@ -714,3 +725,37 @@ private tailrec fun Context.findActivity(): Activity? =
         is ContextWrapper -> baseContext.findActivity()
         else -> null
     }
+
+/**
+ * Drags that start on the (hidden) status bar's strip or the gesture-handle strip belong
+ * to the system — revealing the bars, going home — so the grid must not scroll with them.
+ * Seen on the Initial pass, before the grid, and only movement is consumed: a tap there
+ * still reaches the photo underneath. The strips are the bars' own sizes, read ignoring
+ * visibility (the grid is immersive, so the plain insets are 0), widened to the system
+ * gesture insets where those are taller.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun Modifier.leaveSystemBarSwipesToTheSystem(): Modifier {
+    val density = LocalDensity.current
+    val topPx =
+        maxOf(
+            WindowInsets.statusBarsIgnoringVisibility.getTop(density),
+            WindowInsets.systemGestures.getTop(density),
+        )
+    val bottomPx =
+        maxOf(
+            WindowInsets.navigationBarsIgnoringVisibility.getBottom(density),
+            WindowInsets.systemGestures.getBottom(density),
+        )
+    return pointerInput(topPx, bottomPx) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (down.position.y >= topPx && down.position.y <= size.height - bottomPx) return@awaitEachGesture
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                event.changes.forEach { if (it.positionChange() != Offset.Zero) it.consume() }
+            } while (event.changes.any { it.pressed })
+        }
+    }
+}
