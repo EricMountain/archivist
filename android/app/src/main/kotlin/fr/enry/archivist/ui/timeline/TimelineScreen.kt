@@ -576,7 +576,7 @@ private fun TimelineGrid(
                     trackTopInset = topInset + MENU_MARGIN + MENU_BUTTON_SIZE + MENU_MARGIN,
                 ) {
                     Box(Modifier.fillMaxSize()) {
-                        TimelinePhotoGrid(items, host, gridState, topInset, onPhotoClick, Modifier.fillMaxSize())
+                        TimelinePhotoGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
                         // Above the grid, below the rail (which the scrollbar draws after
                         // this slot).
                         DateBubbleOverlay(items, gridState, topInset, Modifier.fillMaxSize())
@@ -591,7 +591,6 @@ private fun TimelinePhotoGrid(
     items: LazyPagingItems<PhotoEntity>,
     host: String?,
     gridState: LazyGridState,
-    topInset: Dp,
     onPhotoClick: (PhotoEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -628,7 +627,9 @@ private fun TimelinePhotoGrid(
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 96.dp),
         state = gridState,
-        contentPadding = PaddingValues(top = topInset),
+        // No top padding for the cutout: it would show as a blank band above row 0 at
+        // scroll offset 0 (app start, and wherever a rail jump lands). The grid runs
+        // under the cutout; the bubbles and menu clear it via [topInset] instead.
         modifier = modifier,
     ) {
         items(

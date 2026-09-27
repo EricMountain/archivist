@@ -40,6 +40,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -557,26 +558,19 @@ private fun TimelineRail(
             }
         }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
-    ) {
+    // No backing panel: each label is its own translucent white bubble over the photos.
+    Box(Modifier.fillMaxSize()) {
         for ((tick, drawnAt) in visibleTicks) {
             val y = with(density) { (drawnAt * trackHeightPx).toDp() }
-            Text(
+            TickBubble(
                 text = tick.label,
-                style = MaterialTheme.typography.labelSmall,
                 fontWeight = if (tick.major) FontWeight.SemiBold else FontWeight.Normal,
-                color =
-                    MaterialTheme.colorScheme.onSurface.copy(
-                        alpha = if (tick.major) 0.85f else 0.45f,
-                    ),
+                color = Color.Black.copy(alpha = if (tick.major) 0.9f else 0.6f),
                 modifier =
                     Modifier
                         .align(Alignment.TopStart)
                         .wrapContentWidth(Alignment.Start, unbounded = true)
-                        .offset(x = COARSE_TICK_GAP, y = y - 8.dp),
+                        .offset(x = COARSE_TICK_GAP, y = y - TICK_BUBBLE_HALF_HEIGHT),
             )
         }
         // Drawn after (so visually on top of) the coarse ticks, and given *more*
@@ -585,22 +579,44 @@ private fun TimelineRail(
         // sit clear of it rather than tucked in close where a real fingertip covers them.
         for (tick in fineTicks) {
             val y = with(density) { (lensWarp(tick.fraction, anchor!!) * trackHeightPx).toDp() }
-            Text(
+            TickBubble(
                 text = tick.label,
-                style = MaterialTheme.typography.labelSmall,
                 fontWeight = if (tick.major) FontWeight.Bold else FontWeight.Normal,
-                color =
-                    (if (tick.major) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        .copy(alpha = if (tick.major) 1f else 0.7f),
+                color = if (tick.major) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.8f),
                 modifier =
                     Modifier
                         .align(Alignment.TopStart)
                         .wrapContentWidth(Alignment.Start, unbounded = true)
-                        .offset(x = FINE_TICK_GAP, y = y - 8.dp),
+                        .offset(x = FINE_TICK_GAP, y = y - TICK_BUBBLE_HALF_HEIGHT),
             )
         }
     }
 }
+
+/** A rail label: dark text on an 80%-opaque white pill, legible over any photo. */
+@Composable
+private fun TickBubble(
+    text: String,
+    fontWeight: FontWeight,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = fontWeight,
+        color = color,
+        maxLines = 1,
+        modifier =
+            modifier
+                .background(Color.White.copy(alpha = 0.8f), RoundedCornerShape(50))
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+    )
+}
+
+/** Half the height of a [TickBubble] (labelSmall's 16dp line plus 2dp padding each side),
+ * so its centre lands on the tick's y. */
+private val TICK_BUBBLE_HALF_HEIGHT = 10.dp
 
 /**
  * Thins [ticks] so none land closer together than [minGapFraction] once [warp] is
