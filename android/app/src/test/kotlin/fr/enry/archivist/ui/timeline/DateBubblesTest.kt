@@ -86,9 +86,34 @@ class DateBubblesTest {
     }
 
     @Test
-    fun `sticky bubble is dropped once pushed wholly off screen`() {
-        val out = place(listOf(row(3, -50, d1), row(4, -4, d2)), above = listOf(d1))
-        assertEquals(listOf(d2), out.map { it.date })
+    fun `incoming bubble pins at the sticky line and the old one slides off above it`() {
+        // Row 4's natural y is 6: past the pin line (8), so it owns the pin; the d1
+        // bubble it replaced sits bubble+gap above its natural position.
+        val out = place(listOf(row(3, -100, d1), row(4, -2, d2)), above = listOf(d1))
+        assertEquals(setOf(Bubble(d2, 8, 4), Bubble(d1, 6 - h - gap, 3)), out.toSet())
+    }
+
+    @Test
+    fun `pushed-off bubble is dropped once wholly above the screen`() {
+        val out = place(listOf(row(3, -100, d1), row(4, -12, d2)), above = listOf(d1))
+        assertEquals(listOf(Bubble(d2, 8, 4)), out)
+    }
+
+    @Test
+    fun `handover is continuous both ways, and the incoming bubble never overshoots the pin`() {
+        var prev: Map<LocalDate, Int>? = null
+        // Row 4 moves from well below the pin line to well above it, one pixel at a time.
+        for (top in 60 downTo -60) {
+            val out = place(listOf(row(3, top - 100, d1), row(4, top, d2), row(5, top + 100, d2)), above = listOf(d1))
+            val y = out.associate { it.date to it.yPx }
+            assertTrue(y.getValue(d2) >= stickyTop, "d2 at $top overshot the pin: ${y[d2]}")
+            prev?.let { p ->
+                for (date in y.keys intersect p.keys) {
+                    assertTrue(Math.abs(y.getValue(date) - p.getValue(date)) <= 1, "$date jumped at $top: ${p[date]} -> ${y[date]}")
+                }
+            }
+            prev = y
+        }
     }
 
     @Test

@@ -74,8 +74,16 @@ internal fun rowDate(cells: List<LocalDate?>): LocalDate? {
  *
  * A row is labelled iff it is row 0 or its date differs from the row above's; a row with
  * an unknown date ([rowDate] null) is never labelled and doesn't make the row below
- * "different". The topmost visible row always gets a bubble, pinned at [stickyTopPx]
- * (like a sticky header) and pushed up by the next labelled row.
+ * "different". Labelled rows below the pin line get a bubble at their own natural
+ * position (`topPx + marginPx`).
+ *
+ * The pin line is [stickyTopPx]. The last row whose natural position has reached it
+ * owns the pinned bubble, showing its own date, like a sticky header. The next labelled
+ * row's bubble travels with its row until it reaches the pin line and stops there; it
+ * never overshoots and drops back. The bubble it replaces is pushed ahead of it, kept
+ * `bubbleHeightPx + gapPx` above the incoming row's natural position, so it slides off
+ * at scroll speed. Every bubble's y is continuous in the scroll position, so reversing
+ * the scroll plays the same handover backwards with no jump either way.
  *
  * @param rows visible rows ascending by row, from `layoutInfo`.
  * @param rowAboveFirst the cells of the row just above `rows.first()`, or null when
@@ -91,28 +99,39 @@ internal fun placeBubbles(
 ): List<Bubble> {
     if (rows.isEmpty()) return emptyList()
     val dates = rows.map { rowDate(it.dates) }
+    val aboveDate = rowAboveFirst?.let(::rowDate)
     val labelled =
         rows.indices.map { i ->
             val date = dates[i] ?: return@map false
             if (rows[i].row == 0) return@map true
-            val prev = if (i == 0) rowAboveFirst?.let(::rowDate) else dates[i - 1]
+            val prev = if (i == 0) aboveDate else dates[i - 1]
             prev != null && prev != date
         }
+    val natural = rows.map { it.topPx + marginPx }
+    val visible = { y: Int -> y + bubbleHeightPx > 0 }
 
+    // The row at the pin line. Only the very top of the list can start below it.
+    val pinned = natural.indexOfLast { it <= stickyTopPx }.coerceAtLeast(0)
     val result = mutableListOf<Bubble>()
-    val first = rows.first()
-    val firstDate = dates.first()
-    if (firstDate != null) {
-        val natural = first.topPx + marginPx
-        var y = maxOf(natural, stickyTopPx)
-        val nextLabelledY = rows.indices.drop(1).firstOrNull { labelled[it] }?.let { rows[it].topPx + marginPx }
-        if (nextLabelledY != null) y = minOf(y, nextLabelledY - bubbleHeightPx - gapPx)
-        if (y + bubbleHeightPx > 0) result += Bubble(firstDate, y, first.row)
+
+    // Pinned bubble, pushed up by the next labelled row below it.
+    dates[pinned]?.let { date ->
+        var y = maxOf(natural[pinned], stickyTopPx)
+        val next = (pinned + 1 until rows.size).firstOrNull { labelled[it] }
+        if (next != null) y = minOf(y, natural[next] - bubbleHeightPx - gapPx)
+        if (visible(y)) result += Bubble(date, y, rows[pinned].row)
     }
-    for (i in 1 until rows.size) {
-        if (!labelled[i]) continue
-        val y = rows[i].topPx + marginPx
-        if (y + bubbleHeightPx > 0) result += Bubble(dates[i]!!, y, rows[i].row)
+
+    // The bubble the pinned one replaced, still sliding off ahead of its row.
+    val sectionStart = (0..pinned).lastOrNull { labelled[it] }
+    if (sectionStart != null) {
+        val before = if (sectionStart == 0) aboveDate else dates[sectionStart - 1]
+        val y = natural[sectionStart] - bubbleHeightPx - gapPx
+        if (before != null && visible(y)) result += Bubble(before, y, rows[sectionStart].row - 1)
+    }
+
+    for (i in pinned + 1 until rows.size) {
+        if (labelled[i] && visible(natural[i])) result += Bubble(dates[i]!!, natural[i], rows[i].row)
     }
     return result
 }
