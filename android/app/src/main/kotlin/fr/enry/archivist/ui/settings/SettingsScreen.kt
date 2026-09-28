@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.dp
 import fr.enry.archivist.ui.queue.QueueScreen
 import fr.enry.archivist.ui.trash.TrashScreen
 
-private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, PRIVACY, ACCOUNT, TRASH, QUEUE, ABOUT }
+private enum class SettingsDestination { SYNC, DEVICES, KEYS, STORAGE, STATS, PRIVACY, ACCOUNT, TRASH, QUEUE, ABOUT }
 
 /**
  * Plan step 2.14: "the minimum that isn't hostile" — a plain menu over the five
@@ -44,6 +44,7 @@ fun SettingsScreen(
         SettingsDestination.DEVICES -> DevicesScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.KEYS -> KeysScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.STORAGE -> StorageScreen(onBack = { destination = null }, modifier = modifier)
+        SettingsDestination.STATS -> StatsScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.PRIVACY -> PrivacyScreen(onBack = { destination = null }, modifier = modifier)
         SettingsDestination.ACCOUNT ->
             AccountScreen(onBack = { destination = null }, onSessionEnded = onSessionEnded, modifier = modifier)
@@ -74,6 +75,8 @@ private fun SettingsMenu(
         MenuRow("Keys", "Enrolled devices, recovery code") { onSelect(SettingsDestination.KEYS) }
         HorizontalDivider()
         MenuRow("Storage", "Thumbnail cache") { onSelect(SettingsDestination.STORAGE) }
+        HorizontalDivider()
+        MenuRow("Stats", "Cache hit rate, thumbnail load times") { onSelect(SettingsDestination.STATS) }
         HorizontalDivider()
         MenuRow("Privacy", "Strip location from uploads") { onSelect(SettingsDestination.PRIVACY) }
         HorizontalDivider()

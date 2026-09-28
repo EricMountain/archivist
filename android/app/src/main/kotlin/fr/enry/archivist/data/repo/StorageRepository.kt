@@ -29,9 +29,28 @@ class StorageRepository
                 SingletonImageLoader.get(context).diskCache?.size ?: 0L
             }
 
+        /** Disk and memory cache occupancy for Settings > Stats. */
+        suspend fun cacheUsage(): CacheUsage =
+            withContext(Dispatchers.IO) {
+                val loader = SingletonImageLoader.get(context)
+                CacheUsage(
+                    diskBytes = loader.diskCache?.size ?: 0L,
+                    diskMaxBytes = loader.diskCache?.maxSize ?: 0L,
+                    memoryBytes = loader.memoryCache?.size ?: 0L,
+                    memoryMaxBytes = loader.memoryCache?.maxSize ?: 0L,
+                )
+            }
+
         suspend fun clearCache() {
             withContext(Dispatchers.IO) {
                 SingletonImageLoader.get(context).diskCache?.clear()
             }
         }
     }
+
+data class CacheUsage(
+    val diskBytes: Long,
+    val diskMaxBytes: Long,
+    val memoryBytes: Long,
+    val memoryMaxBytes: Long,
+)

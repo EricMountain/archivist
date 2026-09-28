@@ -95,7 +95,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** The rung shown in the grid — matches [fr.enry.archivist.sync.Thumbnailer]'s smallest
  * rung, per android.md's "load the 256 thumbnail for instant paint". */
-private const val GRID_THUMB_SIZE = 256
+internal const val GRID_THUMB_SIZE = 256
 
 /** How long after a jump the `jumpCompleted` collector keeps reasserting the scroll
  * position at all. Bounded so it stops fighting the user's own scrolling once real

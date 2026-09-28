@@ -8,12 +8,16 @@ import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
 import coil3.disk.directory
+import coil3.key.Keyer
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.HiltAndroidApp
 import dagger.hilt.components.SingletonComponent
 import fr.enry.archivist.crypto.EncryptedImageFetcher
+import fr.enry.archivist.crypto.EncryptedThumbRef
+import fr.enry.archivist.data.metrics.ImageLoadMetrics
+import fr.enry.archivist.data.metrics.ImageLoadMetricsListenerFactory
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.local.db.UploadQueueDao
@@ -46,6 +50,8 @@ class ArchivistApplication : Application(), Configuration.Provider, SingletonIma
         fun uploadScheduler(): UploadScheduler
 
         fun baseOkHttpClient(): OkHttpClient
+
+        fun imageLoadMetrics(): ImageLoadMetrics
     }
 
     @Inject
@@ -90,7 +96,17 @@ class ArchivistApplication : Application(), Configuration.Provider, SingletonIma
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         val holders = EntryPointAccessors.fromApplication(this, MasterKeyHolderEntryPoint::class.java)
         return ImageLoader.Builder(context)
-            .components { add(EncryptedImageFetcher.Factory(holders.baseOkHttpClient(), holders.masterKeyHolder())) }
+            .components {
+                add(EncryptedImageFetcher.Factory(holders.baseOkHttpClient(), holders.masterKeyHolder()))
+                // Without a Keyer, Coil has no memory-cache key for a custom data type and
+                // silently skips the memory cache altogether: every thumbnail scrolled back
+                // into view was re-read from disk and re-decoded (found via Settings > Stats:
+                // 0 memory hits, memory cache 0 B). The URL is already the disk cache key;
+                // Coil adds the requested size to it.
+                add(Keyer<EncryptedThumbRef> { ref, _ -> ref.url })
+            }
+            // Settings > Stats: cache hit rate and time-to-image, on-device only.
+            .eventListenerFactory(ImageLoadMetricsListenerFactory(holders.imageLoadMetrics()))
             .diskCache {
                 DiskCache.Builder()
                     .directory(noBackupFilesDir.resolve("thumbnail_cache"))
