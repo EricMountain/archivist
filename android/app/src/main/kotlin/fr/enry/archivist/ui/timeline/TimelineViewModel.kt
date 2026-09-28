@@ -39,6 +39,16 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 
+/** A jump that has landed: [landing] is the key the grid should hold on, [position] the
+ * rail position that asked for it (so the grid can land partway through the day, not on
+ * its first photo), and [scrub] whether it was a mid-drag scrub — whose placement
+ * `TimelineScrollbar` handles itself — rather than a release or programmatic jump. */
+internal data class JumpLanding(
+    val landing: TimelineKey?,
+    val position: RailPosition,
+    val scrub: Boolean,
+)
+
 /**
  * Plan step 2.11. [locked] gates the whole screen off the grid the moment the master
  * key disappears — sign-out, delete-account, or (rare) never having unlocked yet in
@@ -137,8 +147,8 @@ class TimelineViewModel
          * `SharedFlow` with no replay on purpose: it's a one-shot "this just happened",
          * and a replayed value would re-scroll the grid on the next recomposition that
          * happens to re-collect it. */
-        private val _jumpCompleted = MutableSharedFlow<TimelineKey?>()
-        val jumpCompleted: SharedFlow<TimelineKey?> = _jumpCompleted.asSharedFlow()
+        private val _jumpCompleted = MutableSharedFlow<JumpLanding>()
+        internal val jumpCompleted: SharedFlow<JumpLanding> = _jumpCompleted.asSharedFlow()
 
         /** Jumps run one at a time. A drag issues a stream of scrubs and then a commit,
          * and two reseeds overlapping would leave the cache on whichever finished last
@@ -161,8 +171,8 @@ class TimelineViewModel
          * present"). Usually free: the scrubs have already loaded this window, so the
          * repository answers from Room.
          */
-        fun onJumpCommitted(day: LocalDate?) {
-            viewModelScope.launch { applyJump(day, scrub = false) }
+        internal fun onJumpCommitted(position: RailPosition) {
+            viewModelScope.launch { applyJump(position.day, scrub = false, position) }
         }
 
         /** Failures are swallowed the same way every other network path on this screen
@@ -171,6 +181,7 @@ class TimelineViewModel
         private suspend fun applyJump(
             day: LocalDate?,
             scrub: Boolean,
+            position: RailPosition = RailPosition(day),
         ) = jumpLock.withLock {
             val outcome =
                 try {
@@ -199,7 +210,7 @@ class TimelineViewModel
                 livePagerKey = outcome.landing
                 pagerGeneration.update { PagerSeed(it.generation + 1, outcome.landing) }
             }
-            _jumpCompleted.emit(outcome.landing)
+            _jumpCompleted.emit(JumpLanding(outcome.landing, position, scrub))
         }
 
         private fun refreshBounds() {

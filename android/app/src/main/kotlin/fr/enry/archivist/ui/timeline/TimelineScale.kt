@@ -21,8 +21,23 @@ internal interface RailScale {
      * `TimelineScrollbar.jumpDayFor`. */
     fun dayAt(fraction: Float): LocalDate?
 
+    /** [dayAt], plus how far through that day [fraction] is — what lets the grid follow
+     * the finger continuously rather than jumping from one day's first photo to the
+     * next. Its `day` always agrees with [dayAt]. */
+    fun positionAt(fraction: Float): RailPosition
+
     /** Where [day] sits on the track: the inverse of [dayAt], for the idle thumb. */
     fun fractionOfDay(day: LocalDate): Float
+
+    /** How many photos [day] has, if this scale knows — the [RailPosition.dayCount]
+     * [positionAt] would report for it. */
+    fun dayCount(day: LocalDate): Int?
+
+    /** The inverse of [positionAt]: where [progress] of the way through [day] sits. */
+    fun fractionOf(
+        day: LocalDate,
+        progress: Float,
+    ): Float
 
     /** The labelled points drawn down the rail, top-down (newest first). */
     fun ticks(maxTicks: Int = MAX_TICKS): List<TimelineTick>
@@ -44,6 +59,20 @@ internal interface RailScale {
 /** How many day-level ticks the lens shows on each side of the anchor at most — enough
  * to fill the expanded region without crowding into unreadable text. */
 internal const val FINE_TICK_COUNT = 9
+
+/**
+ * A point on the rail at finer than day grain: [progress] is how far through [day]'s own
+ * stretch of track it is, 0 at the day's newest photo (its top on the newest-first rail)
+ * towards 1 at its oldest. [day] null is "back to the present", where progress means
+ * nothing. [dayCount] is how many photos [day] has, when the scale knows (the histogram
+ * does; the time-linear fallback doesn't) — so the grid can turn [progress] into a photo
+ * offset without waiting for the whole day to have loaded.
+ */
+data class RailPosition(
+    val day: LocalDate?,
+    val progress: Float = 0f,
+    val dayCount: Int? = null,
+)
 
 /** One label on the fast-scroll rail. [fraction] is its position along the track. */
 internal data class TimelineTick(
@@ -99,6 +128,17 @@ internal class DensityScale(histogram: TimelineHistogram) : RailScale {
         return days[dayIndexOf(photoIndex)]
     }
 
+    override fun positionAt(fraction: Float): RailPosition {
+        if (fraction <= TOP_OF_RAIL_FRACTION || days.isEmpty()) return RailPosition(null)
+        // Unlike dayAt, the photo position is kept fractional: the part after the
+        // decimal point is what moves the grid between one photo and the next.
+        val photo = fraction.coerceIn(0f, 1f) * total
+        val i = dayIndexOf(photo.toInt().coerceAtMost(total - 1))
+        val count = startIndex[i + 1] - startIndex[i]
+        val progress = if (count == 0) 0f else ((photo - startIndex[i]) / count).coerceIn(0f, 1f)
+        return RailPosition(days[i], progress, count)
+    }
+
     /** Binary search for the day whose photo range contains [photoIndex]. */
     private fun dayIndexOf(photoIndex: Int): Int {
         var lo = 0
@@ -117,6 +157,22 @@ internal class DensityScale(histogram: TimelineHistogram) : RailScale {
         val i = days.binarySearch { other -> day.compareTo(other) }
         val index = if (i >= 0) i else (-i - 1)
         return (startIndex[index.coerceIn(0, days.size)].toFloat() / total).coerceIn(0f, 1f)
+    }
+
+    override fun dayCount(day: LocalDate): Int? {
+        val i = days.binarySearch { other -> day.compareTo(other) }
+        return if (i < 0) null else startIndex[i + 1] - startIndex[i]
+    }
+
+    override fun fractionOf(
+        day: LocalDate,
+        progress: Float,
+    ): Float {
+        if (days.isEmpty() || total == 0) return 0f
+        val i = days.binarySearch { other -> day.compareTo(other) }
+        if (i < 0) return fractionOfDay(day)
+        val count = startIndex[i + 1] - startIndex[i]
+        return ((startIndex[i] + progress.coerceIn(0f, 1f) * count) / total).coerceIn(0f, 1f)
     }
 
     /**
@@ -181,8 +237,30 @@ internal class TimeScale(private val bounds: TimelineBounds, private val zone: Z
         return instantAtFraction(fraction, bounds).atZone(zone).toLocalDate()
     }
 
+    override fun positionAt(fraction: Float): RailPosition {
+        if (fraction <= TOP_OF_RAIL_FRACTION) return RailPosition(null)
+        val instant = instantAtFraction(fraction, bounds)
+        val day = instant.atZone(zone).toLocalDate()
+        // Newest-first, so a day's stretch of track starts at its *end* (midnight after).
+        val end = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val length = end - day.atStartOfDay(zone).toInstant().toEpochMilli()
+        val progress = ((end - instant.toEpochMilli()).toFloat() / length).coerceIn(0f, 1f)
+        return RailPosition(day, progress)
+    }
+
     override fun fractionOfDay(day: LocalDate): Float =
         fractionAtInstant(day.atStartOfDay(zone).toInstant(), bounds)
+
+    override fun dayCount(day: LocalDate): Int? = null
+
+    override fun fractionOf(
+        day: LocalDate,
+        progress: Float,
+    ): Float {
+        val end = day.plusDays(1).atStartOfDay(zone).toInstant()
+        val length = end.toEpochMilli() - day.atStartOfDay(zone).toInstant().toEpochMilli()
+        return fractionAtInstant(end.minusMillis((progress.coerceIn(0f, 1f) * length).toLong()), bounds)
+    }
 
     override fun ticks(maxTicks: Int): List<TimelineTick> = timelineTicks(bounds, zone, maxTicks)
 
@@ -292,116 +370,123 @@ internal val MONTH_TICK_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPatte
 internal val FINE_TICK_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM")
 
 /**
- * The magnifier lens: distorts the track so the region around [anchor] gets more of the
- * pixels, and everything else gets correspondingly less — the "logarithmic... away from
- * my finger" magnification asked for from the very first version of this feature,
- * deferred every pass since until slow-drag precision became the thing actually blocking
- * someone. [lensWarp] maps an *underlying* track fraction (where a day naturally sits,
- * per whichever [RailScale] is in use) to where it should be *drawn*; [lensUnwarp] is the
- * inverse, mapping a raw touch fraction back to the underlying fraction it selects.
+ * The magnifier lens: distorts the track so the region around [center] gets more of the
+ * pixels, and everything else correspondingly less. [warp] maps an *underlying* track
+ * fraction (where a day naturally sits, per whichever [RailScale] is in use) to where it
+ * is *drawn*; [unwarp] is the inverse.
  *
- * The anchor has to be fixed for the drag's duration, not the live touch position, or the
- * whole thing does nothing: `warp(anchor) == anchor` always (see below), so a lens that
- * re-centred on the current touch every frame would make *right where the finger already
- * is* a fixed point on every single frame, and a fixed point has slope exactly 1 — the
- * one property that would actually help disappears exactly where it's needed. Anchoring
- * once, at the start of the gesture (`TimelineScrollbar`'s own `lensAnchor`), is what
- * gives fine control *around wherever the drag began* while leaving distant, fast travel
- * unmagnified (an area far from a fixed anchor is heavily *compressed*, i.e. a small
- * finger movement there still covers a lot of underlying ground) — the same "fast stays
- * fast, slow gets precise" split the user asked for early on, but reached geometrically,
- * with no explicit velocity threshold to mistune (the velocity-gated version tried
- * earlier made *all* movement feel disconnected from the finger and was withdrawn for
- * exactly that reason; this can't reproduce that failure because it isn't looking at
- * velocity at all, only at distance from a fixed point).
+ * [center] (an underlying fraction) is drawn at [at] (a screen fraction). While just
+ * peeking the two are equal — the rail magnified in place around the grid's current
+ * position. While held, the lens is centred on the selection and drawn at the finger
+ * (`Lens(selected, finger)`), which is what keeps the tick under the finger always being
+ * the day the pill names, however far the selection and the unmagnified position of the
+ * finger have drifted apart over a drag of mixed speeds (see [advanceSelection]).
  *
- * A power-law curve — `(u/a)^k` on the near side of the anchor, its mirror image on the
- * far side — not a literal logarithm: it's naturally bounded to [0,1] with no asymptote
- * to normalise away, its inverse is closed-form (just another power, no iteration), and
- * it has the same qualitative shape a log does here — steep near the anchor, shallow far
- * from it. `k` (`LENS_EXPONENT`) is the zoom factor exactly at the anchor: `warp'(a) = k`,
- * so `k = 6` means the pixel-per-underlying-unit density right at the touch point is 6x
- * the unmagnified rate.
+ * A power law on each side — `at * (u/center)^m` above, its mirror image below — rather
+ * than a literal logarithm: bounded to [0,1] with no asymptote to normalise, a closed-form
+ * inverse, and the same "steep near the centre, shallow far from it" shape. The exponents
+ * are chosen so the zoom right at the centre is [LENS_EXPONENT] on both sides wherever
+ * that's possible; when [center] and [at] are far apart one side may have to be zoomed
+ * *more* than that just to fit (an exponent below 1 would put the greatest zoom at the
+ * edge of the rail instead of the centre), so that side is kept linear.
  */
+internal data class Lens(
+    val center: Float,
+    val at: Float,
+    val zoom: Float = LENS_EXPONENT,
+) {
+    private val c = center.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
+    private val p = at.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
+    private val above = (zoom * c / p).coerceAtLeast(1f)
+    private val below = (zoom * (1f - c) / (1f - p)).coerceAtLeast(1f)
+
+    fun warp(u: Float): Float {
+        val x = u.coerceIn(0f, 1f)
+        return if (x <= c) {
+            p * (x / c).pow(above)
+        } else {
+            val t = (x - c) / (1f - c)
+            p + (1f - p) * (1f - (1f - t).pow(below))
+        }
+    }
+
+    fun unwarp(y: Float): Float {
+        val x = y.coerceIn(0f, 1f)
+        return if (x <= p) {
+            c * (x / p).pow(1f / above)
+        } else {
+            val t = 1f - (1f - (x - p) / (1f - p)).pow(1f / below)
+            c + (1f - c) * t
+        }
+    }
+}
+
+/** A lens magnified in place around [anchor] — `Lens(anchor, anchor)`. */
 internal fun lensWarp(
     u: Float,
     anchor: Float,
     exponent: Float = LENS_EXPONENT,
-): Float {
-    val a = anchor.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
-    val clamped = u.coerceIn(0f, 1f)
-    return if (clamped <= a) {
-        a * (clamped / a).pow(exponent)
-    } else {
-        val t = (clamped - a) / (1f - a)
-        a + (1f - a) * (1f - (1f - t).pow(exponent))
-    }
-}
+): Float = Lens(anchor, anchor, exponent).warp(u)
 
 /** The inverse of [lensWarp]. */
 internal fun lensUnwarp(
     p: Float,
     anchor: Float,
     exponent: Float = LENS_EXPONENT,
-): Float {
-    val a = anchor.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
-    val clamped = p.coerceIn(0f, 1f)
-    return if (clamped <= a) {
-        a * (clamped / a).pow(1f / exponent)
-    } else {
-        val t = 1f - (1f - (clamped - a) / (1f - a)).pow(1f / exponent)
-        a + (1f - a) * t
-    }
-}
+): Float = Lens(anchor, anchor, exponent).unwarp(p)
 
-/** Keeps the anchor strictly inside (0,1): at exactly 0 or 1 one side of the warp divides
- * by a zero-width span, and an anchor a user's finger actually produces is never that
- * exact anyway. */
+/** Keeps the lens centre strictly inside (0,1): at exactly 0 or 1 one side of the warp
+ * divides by a zero-width span. */
 private const val LENS_EDGE_EPSILON = 0.0001f
 
 private const val LENS_EXPONENT = 6f
 
 /**
- * Moves [anchor] toward [target] by the fraction of the gap that [elapsedMs] of dwelling
- * closes, at time constant [tauMs] — an exponential "chase": ~63% of the remaining gap
- * closes every [tauMs], ~95% every 3×[tauMs], asymptotically approaching but never
- * exactly reaching [target] in finite time (barring float rounding).
+ * Where the selection goes when the finger moves from [fromRaw] to [toRaw] (both
+ * unmagnified track fractions), at gain [gain].
  *
- * This is what makes the lens follow the finger instead of being fixed for a whole drag:
- * called from every `onDrag`, with [target] the finger's current raw position. Because it
- * only *approaches* the target rather than snapping to it, the anchor and the raw position
- * stay apart by an amount that depends on how fast the finger has been moving — which is
- * exactly the "fine when slow, fast when quick" split the lens exists for, but now live
- * throughout the drag rather than fixed at whichever point it started:
+ * The selection only ever changes here, i.e. only when the finger actually moves. What
+ * this replaced — a lens anchor chasing the finger over *time*, with the selection read
+ * off through it — kept moving the selection for a few hundred milliseconds after the
+ * finger stopped, as the anchor caught up; the grid scrolled on by itself.
  *
- * - A finger held still, or crawling slowly, gives the anchor time to close most of the
- *   gap between events (small [elapsedMs] each, but many of them) — it stays close behind
- *   the raw position, so the finger keeps operating in the warp's steep, de-amplifying
- *   region right at the anchor: small raw movements keep selecting small underlying steps,
- *   continuously, whichever part of the track the finger has wandered to.
- * - A fast flick covers a lot of raw distance before much *time* passes, so the anchor
- *   barely moves per event even though the finger has — it falls behind, leaving the raw
- *   position out in the warp's shallow far side, where the same movement selects a lot of
- *   underlying ground. A single continuous flick from one part of the track to a distant
- *   one is exactly this case throughout its own short duration.
- *
- * Deliberately time-based, not event- or distance-based: touch sampling rate varies by
- * device, and chaining this per input event still integrates out to the same time-based
- * exponential regardless of how finely the events are sliced, so behaviour doesn't change
- * with sampling rate the way a fixed per-event step would.
+ * "Proportional remainder": moving up covers the same *fraction* of the way to the top
+ * as the finger does, raised to [gain]; moving down, the same of the way to the bottom.
+ * With `gain` 1 and a selection that equals the finger, that's plain direct mapping; with
+ * `gain` below 1 the selection moves more finely than the finger (at `gain` `1/k` it's
+ * the lens's zoom `k`). Whatever the gain and however far the selection has drifted from
+ * the finger, the finger reaching the top of the track selects the very top and the
+ * bottom the very bottom — so no drag can strand the selection short of either end.
  */
-internal fun chaseAnchor(
-    anchor: Float,
-    target: Float,
-    elapsedMs: Float,
-    tauMs: Float = ANCHOR_CHASE_TAU_MS,
+internal fun advanceSelection(
+    selected: Float,
+    fromRaw: Float,
+    toRaw: Float,
+    gain: Float,
+): Float =
+    when {
+        toRaw < fromRaw -> selected * (toRaw / fromRaw).pow(gain)
+        toRaw > fromRaw -> 1f - (1f - selected) * ((1f - toRaw) / (1f - fromRaw)).pow(gain)
+        else -> selected
+    }.coerceIn(0f, 1f)
+
+/**
+ * The [advanceSelection] gain for a finger moving at [speedDpPerMs]: the lens's own fine
+ * rate (`1/zoom`) at or below [SLOW_DRAG_DP_PER_MS], direct (1) at or above
+ * [FAST_DRAG_DP_PER_MS], smoothly in between. Slow is for reading the day ticks one by
+ * one; fast is for crossing the library.
+ */
+internal fun dragGain(
+    speedDpPerMs: Float,
+    zoom: Float = LENS_EXPONENT,
 ): Float {
-    if (elapsedMs <= 0f) return anchor
-    val rate = (1f - kotlin.math.exp(-elapsedMs / tauMs)).coerceIn(0f, 1f)
-    return anchor + (target - anchor) * rate
+    val t = ((speedDpPerMs - SLOW_DRAG_DP_PER_MS) / (FAST_DRAG_DP_PER_MS - SLOW_DRAG_DP_PER_MS)).coerceIn(0f, 1f)
+    val smooth = t * t * (3f - 2f * t)
+    return 1f / zoom + (1f - 1f / zoom) * smooth
 }
 
-private const val ANCHOR_CHASE_TAU_MS = 120f
+internal const val SLOW_DRAG_DP_PER_MS = 0.1f
+internal const val FAST_DRAG_DP_PER_MS = 1.2f
 
 /**
  * The scale the rail should use: density when the histogram has arrived and has anything

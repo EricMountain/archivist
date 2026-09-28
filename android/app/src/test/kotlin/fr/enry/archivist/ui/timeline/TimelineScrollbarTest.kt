@@ -318,46 +318,89 @@ class TimelineScrollbarTest {
         assertTrue(fine.any { it.major })
     }
 
-    // ---- chaseAnchor: the lens following the finger, not fixed for the whole drag ----
+    // ---- Lens with its centre drawn somewhere else: the held rail ----------------------
 
     @Test
-    fun `zero elapsed time leaves the anchor exactly where it was`() {
-        assertEquals(0.2f, chaseAnchor(0.2f, 0.8f, elapsedMs = 0f))
+    fun `a held lens draws its centre at the finger and keeps both ends fixed`() {
+        for ((c, p) in listOf(0.2f to 0.5f, 0.7f to 0.3f, 0.05f to 0.9f, 0.5f to 0.5f)) {
+            val lens = Lens(c, p)
+            assertEquals(p, lens.warp(c), 0.0001f, "c=$c p=$p")
+            assertEquals(0f, lens.warp(0f), 0.0001f)
+            assertEquals(1f, lens.warp(1f), 0.0001f)
+        }
     }
 
     @Test
-    fun `the anchor always moves toward the target, never past it`() {
-        val result = chaseAnchor(anchor = 0.2f, target = 0.8f, elapsedMs = 50f)
-        assertTrue(result > 0.2f && result < 0.8f, "expected 0.2 < $result < 0.8")
+    fun `a held lens warps back to exactly where it was touched`() {
+        // Screen space, not underlying: the far side is compressed so hard that Float
+        // can't tell apart underlying positions drawn within the same sub-pixel, and a
+        // touch can't either. What matters is that a touch resolves to the tick drawn there.
+        for ((c, p) in listOf(0.2f to 0.5f, 0.7f to 0.3f, 0.05f to 0.9f)) {
+            val lens = Lens(c, p)
+            for (i in 0..50) {
+                val y = i / 50f
+                assertEquals(y, lens.warp(lens.unwarp(y)), 0.0005f, "c=$c p=$p y=$y")
+            }
+        }
     }
 
     @Test
-    fun `a long dwell closes the gap to effectively the target, never past it`() {
-        val result = chaseAnchor(anchor = 0.2f, target = 0.8f, elapsedMs = 5000f)
-        assertTrue(result <= 0.8f, "must never overshoot the target")
-        assertEquals(0.8f, result, 0.001f, "but should be effectively there")
+    fun `a held lens zooms by its full factor at the centre on both sides when it can`() {
+        val lens = Lens(0.4f, 0.5f)
+        val h = 0.0005f
+        assertEquals(6f, (lens.warp(0.4f) - lens.warp(0.4f - h)) / h, 0.1f)
+        assertEquals(6f, (lens.warp(0.4f + h) - lens.warp(0.4f)) / h, 0.1f)
     }
 
     @Test
-    fun `chaining short dwells integrates out to the same result as one long dwell`() {
-        val tau = 120f
-        var chained = 0.2f
-        repeat(10) { chained = chaseAnchor(chained, 0.8f, elapsedMs = 30f, tauMs = tau) }
-        val single = chaseAnchor(0.2f, 0.8f, elapsedMs = 300f, tauMs = tau)
-        assertEquals(single, chained, 0.001f, "time-based decay shouldn't depend on how finely it's sliced")
+    fun `a held lens with centre and finger equal is the in-place lens`() {
+        for (u in listOf(0f, 0.1f, 0.3f, 0.6f, 1f)) {
+            assertEquals(lensWarp(u, 0.3f), Lens(0.3f, 0.3f).warp(u), 0.0001f)
+        }
+    }
+
+    // ---- advanceSelection / dragGain: the selection only moves when the finger does ----
+
+    @Test
+    fun `the selection does not move while the finger is still`() {
+        assertEquals(0.37f, advanceSelection(0.37f, 0.5f, 0.5f, gain = 1f / 6f))
+        assertEquals(0.37f, advanceSelection(0.37f, 0.5f, 0.5f, gain = 1f))
     }
 
     @Test
-    fun `already at the target, the anchor stays there`() {
-        assertEquals(0.5f, chaseAnchor(0.5f, 0.5f, elapsedMs = 200f), 0.0001f)
+    fun `at full gain a selection at the finger follows it exactly`() {
+        assertEquals(0.3f, advanceSelection(0.5f, 0.5f, 0.3f, gain = 1f), 0.0001f)
+        assertEquals(0.8f, advanceSelection(0.5f, 0.5f, 0.8f, gain = 1f), 0.0001f)
     }
 
     @Test
-    fun `a fast flick — little elapsed time despite a big jump — leaves the anchor mostly behind`() {
-        // Models a flick: the target (raw touch) has already jumped a long way, but only
-        // a few milliseconds of wall-clock time have passed since the anchor last moved.
-        val result = chaseAnchor(anchor = 0.1f, target = 0.9f, elapsedMs = 8f)
-        assertTrue(result < 0.2f, "expected the anchor to have barely moved, got $result")
+    fun `at fine gain the selection moves a fraction of what the finger does`() {
+        var s = 0.5f
+        var r = 0.5f
+        // Twenty 1px steps on a 2000px track.
+        repeat(20) {
+            s = advanceSelection(s, r, r + 0.0005f, gain = 1f / 6f)
+            r += 0.0005f
+        }
+        assertEquals(0.01f / 6f, s - 0.5f, 0.0002f)
+    }
+
+    /** However far a slow drag has pulled the selection from the finger, reaching an end
+     * of the track selects that end. */
+    @Test
+    fun `the ends of the track always select the ends of the library`() {
+        assertEquals(0f, advanceSelection(0.6f, 0.4f, 0f, gain = 1f / 6f))
+        assertEquals(1f, advanceSelection(0.2f, 0.7f, 1f, gain = 1f / 6f))
+    }
+
+    @Test
+    fun `dragGain is fine when slow, direct when fast, and monotonic between`() {
+        assertEquals(1f / 6f, dragGain(0f), 0.0001f)
+        assertEquals(1f / 6f, dragGain(SLOW_DRAG_DP_PER_MS), 0.0001f)
+        assertEquals(1f, dragGain(FAST_DRAG_DP_PER_MS), 0.0001f)
+        assertEquals(1f, dragGain(10f), 0.0001f)
+        val speeds = (0..40).map { it * 0.05f }
+        speeds.zipWithNext().forEach { (a, b) -> assertTrue(dragGain(a) <= dragGain(b)) }
     }
 
     // ---- settledSample: filtering a touchscreen's own release jitter ----------------

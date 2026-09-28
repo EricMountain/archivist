@@ -71,6 +71,7 @@ import coil3.compose.AsyncImage
 import fr.enry.archivist.crypto.EncryptedThumbRef
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.TimelineKey
+import fr.enry.archivist.data.local.db.localDate
 import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.ui.detail.DetailScreen
@@ -296,8 +297,15 @@ fun TimelineScreen(
         // too: keying on items.itemCount re-ran this on every page that loaded afterwards,
         // yanking the grid back mid-scroll.
         LaunchedEffect(Unit) {
-            viewModel.jumpCompleted.collect { landing ->
-                gridState.scrollToItem(landingIndex(items, landing) ?: 0)
+            viewModel.jumpCompleted.collect { jump ->
+                // A mid-drag scrub into a real day is placed by TimelineScrollbar itself,
+                // continuously, from the finger's live position within the day. Landing
+                // it here as well — on the day's first photo, and reasserted for a while
+                // after — is what made dragging the rail snap from one day to the next.
+                if (jump.scrub && jump.position.day != null) return@collect
+                val landing = jump.landing
+                fun target() = landingTarget(items, landing, jump.position)
+                target()?.let { gridState.scrollToFractionalIndex(it) } ?: gridState.scrollToItem(0)
                 // One reassert isn't enough: a jump's fresh PagingData generation streams in
                 // over several subsequent page loads, not one shot, and *each* one can
                 // retrigger LazyVerticalGrid's own key-based position-preservation, nudging
@@ -339,9 +347,9 @@ fun TimelineScreen(
                 launch {
                     withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
                         snapshotFlow { items.itemCount }
-                            .mapNotNull { landingIndex(items, landing) }
+                            .mapNotNull { target() }
                             .distinctUntilChanged()
-                            .collect { gridState.scrollToItem(it) }
+                            .collect { gridState.scrollToFractionalIndex(it) }
                     }
                 }
             }
@@ -449,6 +457,22 @@ private fun landingIndex(
     return null
 }
 
+/** The fractional index to land a jump on: [landing] itself, moved on through its day by
+ * [position]'s progress when [landing] is in [position]'s day — so a release rests where
+ * the finger was within the day rather than hopping back to the day's first photo. Null
+ * when [landing] isn't in [items] (see [landingIndex]). */
+private fun landingTarget(
+    items: LazyPagingItems<PhotoEntity>,
+    landing: TimelineKey?,
+    position: RailPosition,
+): Float? {
+    val first = landingIndex(items, landing) ?: return null
+    val day = position.day ?: return first.toFloat()
+    val range = dayRange(items.itemCount, day) { i -> items.peek(i)?.localDate() }
+    if (range == null || range.first != first) return first.toFloat()
+    return dayTargetIndex(first, range.last - range.first + 1, position, items.itemCount)
+}
+
 /** What [TimelineGrid] should render for the current combination of item count, refresh
  * state, and whether a real load has ever actually started. Pulled out as a pure
  * function — mirrors [fr.enry.archivist.ui.timeline.TimelineScale]/`queueIdleReason`'s
@@ -525,7 +549,7 @@ private fun TimelineGrid(
     contentPadding: PaddingValues,
     onPhotoClick: (PhotoEntity) -> Unit,
     onScrub: suspend (LocalDate?) -> Unit,
-    onCommit: (LocalDate?) -> Unit,
+    onCommit: (RailPosition) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (contentState) {
