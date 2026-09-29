@@ -609,6 +609,10 @@ private fun TimelineGrid(
                     onCommit = onCommit,
                     modifier = Modifier.fillMaxSize(),
                     trackTopInset = topInset + MENU_MARGIN + MENU_BUTTON_SIZE + MENU_MARGIN,
+                    // Ends above the gesture handle: a track flush with the bottom edge put
+                    // the oldest dates where a finger can barely reach, in the strip whose
+                    // swipes belong to the system anyway.
+                    trackBottomInset = with(LocalDensity.current) { gestureBarHeightPx().toDp() },
                 ) {
                     Box(Modifier.fillMaxSize()) {
                         TimelinePhotoGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
@@ -767,11 +771,7 @@ private fun Modifier.leaveSystemBarSwipesToTheSystem(): Modifier {
             WindowInsets.statusBarsIgnoringVisibility.getTop(density),
             WindowInsets.systemGestures.getTop(density),
         )
-    val bottomPx =
-        maxOf(
-            WindowInsets.navigationBarsIgnoringVisibility.getBottom(density),
-            WindowInsets.systemGestures.getBottom(density),
-        )
+    val bottomPx = gestureBarHeightPx()
     return pointerInput(topPx, bottomPx) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -782,4 +782,17 @@ private fun Modifier.leaveSystemBarSwipesToTheSystem(): Modifier {
             } while (event.changes.any { it.pressed })
         }
     }
+}
+
+/** The gesture-handle strip at the bottom of the screen: the navigation bar's own height,
+ * read ignoring visibility (the grid is immersive), widened to the bottom system gesture
+ * inset where that's taller. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun gestureBarHeightPx(): Int {
+    val density = LocalDensity.current
+    return maxOf(
+        WindowInsets.navigationBarsIgnoringVisibility.getBottom(density),
+        WindowInsets.systemGestures.getBottom(density),
+    )
 }

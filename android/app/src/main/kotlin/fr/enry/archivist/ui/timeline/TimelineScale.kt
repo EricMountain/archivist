@@ -7,6 +7,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import kotlin.math.abs
 import kotlin.math.pow
 
 /**
@@ -457,18 +458,37 @@ private const val LENS_EXPONENT = 6f
  * the lens's zoom `k`). Whatever the gain and however far the selection has drifted from
  * the finger, the finger reaching the top of the track selects the very top and the
  * bottom the very bottom — so no drag can strand the selection short of either end.
+ *
+ * That alone wasn't enough: reaching an end *selects* it, but a long slow drag left the
+ * selection so far behind the finger that the rest of the library was squeezed into the
+ * last few pixels before the edge (at gain 1/6, a slow drag from 30% to 95% of the track
+ * selected only ~55%, with the other ~45% of the library in the bottom 5% of the screen
+ * and drawn there by the lens). So the gap between the two may not grow past
+ * [maxDrift]: beyond it the finger drags the selection along at its own pace. A gap
+ * that's already wider — a press made away from the idle position selects through the
+ * peek lens — is only kept from growing, never snapped shut, so nothing jumps.
  */
 internal fun advanceSelection(
     selected: Float,
     fromRaw: Float,
     toRaw: Float,
     gain: Float,
-): Float =
-    when {
-        toRaw < fromRaw -> selected * (toRaw / fromRaw).pow(gain)
-        toRaw > fromRaw -> 1f - (1f - selected) * ((1f - toRaw) / (1f - fromRaw)).pow(gain)
-        else -> selected
-    }.coerceIn(0f, 1f)
+    maxDrift: Float = MAX_SELECTION_DRIFT,
+): Float {
+    val next =
+        when {
+            toRaw < fromRaw -> selected * (toRaw / fromRaw).pow(gain)
+            toRaw > fromRaw -> 1f - (1f - selected) * ((1f - toRaw) / (1f - fromRaw)).pow(gain)
+            else -> return selected
+        }
+    val limit = maxOf(maxDrift, abs(selected - fromRaw))
+    return next.coerceIn(toRaw - limit, toRaw + limit).coerceIn(0f, 1f)
+}
+
+/** How far (as a track fraction) [advanceSelection] lets the selection trail the finger:
+ * room for a slow drag to step through the day ticks, not enough to strand the rest of
+ * the library under the edge of the screen. */
+internal const val MAX_SELECTION_DRIFT = 0.1f
 
 /**
  * The [advanceSelection] gain for a finger moving at [speedDpPerMs]: the lens's own fine

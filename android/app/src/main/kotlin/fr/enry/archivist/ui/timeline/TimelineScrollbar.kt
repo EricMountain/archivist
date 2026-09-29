@@ -116,7 +116,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * What the touched position *selects*, though, is not simply the day at the finger's
  * unmagnified position: the selection moves with the finger's *movement*
  * ([advanceSelection]), finely when the finger moves slowly and directly when it moves
- * fast ([dragGain]), and never moves on its own while the finger is still. The rail is
+ * fast ([dragGain]), never trails the finger by more than [MAX_SELECTION_DRIFT] (a long
+ * slow drag otherwise squeezed the rest of the library under the bottom edge), and never
+ * moves on its own while the finger is still. The rail is
  * drawn through a [Lens] centred on the selection and placed at the finger, so the tick
  * beside the finger is always the day the pill names — a slow drag slides the finger
  * along a magnified, stationary ruler, and a fast one pulls the ruler along with it. An
@@ -154,6 +156,10 @@ fun TimelineScrollbar(
     // floating menu button off the rail's "present" end, and touches beside the button
     // (above this) out of the gesture.
     trackTopInset: Dp = 0.dp,
+    // Where it ends, measured up from the bottom of this composable: keeps the oldest end
+    // of the rail clear of the system's gesture-handle strip. Touches below it are left to
+    // the grid (and the system) like any other.
+    trackBottomInset: Dp = 0.dp,
     content: @Composable () -> Unit,
 ) {
     // Density-weighted once the histogram is cached, linear in time until then — see
@@ -368,12 +374,13 @@ fun TimelineScrollbar(
     // events (Initial pass) before its children and consumes them only once a long press
     // has confirmed, so everything else reaches the grid untouched.
     Box(
-        modifier.pointerInput(scale, trackTopInset) {
+        modifier.pointerInput(scale, trackTopInset, trackBottomInset) {
             val stripStartPx = { size.width - HIT_TARGET_WIDTH.toPx() }
             // Gestures arrive in this outer Box's coordinates; the track starts lower.
             val trackTopPx = trackTopInset.toPx()
+            val trackBottomPx = { size.height - trackBottomInset.toPx() }
             detectFastScrollGesture(
-                inStrip = { it.x >= stripStartPx() && it.y >= trackTopPx },
+                inStrip = { it.x >= stripStartPx() && it.y >= trackTopPx && it.y <= trackBottomPx() },
                 tapEnabled = { peekingNow },
                 onTap = { y ->
                     // What's drawn at the tap is warped through the lens the rail is
@@ -446,7 +453,7 @@ fun TimelineScrollbar(
     ) {
         content()
 
-        Box(Modifier.align(Alignment.TopEnd).padding(top = trackTopInset).fillMaxHeight().width(RAIL_WIDTH)) {
+        Box(Modifier.align(Alignment.TopEnd).padding(top = trackTopInset, bottom = trackBottomInset).fillMaxHeight().width(RAIL_WIDTH)) {
         if (peeking) {
             TimelineRail(scale = scale, trackHeightPx = trackHeightPx, lens = railLens)
         }

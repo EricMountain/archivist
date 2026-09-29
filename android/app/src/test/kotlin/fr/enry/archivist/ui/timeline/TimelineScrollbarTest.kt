@@ -393,6 +393,29 @@ class TimelineScrollbarTest {
         assertEquals(1f, advanceSelection(0.2f, 0.7f, 1f, gain = 1f / 6f))
     }
 
+    /** The regression: a long slow drag toward the bottom left the selection so far behind
+     * that the rest of the library was squeezed into the last few pixels of the track. */
+    @Test
+    fun `a long slow drag pulls the selection along instead of leaving it behind`() {
+        var s = 0.3f
+        var r = 0.3f
+        // 1px steps on a 2000px track, from 30% down to 95%.
+        while (r < 0.95f) {
+            s = advanceSelection(s, r, r + 0.0005f, gain = 1f / 6f)
+            r += 0.0005f
+        }
+        assertTrue(r - s <= MAX_SELECTION_DRIFT + 0.0001f, "selection $s trails finger $r")
+        // And the fine rate still holds for the first stretch of a slow drag.
+        assertEquals(0.5f + 0.01f / 6f, advanceSelection(0.5f, 0.5f, 0.51f, gain = 1f / 6f), 0.0005f)
+    }
+
+    /** A press away from the idle position can start with a wider gap; it mustn't snap shut. */
+    @Test
+    fun `an already wide gap is kept from growing, not closed with a jump`() {
+        val s = advanceSelection(0.2f, 0.6f, 0.6005f, gain = 1f / 6f)
+        assertTrue(s > 0.2f && s < 0.21f, "selection jumped to $s")
+    }
+
     @Test
     fun `dragGain is fine when slow, direct when fast, and monotonic between`() {
         assertEquals(1f / 6f, dragGain(0f), 0.0001f)
