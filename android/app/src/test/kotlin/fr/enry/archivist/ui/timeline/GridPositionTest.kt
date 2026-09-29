@@ -154,5 +154,50 @@ class GridPositionTest {
         assertEquals(8 % 4, leadingCells(window.size, 4, ranks) { window[it] })
     }
 
+    // ---- carriedLead: the lead follows the list, not the histogram ---------------------
+
+    private val ids = (0 until 30).map { "p$it" }
+
+    private fun columnOf(
+        id: String,
+        list: List<String>,
+        lead: Int,
+    ) = (lead + list.indexOf(id)) % 4
+
+    @Test
+    fun `photos keep their columns when pages load above or drop off either end`() {
+        val before = ids.subList(10, 20)
+        val lead = 3
+        for (after in listOf(ids.subList(7, 20), ids.subList(9, 25), ids.subList(13, 20), ids.subList(12, 18))) {
+            val carried = carriedLead(before, lead, 4, after, 4)!!
+            for (id in before.intersect(after.toSet())) {
+                assertEquals(columnOf(id, before, lead), columnOf(id, after, carried), "$id in ${after.first()}..${after.last()}")
+            }
+        }
+    }
+
+    /** The case the histogram got wrong: the same window at two sizes, back and forth. */
+    @Test
+    fun `alternating between two windows never moves a photo`() {
+        val a = ids.subList(5, 25)
+        val b = ids.subList(0, 25)
+        var lead = 2
+        var list = a
+        repeat(4) {
+            val next = if (list === a) b else a
+            val carried = carriedLead(list, lead, 4, next, 4)!!
+            assertEquals(columnOf("p12", list, lead), columnOf("p12", next, carried))
+            lead = carried
+            list = next
+        }
+    }
+
+    @Test
+    fun `nothing in common, or a new column count, leaves it to the histogram`() {
+        assertNull(carriedLead(ids.subList(0, 5), 1, 4, ids.subList(10, 15), 4))
+        assertNull(carriedLead(ids.subList(0, 5), 1, 4, ids.subList(0, 5), 5))
+        assertNull(carriedLead(emptyList(), 1, 4, ids.subList(0, 5), 4))
+    }
+
     private fun RailPosition.rounded() = copy(progress = Math.round(progress * 1000) / 1000f)
 }

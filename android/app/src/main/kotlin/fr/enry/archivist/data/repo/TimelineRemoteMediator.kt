@@ -133,6 +133,28 @@ class TimelineRemoteMediator(
             val entities = page.items.map { it.toEntity() }
             val landOn = if (day == null) entities.firstOrNull() else entities.getOrNull(entities.landingIndexFor(day))
 
+            // Near the oldest end of the library the page runs out short: the last few
+            // photos, not a screenful. Committed alone, that window was drawn as a few
+            // photos and then empty space for as long as PREPEND's round trip took to
+            // fetch the photos above it — a second or so on the user's phone (2026-09-29).
+            // So the photos just newer than the bound are fetched now, as part of the jump,
+            // and the window is committed full. Only when the older side has ended; one
+            // extra request, and only there.
+            val newer =
+                if (day != null && toIso != null && page.cursor == null && page.items.size < pageSize) {
+                    api.getPhotos(url, limit = pageSize - page.items.size, from = toIso, to = FAR_FUTURE_ISO, order = "asc").items
+                } else {
+                    emptyList()
+                }
+            // Same rule as loadNewerThanCache: a short page of newer photos reached the
+            // present; a full one is complete through the newest photo it reached.
+            val completeThrough =
+                when {
+                    newer.isEmpty() -> toIso
+                    newer.size < pageSize - page.items.size -> null
+                    else -> newer.last().takenAt
+                }
+
             // Staged *before* the write, not after: Room's InvalidationTracker can fire
             // as part of the transaction commit itself, and the next generation's
             // getRefreshKey has to see this already staged rather than lose a race with
@@ -142,10 +164,11 @@ class TimelineRemoteMediator(
             db.useWriterConnection { transactor ->
                 transactor.withTransaction(Transactor.SQLiteTransactionType.IMMEDIATE) {
                     photoDao.clear()
-                    photoDao.upsertAll(entities)
+                    photoDao.upsertAll(entities + newer.map { it.toEntity() })
                     // A plain refresh reaches the present; a jump is complete through its
-                    // bound, and not beyond it — see TimelineWindowEntity.
-                    timelineWindowDao.setCompleteThrough(toIso)
+                    // bound (or the newer photos fetched with it), and not beyond — see
+                    // TimelineWindowEntity.
+                    timelineWindowDao.setCompleteThrough(completeThrough)
                     // The cursor tracks the older direction only, which is the one
                     // ordinary scrolling continues in.
                     if (page.cursor != null) {
@@ -201,6 +224,10 @@ class TimelineRemoteMediator(
             // which ordinary scrolling continues in, and this page's cursor walks the
             // other way. The window's upper edge moves instead — to the present when there
             // was nothing more, otherwise to the newest photo this page reached.
+            //
+            // Newer photos above a jump's landing end its "load from the landing" refresh,
+            // before this write triggers one — see TimelineJumpCoordinator.settleLanding.
+            if (!reachedPresent) jumpCoordinator.settleLanding()
             writePage(
                 response,
                 clearFirst = false,

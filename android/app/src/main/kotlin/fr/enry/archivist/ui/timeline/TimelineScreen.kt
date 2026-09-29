@@ -107,6 +107,9 @@ internal const val GRID_THUMB_SIZE = 256
  * settle time in practice (page loads observed finishing within a few hundred ms). */
 private const val JUMP_SCROLL_SETTLE_WINDOW_MS = 2000L
 
+/** The longest a jump's pin waits for its landing to arrive in the list before giving up. */
+private const val JUMP_LANDING_WAIT_MS = 10_000L
+
 /** The narrowest a grid cell gets; the column count is as many as fit the width. */
 private val GRID_MIN_CELL = 96.dp
 
@@ -295,7 +298,13 @@ fun TimelineScreen(
                 (LocalWindowInfo.current.containerSize.width / GRID_MIN_CELL.toPx()).toInt().coerceAtLeast(1)
             }
         val ranks = remember(histogram) { histogram?.let(::HistogramRanks) }
-        val lead = leadingCells(items.itemCount, columns, ranks) { i -> items.peek(i)?.localDate() }
+        // Carried over from the previous list whenever the two share a photo (see
+        // carriedLead); from the histogram only for a fresh window.
+        val leadTracker = remember { LeadTracker() }
+        val lead =
+            leadTracker.leadFor(items.itemSnapshotList.items.map { it.photoId }, columns) {
+                leadingCells(items.itemCount, columns, ranks) { i -> items.peek(i)?.localDate() }
+            }
 
         // A jumped-to window *starts* at the requested instant (TimelineJumpCoordinator), so
         // landing on it used to just mean "go to index 0" once the window was committed to
@@ -344,18 +353,28 @@ fun TimelineScreen(
             }
         }
         LaunchedEffect(pinnedJump) {
-            if (pinnedJump == null) return@LaunchedEffect
+            val jump = pinnedJump ?: return@LaunchedEffect
+            // The settle window starts once the landing is actually in the list, not when
+            // it's announced — a slow fetch could otherwise use it all up before there was
+            // anything to hold.
+            withTimeoutOrNull(JUMP_LANDING_WAIT_MS) {
+                snapshotFlow { landingIndex(items, jump.landing) != null }.first { it }
+            }
             withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
                 snapshotFlow { gridState.isScrollInProgress }.first { it }
             }
             pinnedJump = null
         }
         pinnedJump?.let { jump ->
-            // Not found yet (the rebuilt pager hasn't delivered the landing): the top,
-            // which is where a rebuilt pager starts anyway.
+            // Nothing is requested until the landing is actually in the list. The landing
+            // usually arrives before the rebuilt pager's first page does, and this used to
+            // fall back to "the top" meanwhile — which scrolled the *old* list to its top
+            // for a frame or more: a flash of a completely different part of the timeline
+            // (logged 2026-09-29: the old list jumped to 26 Sep, 250ms before the jump's
+            // 22 Nov window arrived).
             PinGridTo(
                 gridState = gridState,
-                target = landingTarget(items, jump.landing, jump.position) ?: 0f,
+                target = landingTarget(items, jump.landing, jump.position),
                 lead = lead,
                 photoIdAt = { i -> if (i in 0 until items.itemCount) items.peek(i)?.photoId else null },
             )

@@ -48,6 +48,60 @@ class TimelinePagingSourceTest {
     private val p2 = photo("p2", "2024-01-02T00:00:00.000Z")
     private val p1 = photo("p1", "2024-01-01T00:00:00.000Z")
 
+    /**
+     * The phone's stuck-at-the-oldest-date bug: once newer photos were loaded above a
+     * landing, a refresh anchored on the landing photo still loaded from it, dropping them
+     * again. The landing's first loads start at it; after settling they keep what's above.
+     */
+    @Test
+    fun `a refresh at the landing keeps the photos above it once the landing has settled`() =
+        runTest {
+            seed(p2, p1)
+            val landing = TimelineKey("2024-01-02T00:00:00.000Z", "p2")
+            jumpCoordinator.stageLanding(landing)
+
+            // Both of the jump's own refreshes (outgoing and rebuilt pager) start at the landing.
+            repeat(2) {
+                val first = source.load(PagingSource.LoadParams.Refresh(key = landing, loadSize = 6, placeholdersEnabled = false))
+                assertEquals(listOf("p2", "p1"), (first as PagingSource.LoadResult.Page).data.map { it.photoId })
+            }
+
+            // PREPEND fetches newer photos: the landing settles, and the refresh that write
+            // triggers keeps them.
+            jumpCoordinator.settleLanding()
+            seed(p5, p4, p3)
+            val after = source.load(PagingSource.LoadParams.Refresh(key = landing, loadSize = 6, placeholdersEnabled = false))
+            assertEquals(listOf("p4", "p3", "p2", "p1"), (after as PagingSource.LoadResult.Page).data.map { it.photoId })
+        }
+
+    /** Near the oldest end, loading from the landing is only a few photos: the rest of the
+     * page comes from just above it, so the first list drawn fills the screen. */
+    @Test
+    fun `a landing load that runs out short is filled from just above the landing`() =
+        runTest {
+            seed(p5, p4, p3, p2, p1)
+            val landing = TimelineKey("2024-01-02T00:00:00.000Z", "p2")
+            jumpCoordinator.stageLanding(landing)
+
+            val result = source.load(PagingSource.LoadParams.Refresh(key = landing, loadSize = 4, placeholdersEnabled = false))
+
+            assertEquals(listOf("p4", "p3", "p2", "p1"), (result as PagingSource.LoadResult.Page).data.map { it.photoId })
+        }
+
+    @Test
+    fun `a source prepend settles the landing`() =
+        runTest {
+            seed(p5, p4, p3)
+            val landing = TimelineKey("2024-01-03T00:00:00.000Z", "p3")
+            jumpCoordinator.stageLanding(landing)
+            assertTrue(jumpCoordinator.isLanding(landing))
+
+            source.load(PagingSource.LoadParams.Prepend(key = landing, loadSize = 2, placeholdersEnabled = false))
+
+            assertTrue(!jumpCoordinator.isLanding(landing))
+            assertEquals(landing, jumpCoordinator.landing)
+        }
+
     @Test
     fun `refresh with no key loads from the newest item`() =
         runTest {

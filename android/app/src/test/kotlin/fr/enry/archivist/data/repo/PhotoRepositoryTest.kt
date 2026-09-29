@@ -152,7 +152,7 @@ class PhotoRepositoryTest {
             // One bounded fetch, newest-first, ending at the target -- not two. Fetching
             // the *newer* side as well is what ran away into an ANR; see
             // TimelineRemoteMediator.loadNewerThanCache's own doc.
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}],"cursor":"older"}"""))
 
             val outcome = repository.jumpTo(java.time.LocalDate.parse("2021-06-15"))
 
@@ -179,7 +179,7 @@ class PhotoRepositoryTest {
     fun `a jump to a day the cache already covers makes no request`() =
         runTest {
             connectInstance()
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}],"cursor":"older"}"""))
             repository.jumpTo(java.time.LocalDate.parse("2021-06-15"))
             assertEquals(1, server.requestCount)
 
@@ -199,10 +199,10 @@ class PhotoRepositoryTest {
     fun `a jump past the cached window's upper edge does reach the server`() =
         runTest {
             connectInstance()
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("jumped", "2021-06-01T00:00:00.000Z")}],"cursor":"older"}"""))
             repository.jumpTo(java.time.LocalDate.parse("2021-06-15"))
 
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("later", "2021-09-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("later", "2021-09-01T00:00:00.000Z")}],"cursor":"older"}"""))
             repository.jumpTo(java.time.LocalDate.parse("2021-09-15"))
 
             assertEquals(2, server.requestCount)
@@ -214,11 +214,11 @@ class PhotoRepositoryTest {
     fun `a scrub asks for a smaller page than a committed jump`() =
         runTest {
             connectInstance()
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("a", "2021-06-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("a", "2021-06-01T00:00:00.000Z")}],"cursor":"older"}"""))
             repository.jumpTo(java.time.LocalDate.parse("2021-06-15"), scrub = true)
             assertEquals("40", server.takeRequest().requestUrl?.queryParameter("limit"))
 
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("b", "2020-06-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("b", "2020-06-01T00:00:00.000Z")}],"cursor":"older"}"""))
             repository.jumpTo(java.time.LocalDate.parse("2020-06-15"), scrub = false)
             assertEquals("120", server.takeRequest().requestUrl?.queryParameter("limit"))
         }
@@ -233,7 +233,7 @@ class PhotoRepositoryTest {
     fun `refreshLatest leaves a past window alone rather than punching a hole in it`() =
         runTest {
             connectInstance()
-            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("old", "2021-06-01T00:00:00.000Z")}]}"""))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${photoJson("old", "2021-06-01T00:00:00.000Z")}],"cursor":"older"}"""))
             repository.jumpTo(java.time.LocalDate.parse("2021-06-15"))
             val afterJump = server.requestCount
 

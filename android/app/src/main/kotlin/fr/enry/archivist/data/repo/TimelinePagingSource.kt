@@ -91,13 +91,28 @@ class TimelinePagingSource(
                             // is an anchor restoring the user's own position, and needs
                             // the lead above it — see refreshAround.
                             if (jumpCoordinator.isLanding(key)) {
-                                photoDao.pageFromKey(key.takenAt, key.photoId, limit)
+                                // From the landing — except that near the oldest end of the
+                                // library that's only a few photos, so the rest of the page
+                                // is filled from just above it (the reseed fetches those
+                                // too, for exactly this). Otherwise the first list drawn was
+                                // those few photos and then empty space.
+                                val fromLanding = photoDao.pageFromKey(key.takenAt, key.photoId, limit)
+                                if (fromLanding.size < limit) {
+                                    photoDao.pageBefore(key.takenAt, key.photoId, limit - fromLanding.size) + fromLanding
+                                } else {
+                                    fromLanding
+                                }
                             } else {
                                 refreshAround(key, limit)
                             }
                         } ?: photoDao.pageFromStart(limit)
                     is LoadParams.Append -> photoDao.pageAfter(params.key.takenAt, params.key.photoId, limit)
-                    is LoadParams.Prepend -> photoDao.pageBefore(params.key.takenAt, params.key.photoId, limit)
+                    is LoadParams.Prepend -> {
+                        // Paging is loading above the landing, so the jump has settled —
+                        // see TimelineJumpCoordinator.settleLanding.
+                        jumpCoordinator.settleLanding()
+                        photoDao.pageBefore(params.key.takenAt, params.key.photoId, limit)
+                    }
                 }
             LoadResult.Page(
                 data = page,

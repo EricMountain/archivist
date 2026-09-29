@@ -39,15 +39,38 @@ class TimelineJumpCoordinator
          */
         @Volatile private var lastKey: TimelineKey? = null
 
+        /** Whether [isLanding] still applies — true from [stageLanding] until [settleLanding]. */
+        @Volatile private var landingUnsettled = false
+
         fun stageLanding(key: TimelineKey?) {
             landOn = key
             landing = key
+            landingUnsettled = true
             if (key != null) lastKey = key
         }
 
         fun consumeLanding(): TimelineKey? = landOn.also { landOn = null }
 
-        fun isLanding(key: TimelineKey): Boolean = key == landing
+        fun isLanding(key: TimelineKey): Boolean = landingUnsettled && key == landing
+
+        /**
+         * Ends [isLanding]'s stickiness: content has loaded above the landing (a PREPEND,
+         * from the network or from Room), which only happens once the rebuilt pager is
+         * live, so both refreshes the stickiness exists for have run. [landing] itself
+         * stays, for the repository's "already the live landing" check.
+         *
+         * Without this, every later refresh anchored on the landing photo loaded from it
+         * again, *dropping* whatever had just been loaded above it. Hit live at the oldest
+         * date (2026-09-29, the user's phone): the jump window was the library's last 9
+         * photos, all on screen, so the grid's anchor was the landing itself. The
+         * mediator's PREPEND fetched newer photos, the write triggered a refresh, and that
+         * refresh came back as the same 9 photos. Nothing on screen changed, so nothing
+         * asked Paging for the photos above again. The grid stayed at those 9 photos and
+         * was too short to swipe.
+         */
+        fun settleLanding() {
+            landingUnsettled = false
+        }
 
         /** A one-shot key for [TimelinePagingSource.getRefreshKey] to consume on its
          * *next* call, deliberately **not** a [stageLanding]/[isLanding] "jump landing" —

@@ -194,6 +194,54 @@ internal fun leadingCells(
     return Math.floorMod(rankOfFirst, columns)
 }
 
+/**
+ * The lead for [ids] that keeps every photo it shares with [prevIds] in the column it
+ * had there — `null` when the two lists share no photo, or [columns] changed.
+ *
+ * This, not [leadingCells], is what keeps the grid steady from one list to the next.
+ * The histogram's ranks are only as good as its counts agreeing with the cache, and they
+ * don't always: while a jump settled, Paging alternated between two windows (180 and 221
+ * photos) and the histogram lead put the same photo a row apart in each — a one-frame
+ * flicker to a neighbouring day (logged 2026-09-29). Carried over relatively, the lead
+ * can't disagree with itself: loading or dropping photos at either end never moves the
+ * ones that stay. [leadingCells] is left for a list with nothing in common with the last
+ * one — a jump to a fresh window — where there's no column to keep.
+ */
+internal fun carriedLead(
+    prevIds: List<String>,
+    prevLead: Int,
+    prevColumns: Int,
+    ids: List<String>,
+    columns: Int,
+): Int? {
+    if (prevIds.isEmpty() || ids.isEmpty() || prevColumns != columns) return null
+    // The old first photo, if it's still there (photos were loaded above it), or else the
+    // new first photo in the old list (photos were dropped from the top).
+    val shiftedBy = ids.indexOf(prevIds[0]).takeIf { it >= 0 }?.let { -it } ?: prevIds.indexOf(ids[0]).takeIf { it >= 0 } ?: return null
+    return Math.floorMod(prevLead + shiftedBy, columns)
+}
+
+/** Remembers the last list's lead for [carriedLead]. Updated from composition, in the same
+ * pass as the list it describes, so the lead and the list reach the grid together. */
+internal class LeadTracker {
+    private var ids: List<String> = emptyList()
+    private var lead = 0
+    private var columns = 0
+
+    fun leadFor(
+        ids: List<String>,
+        columns: Int,
+        fresh: () -> Int,
+    ): Int {
+        if (ids != this.ids || columns != this.columns) {
+            lead = carriedLead(this.ids, lead, this.columns, ids, columns) ?: fresh()
+            this.ids = ids
+            this.columns = columns
+        }
+        return lead
+    }
+}
+
 /** Each day's first (newest) photo's rank in the whole library, newest first, from the
  * histogram — the same running count [DensityScale] builds. */
 internal class HistogramRanks(histogram: TimelineHistogram) {

@@ -55,6 +55,10 @@ class TimelineRemoteMediatorTest {
     /** Set by a test before calling [load] to control `GET /photos`'s response, and
      * read back afterwards to check what query params the mediator actually sent. */
     private var photosResponseBody = """{"items":[]}"""
+
+    /** When set, what an ascending (newer-than) `GET /photos` gets instead — for a test
+     * whose jump fetches both an older page and the photos above it. */
+    private var ascResponseBody: String? = null
     private var lastRequest: RecordedRequest? = null
 
     /** A jump fetches both directions around its target, so assertions have to name the
@@ -72,7 +76,8 @@ class TimelineRemoteMediatorTest {
                     lastRequest = request
                     requests += request
                     return if (request.path.orEmpty().startsWith("/api/photos")) {
-                        MockResponse().setResponseCode(200).setBody(photosResponseBody)
+                        val asc = request.requestUrl?.queryParameter("order") == "asc"
+                        MockResponse().setResponseCode(200).setBody(ascResponseBody?.takeIf { asc } ?: photosResponseBody)
                     } else {
                         MockResponse().setResponseCode(404)
                     }
@@ -184,7 +189,7 @@ class TimelineRemoteMediatorTest {
                     ),
                 ),
             )
-            photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
+            photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}],"cursor":"older"}"""
 
             mediator.reseedAt(LocalDate.parse("2021-06-15"))
 
@@ -234,7 +239,7 @@ class TimelineRemoteMediatorTest {
     fun `a jump records how far the cache is complete, and going back to the present clears it`() =
         runTest {
             connectInstance()
-            photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}]}"""
+            photosResponseBody = """{"items":[${photoJson("p1", "2021-06-01T00:00:00.000Z")}],"cursor":"older"}"""
 
             mediator.reseedAt(LocalDate.parse("2021-06-15"))
             assertEquals("2021-06-16T11:59:59.999Z", db.timelineWindowDao().completeThrough())
@@ -444,7 +449,7 @@ class TimelineRemoteMediatorTest {
                     ${photoJson("next-day", "2025-11-17T22:40:29.000Z", tzOffsetMin = 120)},
                     ${photoJson("wanted", "2025-11-17T16:10:00.000Z", tzOffsetMin = 120)},
                     ${photoJson("earlier", "2025-11-16T09:00:00.000Z", tzOffsetMin = 120)}
-                ]}""".trimIndent()
+                ],"cursor":"older"}""".trimIndent()
 
             mediator.reseedAt(LocalDate.parse("2025-11-17"))
 
@@ -457,6 +462,44 @@ class TimelineRemoteMediatorTest {
             assertNotNull(db.photoDao().getByPhotoId("next-day"))
             assertNotNull(db.photoDao().getByPhotoId("earlier"))
             assertEquals("2025-11-18T11:59:59.999Z", db.timelineWindowDao().completeThrough())
+        }
+
+    /** A jump near the oldest end of the library: the older page runs out short, so the
+     * photos just above the bound are fetched in the same jump and committed with it. The
+     * window used to be committed as those few photos alone, drawn as a few photos and then
+     * empty space until PREPEND's round trip filled it in. */
+    @Test
+    fun `a jump near the oldest end also fetches the photos above it`() =
+        runTest {
+            connectInstance()
+            photosResponseBody = """{"items":[${photoJson("oldest", "2012-04-08T17:55:23.000Z")}]}"""
+            ascResponseBody =
+                """{"items":[${photoJson("above1", "2012-05-01T00:00:00.000Z")},${photoJson("above2", "2012-05-13T00:00:00.000Z")}]}"""
+
+            mediator.reseedAt(LocalDate.parse("2012-04-08"), pageSize = 3)
+
+            assertEquals(2, requests.size)
+            val topUp = requests.last().requestUrl!!
+            assertEquals("asc", topUp.queryParameter("order"))
+            assertEquals("2012-04-09T11:59:59.999Z", topUp.queryParameter("from"))
+            assertEquals("2", topUp.queryParameter("limit"))
+            for (id in listOf("oldest", "above1", "above2")) assertNotNull(db.photoDao().getByPhotoId(id), id)
+            // Still lands on the day asked for, not on the photos fetched above it.
+            assertEquals(TimelineKey("2012-04-08T17:55:23.000Z", "oldest"), jumpCoordinator.consumeLanding())
+            // A full page above: complete only through the newest photo it reached.
+            assertEquals("2012-05-13T00:00:00.000Z", db.timelineWindowDao().completeThrough())
+        }
+
+    @Test
+    fun `a short page of photos above the oldest end reaches the present`() =
+        runTest {
+            connectInstance()
+            photosResponseBody = """{"items":[${photoJson("oldest", "2012-04-08T17:55:23.000Z")}]}"""
+            ascResponseBody = """{"items":[${photoJson("above1", "2012-05-01T00:00:00.000Z")}]}"""
+
+            mediator.reseedAt(LocalDate.parse("2012-04-08"), pageSize = 3)
+
+            assertNull(db.timelineWindowDao().completeThrough())
         }
 
     /** Every photo fetched belonging to a later day still has to land somewhere — an
