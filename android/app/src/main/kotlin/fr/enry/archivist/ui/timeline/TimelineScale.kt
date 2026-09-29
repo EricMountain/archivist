@@ -7,8 +7,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.pow
+import kotlin.math.sin
 
 /**
  * What the fast-scroll rail maps a finger position onto.
@@ -383,42 +385,116 @@ internal val FINE_TICK_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPatter
  * the day the pill names, however far the selection and the unmagnified position of the
  * finger have drifted apart over a drag of mixed speeds (see [advanceSelection]).
  *
- * A power law on each side — `at * (u/center)^m` above, its mirror image below — rather
- * than a literal logarithm: bounded to [0,1] with no asymptote to normalise, a closed-form
- * inverse, and the same "steep near the centre, shallow far from it" shape. The exponents
- * are chosen so the zoom right at the centre is [LENS_EXPONENT] on both sides wherever
- * that's possible; when [center] and [at] are far apart one side may have to be zoomed
- * *more* than that just to fit (an exponent below 1 would put the greatest zoom at the
- * edge of the rail instead of the centre), so that side is kept linear.
+ * A *local* magnifier: the zoom is [zoom] right at the centre and falls off, along a
+ * raised-cosine bump, to the ordinary scale within [LENS_RADIUS] of the track on each
+ * side. Everything outside that window stays close to linear, only slightly compressed
+ * to pay for the magnified window (about 0.8× with the lens mid-track). What this
+ * replaced was a power law running from the centre all the way to both ends of the
+ * track. It only magnified the finger's neighbourhood by squeezing everything else, so
+ * the whole rail became a log-like spread of time, and the far past ended up crammed
+ * against the bottom edge.
+ *
+ * Each side is fitted separately, because [center] and [at] can differ: the side's
+ * underlying length has to land exactly on its screen span. When that span is too short
+ * for the full bump (near an edge), the peak zoom drops instead of the rest of that side
+ * being crushed below [LENS_MIN_DENSITY]. When it's too *long* (the selection has drifted
+ * far from the finger) and even the flat part would be zoomed more than [zoom], that
+ * side is simply linear.
  */
 internal data class Lens(
     val center: Float,
     val at: Float,
-    val zoom: Float = LENS_EXPONENT,
+    val zoom: Float = LENS_ZOOM,
 ) {
     private val c = center.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
     private val p = at.coerceIn(LENS_EDGE_EPSILON, 1f - LENS_EDGE_EPSILON)
-    private val above = (zoom * c / p).coerceAtLeast(1f)
-    private val below = (zoom * (1f - c) / (1f - p)).coerceAtLeast(1f)
+
+    // Underlying half-width of the bump: at zoom k its magnified part covers about
+    // LENS_RADIUS of the screen (a raised cosine's area is half its width).
+    private val halfWidth = 2f * LENS_RADIUS / zoom
+    private val above = LensSide(length = c, span = p, zoom = zoom, halfWidth = halfWidth)
+    private val below = LensSide(length = 1f - c, span = 1f - p, zoom = zoom, halfWidth = halfWidth)
 
     fun warp(u: Float): Float {
         val x = u.coerceIn(0f, 1f)
-        return if (x <= c) {
-            p * (x / c).pow(above)
-        } else {
-            val t = (x - c) / (1f - c)
-            p + (1f - p) * (1f - (1f - t).pow(below))
-        }
+        return if (x <= c) p - above.offset(c - x) else p + below.offset(x - c)
     }
 
     fun unwarp(y: Float): Float {
         val x = y.coerceIn(0f, 1f)
-        return if (x <= p) {
-            c * (x / p).pow(1f / above)
-        } else {
-            val t = 1f - (1f - (x - p) / (1f - p)).pow(1f / below)
-            c + (1f - c) * t
+        return if (x <= p) c - above.distance(p - x) else c + below.distance(x - p)
+    }
+}
+
+/**
+ * One side of a [Lens]: [length] of underlying track, starting at the centre, drawn over
+ * [span] of screen. Density (screen per underlying) at distance d from the centre is
+ * `base + (peak - base) * bump(d)`, with `bump` a raised cosine that is 1 at the centre
+ * and 0 from [halfWidth] onwards.
+ */
+private class LensSide(
+    private val length: Float,
+    private val span: Float,
+    zoom: Float,
+    private val halfWidth: Float,
+) {
+    private val bumpArea = bumpIntegral(length)
+    private val linear: Boolean
+    private val base: Float
+    private val peak: Float
+
+    init {
+        // The base density that makes the full-zoom bump fit exactly.
+        val fitted = if (length - bumpArea > 0f) (span - zoom * bumpArea) / (length - bumpArea) else Float.MAX_VALUE
+        val minTotal = LENS_MIN_DENSITY * length
+        when {
+            fitted in LENS_MIN_DENSITY..zoom -> {
+                linear = false
+                base = fitted
+                peak = zoom
+            }
+            fitted < LENS_MIN_DENSITY && span > minTotal && bumpArea > 0f -> {
+                // Too little screen for the full zoom: keep the rest legible, zoom less.
+                linear = false
+                base = LENS_MIN_DENSITY
+                peak = LENS_MIN_DENSITY + (span - minTotal) / bumpArea
+            }
+            else -> {
+                linear = true
+                base = 0f
+                peak = 0f
+            }
         }
+    }
+
+    /** Screen distance from the centre of underlying distance [d] (0..[length]). */
+    fun offset(d: Float): Float {
+        val x = d.coerceIn(0f, length)
+        return when {
+            length <= 0f -> 0f
+            linear -> x * span / length
+            else -> (base * x + (peak - base) * bumpIntegral(x)).coerceAtMost(span)
+        }
+    }
+
+    /** The inverse of [offset], by bisection: monotonic, and cheap enough per tick. */
+    fun distance(s: Float): Float {
+        if (length <= 0f || s <= 0f) return 0f
+        if (s >= span) return length
+        if (linear) return s * length / span
+        var lo = 0f
+        var hi = length
+        repeat(32) {
+            val mid = (lo + hi) / 2f
+            if (offset(mid) < s) lo = mid else hi = mid
+        }
+        return (lo + hi) / 2f
+    }
+
+    /** ∫₀ˣ bump: the raised cosine's area out to [x], `halfWidth / 2` once past it. */
+    private fun bumpIntegral(x: Float): Float {
+        val t = x.coerceIn(0f, halfWidth)
+        return t / 2f + halfWidth / (2f * PI.toFloat()) * sin(PI.toFloat() * t / halfWidth)
     }
 }
 
@@ -426,21 +502,28 @@ internal data class Lens(
 internal fun lensWarp(
     u: Float,
     anchor: Float,
-    exponent: Float = LENS_EXPONENT,
-): Float = Lens(anchor, anchor, exponent).warp(u)
+    zoom: Float = LENS_ZOOM,
+): Float = Lens(anchor, anchor, zoom).warp(u)
 
 /** The inverse of [lensWarp]. */
 internal fun lensUnwarp(
     p: Float,
     anchor: Float,
-    exponent: Float = LENS_EXPONENT,
-): Float = Lens(anchor, anchor, exponent).unwarp(p)
+    zoom: Float = LENS_ZOOM,
+): Float = Lens(anchor, anchor, zoom).unwarp(p)
 
 /** Keeps the lens centre strictly inside (0,1): at exactly 0 or 1 one side of the warp
  * divides by a zero-width span. */
 private const val LENS_EDGE_EPSILON = 0.0001f
 
-private const val LENS_EXPONENT = 6f
+private const val LENS_ZOOM = 6f
+
+/** How much of the track (on each side of the finger) the magnified window spans. */
+internal const val LENS_RADIUS = 0.1f
+
+/** The least a [Lens] compresses the track outside its window, as screen per
+ * underlying: below this, the peak zoom gives way instead. */
+private const val LENS_MIN_DENSITY = 0.4f
 
 /**
  * Where the selection goes when the finger moves from [fromRaw] to [toRaw] (both
@@ -498,7 +581,7 @@ internal const val MAX_SELECTION_DRIFT = 0.1f
  */
 internal fun dragGain(
     speedDpPerMs: Float,
-    zoom: Float = LENS_EXPONENT,
+    zoom: Float = LENS_ZOOM,
 ): Float {
     val t = ((speedDpPerMs - SLOW_DRAG_DP_PER_MS) / (FAST_DRAG_DP_PER_MS - SLOW_DRAG_DP_PER_MS)).coerceIn(0f, 1f)
     val smooth = t * t * (3f - 2f * t)

@@ -352,6 +352,38 @@ class TimelineScrollbarTest {
         assertEquals(6f, (lens.warp(0.4f + h) - lens.warp(0.4f)) / h, 0.1f)
     }
 
+    /** The regression: a lens that compresses everything outside the finger's
+     * neighbourhood turned the rail into a log-like spread, with the far past crammed
+     * against the edge. Outside its window the lens should stay close to the plain scale. */
+    @Test
+    fun `the lens is local - far from the finger the track stays close to linear`() {
+        for ((c, p) in listOf(0.3f to 0.3f, 0.5f to 0.5f, 0.3f to 0.38f)) {
+            val lens = Lens(c, p)
+            val h = 0.001f
+            for (u in listOf(0.02f, 0.9f, 0.97f)) {
+                val density = (lens.warp(u + h) - lens.warp(u)) / h
+                assertTrue(density in 0.6f..1.2f, "c=$c p=$p u=$u density=$density")
+            }
+            // And the old dates keep a proportionate share of the rail: the last 10% of
+            // the library gets roughly 10% of the screen, not a sliver at the bottom.
+            val bottomShare = 1f - lens.warp(0.9f)
+            assertTrue(bottomShare > 0.07f, "c=$c p=$p bottom 10% drawn over $bottomShare")
+        }
+    }
+
+    @Test
+    fun `a lens near an edge zooms less rather than crushing the rest of its side`() {
+        val lens = Lens(0.03f, 0.03f)
+        val h = 0.0005f
+        for (u in listOf(0.001f, 0.015f)) {
+            assertTrue((lens.warp(u + h) - lens.warp(u)) / h >= 0.39f, "u=$u")
+        }
+        for (i in 0..50) {
+            val y = i / 50f
+            assertEquals(y, lens.warp(lens.unwarp(y)), 0.0005f, "y=$y")
+        }
+    }
+
     @Test
     fun `a held lens with centre and finger equal is the in-place lens`() {
         for (u in listOf(0f, 0.1f, 0.3f, 0.6f, 1f)) {
