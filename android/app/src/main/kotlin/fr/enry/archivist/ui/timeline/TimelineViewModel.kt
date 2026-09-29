@@ -28,7 +28,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -38,6 +41,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
+
+/** The longest a cold start holds the grid back waiting to reseed at the present — see
+ * `TimelineViewModel.startupSettled`. */
+private const val STARTUP_RESEED_WAIT_MS = 4000L
 
 /** A jump that has landed: [landing] is the key the grid should hold on, [position] the
  * rail position that asked for it (so the grid can land partway through the day, not on
@@ -118,10 +125,21 @@ class TimelineViewModel
          * here (the present, `pagerGeneration`'s own starting state), not "unknown". */
         private var livePagerKey: TimelineKey? = null
 
+        /**
+         * False while a cold start is still moving a cache left in the past back to the
+         * present — see `init`. No pager is built until then: one built over the old window
+         * showed the last session's position first and then moved to the top, in a couple
+         * of visible steps, once the reseed landed. The screen shows its loading spinner
+         * meanwhile, the same as for a first load.
+         */
+        private val startupSettled = MutableStateFlow(false)
+
         @OptIn(ExperimentalCoroutinesApi::class)
         val timeline: Flow<PagingData<PhotoEntity>> =
-            pagerGeneration
-                .flatMapLatest { photoRepository.timeline(it.initialKey) }
+            flow {
+                startupSettled.first { it }
+                emitAll(pagerGeneration)
+            }.flatMapLatest { photoRepository.timeline(it.initialKey) }
                 .cachedIn(viewModelScope)
 
         /** The fast-scroll range — `null` until the first successful fetch, or if it
@@ -243,9 +261,24 @@ class TimelineViewModel
             // cache is left alone: the mediator's own initial REFRESH already fetches the
             // newest page. Waits for unlock since the reseed needs the master key; offline
             // failures are swallowed by [applyJump], leaving the cache as it was.
+            //
+            // The grid waits for this (startupSettled) only when the cache is sitting in the
+            // past: one that already reaches the present shows at once, and the reseed lands
+            // on the same top row (checked live: no visible move). The wait is capped so a
+            // slow network still shows the cached window rather than a spinner; in that case
+            // the reseed moves the grid when it does land, as before.
             viewModelScope.launch {
                 locked.first { !it }
+                if (photoRepository.cacheStartsInPast()) {
+                    launch {
+                        delay(STARTUP_RESEED_WAIT_MS)
+                        startupSettled.value = true
+                    }
+                } else {
+                    startupSettled.value = true
+                }
                 if (photoRepository.hasCachedPhotos()) applyJump(null, scrub = false)
+                startupSettled.value = true
             }
             // See UploadEvents' own doc for why the timeline needs this at all (unlike
             // the queue screen, which observes `upload_queue` directly): the upload

@@ -95,6 +95,10 @@ class PhotoRepository
          * [fr.enry.archivist.ui.timeline.TimelineViewModel]'s cold-start reseed. */
         suspend fun hasCachedPhotos(): Boolean = !db.photoDao().isEmpty()
 
+        /** Whether the cache holds photos but stops short of the present (a previous
+         * session's jump left it there) — see `TimelineWindowEntity.completeThrough`. */
+        suspend fun cacheStartsInPast(): Boolean = db.timelineWindowDao().completeThrough() != null && hasCachedPhotos()
+
         /**
          * A fast-scroll drag was released on [target] — replace the cache with a window
          * anchored there. A null [target] means "back to the present", which is both the

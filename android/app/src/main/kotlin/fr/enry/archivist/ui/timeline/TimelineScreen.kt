@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
@@ -38,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -58,6 +61,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -88,9 +92,8 @@ import fr.enry.archivist.ui.preview.previewRef
 import fr.enry.archivist.ui.preview.selectPlayingIndices
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapNotNull
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** The rung shown in the grid — matches [fr.enry.archivist.sync.Thumbnailer]'s smallest
@@ -103,6 +106,9 @@ internal const val GRID_THUMB_SIZE = 256
  * that must not get snapped back to the top. Comfortably longer than a jump's own
  * settle time in practice (page loads observed finishing within a few hundred ms). */
 private const val JUMP_SCROLL_SETTLE_WINDOW_MS = 2000L
+
+/** The narrowest a grid cell gets; the column count is as many as fit the width. */
+private val GRID_MIN_CELL = 96.dp
 
 /**
  * Plan step 2.11: the justified-grid timeline, Paging 3 over Room. Reuses
@@ -280,6 +286,17 @@ fun TimelineScreen(
         // out".
         val gridState = rememberLazyGridState()
 
+        // The column count is fixed from the window width here, rather than left to
+        // GridCells.Adaptive at measure time, because the lead has to be known *before* the
+        // grid first lays out — see leadingCells. The same count Adaptive(GRID_MIN_CELL)
+        // would pick: the grid runs edge to edge.
+        val columns =
+            with(LocalDensity.current) {
+                (LocalWindowInfo.current.containerSize.width / GRID_MIN_CELL.toPx()).toInt().coerceAtLeast(1)
+            }
+        val ranks = remember(histogram) { histogram?.let(::HistogramRanks) }
+        val lead = leadingCells(items.itemCount, columns, ranks) { i -> items.peek(i)?.localDate() }
+
         // A jumped-to window *starts* at the requested instant (TimelineJumpCoordinator), so
         // landing on it used to just mean "go to index 0" once the window was committed to
         // Room. That stopped being true once `TimelineRemoteMediator.loadNewerThanCache`
@@ -296,63 +313,52 @@ fun TimelineScreen(
         // Deliberately a one-shot event rather than a LaunchedEffect keyed on load state,
         // too: keying on items.itemCount re-ran this on every page that loaded afterwards,
         // yanking the grid back mid-scroll.
+        // The live landing, held for JUMP_SCROLL_SETTLE_WINDOW_MS after a jump. A jump's
+        // fresh PagingData streams in over several page loads, not one shot, and PREPEND
+        // inserts newer content ahead of the landing too, so the landing's index keeps
+        // moving for a while. Reported live as "Latest doesn't quite get me to the top", and
+        // (2026-09-13) as "the timeline jumps off to a random place" on release.
+        //
+        // The grid is held there from composition (PinGridTo), which re-requests the
+        // landing's current index in the same frame as each list change. This used to be a
+        // coroutine re-scrolling on every itemCount change, which always ran a frame late:
+        // each page load was drawn once at the stale index before being corrected (logged
+        // 2026-09-29: top row 01-24 → 01-25 → 01-31 → 02-06 → 01-13 → back, over ~1.5s),
+        // which read as "it takes two moves to settle".
+        //
+        // Bounded, and dropped the moment the user scrolls the grid themselves: an APPEND
+        // from ordinary browsing also changes the list, and must not snap back to the
+        // landing. (Requests don't count as scrolling — only a real drag or fling does.)
+        //
+        // The collector only records the landing: `_jumpCompleted.emit` suspends on it,
+        // under the lock every scrub in a drag shares, so it must return at once.
+        var pinnedJump by remember { mutableStateOf<JumpLanding?>(null) }
         LaunchedEffect(Unit) {
             viewModel.jumpCompleted.collect { jump ->
                 // A mid-drag scrub into a real day is placed by TimelineScrollbar itself,
                 // continuously, from the finger's live position within the day. Landing
-                // it here as well — on the day's first photo, and reasserted for a while
-                // after — is what made dragging the rail snap from one day to the next.
+                // it here as well — on the day's first photo — is what made dragging the
+                // rail snap from one day to the next.
                 if (jump.scrub && jump.position.day != null) return@collect
-                val landing = jump.landing
-                fun target() = landingTarget(items, landing, jump.position)
-                target()?.let { gridState.scrollToFractionalIndex(it) } ?: gridState.scrollToItem(0)
-                // One reassert isn't enough: a jump's fresh PagingData generation streams in
-                // over several subsequent page loads, not one shot, and *each* one can
-                // retrigger LazyVerticalGrid's own key-based position-preservation, nudging
-                // the scroll away from the landing again — confirmed live via instrumentation,
-                // itemCount still growing (168 -> 257 -> 258) well after an earlier reassert
-                // had already reported reaching the landing, with the position drifting again
-                // on the next page. Reported as "Latest doesn't quite get me to the top... I
-                // can't scroll to the top date label itself", and later (2026-09-13) as "the
-                // timeline jumps off to a random place" the instant a rail drag is released.
-                //
-                // So this keeps reasserting on every single itemCount change — no debounce:
-                // `PREPEND`'s own local (network-free) round trips land in ~30-90ms each, well
-                // inside what a "wait for a lull" debounce would have waited out, so a
-                // debounce meant letting a whole burst run before the very first check ever
-                // got a chance to catch it — for a bounded window after the jump, rather than
-                // trusting a single delayed retry. Bounded so it stops fighting the user's own
-                // scrolling once real browsing resumes — an APPEND from an ordinary scroll
-                // also changes itemCount, and this must not snap that back to the landing.
-                //
-                // Launched as its own coroutine, deliberately not awaited inline: this
-                // collector is also what `_jumpCompleted.emit(...)` suspends on in
-                // `TimelineViewModel.applyJump`, which runs under the same lock every scrub
-                // in a drag shares. Awaiting the full window here serialised every later
-                // scrub behind this one's own settle time, which — confirmed live — was
-                // enough to stall a continuous drag almost completely; several seconds of a
-                // finger sweeping across the rail rendered as the grid barely moving.
-                // Reasserting to the same index from several overlapping launches at once is
-                // harmless (they agree on the target), so nothing here needs the ordering
-                // that awaiting would have provided anyway.
-                //
-                // `mapNotNull`/`distinctUntilChanged` rather than a `takeWhile`-guarded
-                // `scrollToItem(0)`: the old version gave up reasserting entirely the instant
-                // index 0 stopped being the landing, unable to tell "still catching up to my
-                // own landing's settling pages" apart from "chasing content PREPEND is
-                // autonomously adding" — since both changed itemCount and moved whatever was
-                // at 0 identically. Tracking the landing's own index sidesteps the ambiguity
-                // outright: there's nothing to give up on, since PREPEND changing the
-                // landing's index *is* the correct new answer, not a signal to stop.
-                launch {
-                    withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
-                        snapshotFlow { items.itemCount }
-                            .mapNotNull { target() }
-                            .distinctUntilChanged()
-                            .collect { gridState.scrollToFractionalIndex(it) }
-                    }
-                }
+                pinnedJump = jump
             }
+        }
+        LaunchedEffect(pinnedJump) {
+            if (pinnedJump == null) return@LaunchedEffect
+            withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
+                snapshotFlow { gridState.isScrollInProgress }.first { it }
+            }
+            pinnedJump = null
+        }
+        pinnedJump?.let { jump ->
+            // Not found yet (the rebuilt pager hasn't delivered the landing): the top,
+            // which is where a rebuilt pager starts anyway.
+            PinGridTo(
+                gridState = gridState,
+                target = landingTarget(items, jump.landing, jump.position) ?: 0f,
+                lead = lead,
+                photoIdAt = { i -> if (i in 0 until items.itemCount) items.peek(i)?.photoId else null },
+            )
         }
 
         // Plan step 2.12: which photo the detail screen is open on, if any. Plain local
@@ -392,6 +398,8 @@ fun TimelineScreen(
                 gridState = gridState,
                 bounds = bounds,
                 histogram = histogram,
+                columns = columns,
+                lead = lead,
                 contentState = contentState,
                 topInset = topInset,
                 contentPadding = contentPadding,
@@ -537,6 +545,9 @@ private fun TimelineGrid(
     gridState: LazyGridState,
     bounds: TimelineBounds?,
     histogram: TimelineHistogram?,
+    columns: Int,
+    // Empty cells before the first photo — see leadingCells.
+    lead: Int,
     // Computed once by the caller (TimelineScreen), not re-derived here: LOADING is
     // special-cased there to render full-screen with no top bar, before this composable
     // is even reached -- see that call site's own doc for why. Still handled below for
@@ -605,6 +616,7 @@ private fun TimelineGrid(
                     items = items,
                     bounds = bounds,
                     histogram = histogram,
+                    lead = lead,
                     onScrub = onScrub,
                     onCommit = onCommit,
                     modifier = Modifier.fillMaxSize(),
@@ -615,7 +627,7 @@ private fun TimelineGrid(
                     trackBottomInset = with(LocalDensity.current) { gestureBarHeightPx().toDp() },
                 ) {
                     Box(Modifier.fillMaxSize()) {
-                        TimelinePhotoGrid(items, host, gridState, onPhotoClick, Modifier.fillMaxSize())
+                        TimelinePhotoGrid(items, host, gridState, columns, lead, onPhotoClick, Modifier.fillMaxSize())
                         // Above the grid, below the rail (which the scrollbar draws after
                         // this slot).
                         DateBubbleOverlay(items, gridState, topInset, Modifier.fillMaxSize())
@@ -630,6 +642,8 @@ private fun TimelinePhotoGrid(
     items: LazyPagingItems<PhotoEntity>,
     host: String?,
     gridState: LazyGridState,
+    columns: Int,
+    lead: Int,
     onPhotoClick: (PhotoEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -664,7 +678,7 @@ private fun TimelinePhotoGrid(
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 96.dp),
+        columns = GridCells.Fixed(columns),
         state = gridState,
         // No top padding for the cutout: it would show as a blank band above row 0 at
         // scroll offset 0 (app start, and wherever a rail jump lands). The grid runs
@@ -674,18 +688,32 @@ private fun TimelinePhotoGrid(
         items(
             count = items.itemCount,
             key = items.itemKey { it.photoId },
+            // The first photo's cell also carries the lead's empty cells, drawn as blank
+            // space to its left — so the lead costs no extra grid items, and every index
+            // the rest of this screen maps between the grid and [items] stays the same.
+            span = { index -> GridItemSpan(if (index == 0) lead + 1 else 1) },
             contentType = items.itemContentType { "photo" },
         ) { index ->
             val photo = items[index]
-            if (photo != null) {
-                PhotoCell(
-                    photo,
-                    host,
-                    playPreview = photo.photoId in playingIds,
-                    onClick = { onPhotoClick(photo) },
-                )
+            val cell: @Composable () -> Unit = {
+                if (photo != null) {
+                    PhotoCell(
+                        photo,
+                        host,
+                        playPreview = photo.photoId in playingIds,
+                        onClick = { onPhotoClick(photo) },
+                    )
+                } else {
+                    PlaceholderCell()
+                }
+            }
+            if (index == 0 && lead > 0) {
+                Row {
+                    Spacer(Modifier.weight(lead.toFloat()))
+                    Box(Modifier.weight(1f)) { cell() }
+                }
             } else {
-                PlaceholderCell()
+                cell()
             }
         }
     }

@@ -149,6 +149,8 @@ fun TimelineScrollbar(
     items: LazyPagingItems<PhotoEntity>,
     bounds: TimelineBounds?,
     histogram: TimelineHistogram?,
+    // The grid's empty cells before its first photo — see leadingCells.
+    lead: Int,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (RailPosition) -> Unit,
     modifier: Modifier = Modifier,
@@ -219,11 +221,11 @@ fun TimelineScrollbar(
     // than stepping once per day — and so that, after a release, it rests exactly where
     // the finger left it instead of hopping back to the top of the day. Falls back to the
     // day's own start while the grid's layout and [items] disagree (see idlePhoto).
-    val idleFraction by remember(items, scale) {
+    val idleFraction by remember(items, scale, lead) {
         derivedStateOf {
             val photo = idlePhoto ?: return@derivedStateOf null
             val day = photo.localDate()
-            val top = gridState.fractionalTopIndex()
+            val top = gridState.fractionalTopIndex(lead)
             val range = dayRange(items.itemCount, day) { i -> items.peek(i)?.localDate() }
             // Through syncedVisiblePhotos, never a bare peek at the layout's index: a rail
             // scrub rebuilds the pager, and for a frame the layout still reports indices
@@ -355,13 +357,16 @@ fun TimelineScrollbar(
     //
     // The present (day null) is left to the scrub's own landing: index 0 of whatever
     // window is loaded before that fetch lands is not the present.
-    LaunchedEffect(scale, items) {
-        snapshotFlow {
-            heldSelected?.let(scale::positionAt)?.takeIf { it.day != null }?.let { targetIndexFor(items, it) }
-        }.filterNotNull()
-            .distinctUntilChanged()
-            .collectLatest { gridState.scrollToFractionalIndex(it) }
-    }
+    //
+    // Done during composition (PinGridTo), not from a snapshotFlow collector: the
+    // collector ran a frame after each list change, so every page that loaded while a
+    // held day settled was drawn once in the wrong place before being corrected.
+    PinGridTo(
+        gridState = gridState,
+        target = heldSelected?.let(scale::positionAt)?.takeIf { it.day != null }?.let { targetIndexFor(items, it) },
+        lead = lead,
+        photoIdAt = { i -> if (i in 0 until items.itemCount) items.peek(i)?.photoId else null },
+    )
 
     // The rail's own width, so its background and labels aren't measured against the
     // narrow touch strip (which clipped the background and wrapped the date pill onto

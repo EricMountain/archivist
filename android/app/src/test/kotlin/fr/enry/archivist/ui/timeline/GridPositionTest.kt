@@ -101,5 +101,58 @@ class GridPositionTest {
         assertEquals(0.4f, progressAt(index, 7, 30, 30), 0.0001f)
     }
 
+    // ---- leadingCells: columns follow library rank, not list index ---------------------
+
+    /** Library of 3 + 5 + 6 + 4 photos over four days, newest first. */
+    private val libraryDays = listOf("2026-01-26" to 3, "2026-01-25" to 5, "2026-01-24" to 6, "2026-01-20" to 4)
+    private val library: List<LocalDate> = libraryDays.flatMap { (d, n) -> List(n) { LocalDate.parse(d) } }
+    private val ranks = HistogramRanks(TimelineHistogram(libraryDays.toMap(), total = library.size))
+
+    /** The column each photo of a list starting at library rank [from] is drawn in. */
+    private fun columnsFrom(
+        from: Int,
+        columns: Int = 4,
+    ): Map<Int, Int> {
+        val window = library.drop(from)
+        val lead = leadingCells(window.size, columns, ranks) { window.getOrNull(it) }
+        return window.indices.associate { i -> (from + i) to (lead + i) % columns }
+    }
+
+    /** The regression: a page loaded above shifted every photo sideways, re-wrapping the
+     * whole grid, whenever its size wasn't a multiple of the column count. */
+    @Test
+    fun `loading photos above never moves a photo to another column`() {
+        val settled = columnsFrom(8) // starts at 24 Jan's newest photo
+        for (from in listOf(0, 1, 3, 6, 7)) { // pages of every alignment prepended
+            val grown = columnsFrom(from)
+            for ((rank, column) in settled) assertEquals(column, grown[rank], "rank $rank after loading from $from")
+        }
+    }
+
+    /** Every window with a day boundary in it, or starting at a day's newest photo (14, the
+     * last day's start). Past that, a window inside one day can't know its offset in it —
+     * see the single-day case below. */
+    @Test
+    fun `each photo sits in its library rank's column`() {
+        for (from in 0..14) {
+            for ((rank, column) in columnsFrom(from)) assertEquals(rank % 4, column, "from=$from rank=$rank")
+        }
+    }
+
+    @Test
+    fun `no histogram or a single column needs no lead`() {
+        assertEquals(0, leadingCells(5, 4, null) { library[it] })
+        assertEquals(0, leadingCells(5, 1, ranks) { library[it] })
+        assertEquals(0, leadingCells(0, 4, ranks) { null })
+    }
+
+    /** A list that's all one day has no boundary to measure from: it's assumed to start at
+     * that day's newest photo. */
+    @Test
+    fun `a list inside a single day is aligned from that day's start`() {
+        val window = List(4) { LocalDate.parse("2026-01-24") }
+        assertEquals(8 % 4, leadingCells(window.size, 4, ranks) { window[it] })
+    }
+
     private fun RailPosition.rounded() = copy(progress = Math.round(progress * 1000) / 1000f)
 }
