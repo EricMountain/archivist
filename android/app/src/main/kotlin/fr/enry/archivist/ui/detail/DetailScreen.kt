@@ -176,6 +176,22 @@ fun DetailScreen(
         pagerPhotos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
     }
 
+    // The repair / date / rotate status lines describe the photo they ran on; once the
+    // pager lands on a different one they'd read as if they applied to it. Keyed on the
+    // photo id (not the page index) so a list re-emission after a repair or rotate,
+    // which keeps the id, doesn't wipe the message that just appeared. The first
+    // composition is skipped: the Unit-keyed resets above already cover it.
+    var lastStatusPhotoId by remember { mutableStateOf(currentPhoto?.photoId) }
+    LaunchedEffect(currentPhoto?.photoId) {
+        val id = currentPhoto?.photoId
+        if (id != lastStatusPhotoId) {
+            lastStatusPhotoId = id
+            viewModel.dismissRepair()
+            viewModel.dismissTakenAt()
+            viewModel.dismissRotate()
+        }
+    }
+
     // Plan step 2.13: once DeleteRepository.delete succeeds, the photo's Room row is
     // already gone -- staying on this screen would show a stale pager over a photo that
     // no longer exists in [photos], so leaving is the correct response to Done, not
