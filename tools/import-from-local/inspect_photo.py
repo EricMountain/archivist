@@ -102,6 +102,7 @@ def format_preview(preview: dict | None) -> str:
 
 def format_meta(meta: dict) -> str:
     lines = [
+        f"  photoId       {meta.get('photoId')}",
         f"  status        {meta.get('status')}",
         f"  stem          {meta.get('stem')}",
         f"  takenAt       {meta.get('takenAt')}  (src={meta.get('takenAtSrc')})",
@@ -112,6 +113,9 @@ def format_meta(meta: dict) -> str:
         f"  renditions    {meta.get('renditions')}",
         f"  groupSrc      {meta.get('groupSrc')}",
     ]
+    lines.append(f"  uploadedAt    {meta.get('uploadedAt')}")
+    lines.append(f"  encKeyId      {meta.get('encKeyId')}")
+    lines.append(f"  exif          {'encrypted (not decryptable here)' if meta.get('exifEnc') else 'none'}")
     lines.append(f"  thumbs        {format_thumbs(meta.get('thumbs'))}")
     lines.append(f"  preview       {format_preview(meta.get('preview'))}")
     if meta.get("deviceKey"):
@@ -135,11 +139,21 @@ def format_rendition(r: dict, is_match: bool) -> str:
     )
 
 
-def format_facets(facets: list[dict]) -> str | None:
+def format_facets(facets: list[dict]) -> str:
+    """One facet per line, sorted by type then value, in the same shape as the Android
+    app's Details dialog. `confidence`/`labelSrc` are LABEL-only."""
+    lines = ["  facets:"]
     if not facets:
-        return None
-    parts = [f"{f.get('facetType')}#{f.get('facetValue')}" for f in facets]
-    return "  facets        " + ", ".join(parts)
+        lines.append("    (none)")
+    for f in sorted(facets, key=lambda f: (f.get("facetType", ""), f.get("facetValue", ""))):
+        extra = []
+        if f.get("confidence") is not None:
+            extra.append(f"confidence={f['confidence']:.2f}")
+        if f.get("labelSrc"):
+            extra.append(f"src={f['labelSrc']}")
+        suffix = f"  ({'  '.join(extra)})" if extra else ""
+        lines.append(f"    {f.get('facetType', ''):<9} {f.get('facetValue')}{suffix}")
+    return "\n".join(lines)
 
 
 def print_asset(photo_id: str, detail: dict, matched_rendition_ids: set[str]) -> None:
@@ -149,9 +163,7 @@ def print_asset(photo_id: str, detail: dict, matched_rendition_ids: set[str]) ->
     print("  renditions:")
     for r in detail["renditions"]:
         print(format_rendition(r, r["renditionId"] in matched_rendition_ids))
-    facets_line = format_facets(detail.get("facets", []))
-    if facets_line:
-        print(facets_line)
+    print(format_facets(detail.get("facets", [])))
 
 
 def refresh_matches(

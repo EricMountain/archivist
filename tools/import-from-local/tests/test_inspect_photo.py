@@ -142,12 +142,27 @@ class Formatting(unittest.TestCase):
         self.assertTrue(format_rendition(r, is_match=False).startswith("    "))
         self.assertNotIn("→", format_rendition(r, is_match=False))
 
-    def test_format_facets_none_when_empty(self):
-        self.assertIsNone(format_facets([]))
+    def test_format_facets_says_none_when_empty(self):
+        self.assertIn("(none)", format_facets([]))
 
     def test_format_facets_lists_type_and_value(self):
         text = format_facets([{"facetType": "YEAR", "facetValue": "2018"}])
-        self.assertIn("YEAR#2018", text)
+        self.assertRegex(text, r"YEAR\s+2018")
+
+    def test_format_facets_shows_label_confidence_and_source_sorted(self):
+        text = format_facets([
+            {"facetType": "REND", "facetValue": "raw"},
+            {"facetType": "LABEL", "facetValue": "dog", "confidence": 0.94, "labelSrc": "rekognition"},
+        ])
+        self.assertIn("(confidence=0.94  src=rekognition)", text)
+        self.assertLess(text.index("LABEL"), text.index("REND"))
+
+    def test_format_meta_shows_photo_id_key_id_and_exif_presence(self):
+        text = format_meta({"photoId": "P1", "encKeyId": "k1", "exifEnc": "x", "uploadedAt": "U"})
+        self.assertIn("photoId       P1", text)
+        self.assertIn("encKeyId      k1", text)
+        self.assertIn("encrypted", text)
+        self.assertIn("exif          none", format_meta({}))
 
 
 class PrintAsset(unittest.TestCase):

@@ -7,6 +7,7 @@ import fr.enry.archivist.crypto.StreamingCipher
 import fr.enry.archivist.crypto.WholeObjectCipher
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.remote.ArchivistApiFactory
+import fr.enry.archivist.data.remote.FacetDto
 import fr.enry.archivist.data.remote.PhotoDetailResponse
 import fr.enry.archivist.data.remote.RenditionDto
 import fr.enry.archivist.domain.ExifBlob
@@ -76,6 +77,11 @@ data class PhotoDetail(
     val cameraModel: String?,
     val exifDecryptFailed: Boolean,
     val renditions: List<RenditionSummary>,
+    val encKeyId: String? = null,
+    /** The whole decrypted EXIF blob (lens, serial, DateTimeOriginal…); null exactly
+     * when [cameraMake]/[cameraModel] are too. */
+    val exif: ExifBlob? = null,
+    val facets: List<FacetDto> = emptyList(),
 )
 
 /**
@@ -132,6 +138,9 @@ class PhotoDetailRepository
                 cameraModel = exif?.blob?.cameraModel,
                 exifDecryptFailed = meta.exifEnc != null && exif == null,
                 renditions = renditions.map { it.toSummary() },
+                encKeyId = meta.encKeyId,
+                exif = exif?.blob,
+                facets = facets,
             )
         }
 

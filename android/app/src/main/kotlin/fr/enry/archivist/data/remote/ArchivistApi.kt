@@ -492,8 +492,22 @@ data class RenditionDto(
     val addedAt: String,
 )
 
+/** One `F#` item from `GET /photos/{photoId}`'s `facets` — only the fields the Details
+ * dialog shows; [confidence]/[labelSrc] are `LABEL`-only. */
 @Serializable
-data class PhotoDetailResponse(val meta: PhotoMetaDto, val renditions: List<RenditionDto>)
+data class FacetDto(
+    val facetType: String,
+    val facetValue: String,
+    val confidence: Double? = null,
+    val labelSrc: String? = null,
+)
+
+@Serializable
+data class PhotoDetailResponse(
+    val meta: PhotoMetaDto,
+    val renditions: List<RenditionDto>,
+    val facets: List<FacetDto> = emptyList(),
+)
 
 /** `POST /photos/{photoId}/thumbs`'s body — one [ThumbDescriptorDto] per size being
  * repaired, keyed the same string-size way as [PostUploadRequest.thumbs]. Only the

@@ -84,6 +84,28 @@ private fun detailsText(detail: PhotoDetail): String {
                 add("camera        ${detail.cameraMake ?: "?"} ${detail.cameraModel ?: "?"}")
             }
             add("uploadedAt    ${detail.uploadedAt}")
+            if (detail.encKeyId != null) add("encKeyId      ${detail.encKeyId}")
+            if (detail.exifDecryptFailed) add("exif          (could not decrypt)")
+            detail.exif?.let { e ->
+                add("")
+                add("exif:")
+                e.cameraSerial?.let { add("  serial          $it") }
+                e.lens?.let { add("  lens            $it") }
+                e.dateTimeOriginal?.let { add("  dateTimeOrig    $it") }
+                e.offsetTimeOriginal?.let { add("  offsetTimeOrig  $it") }
+                e.gpsDateTimeUtc?.let { add("  gpsDateTimeUtc  $it") }
+            }
+            add("")
+            add("facets:")
+            if (detail.facets.isEmpty()) add("  (none)")
+            for (f in detail.facets.sortedWith(compareBy({ it.facetType }, { it.facetValue }))) {
+                val extra =
+                    buildList {
+                        f.confidence?.let { add("confidence=${"%.2f".format(java.util.Locale.ROOT, it)}") }
+                        f.labelSrc?.let { add("src=$it") }
+                    }.joinToString("  ")
+                add("  ${f.facetType.padEnd(9)} ${f.facetValue}" + if (extra.isEmpty()) "" else "  ($extra)")
+            }
             add("")
             add("renditions:")
             for (r in detail.renditions) {
