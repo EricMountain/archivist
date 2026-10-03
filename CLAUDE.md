@@ -38,6 +38,8 @@ in the Terraform or the app may hardcode a domain, account or region. See
   deployed instance (e.g. `create-user.md`). Different job from `deployment.md`, which
   explains the model; these explain the exact commands.
 * `docs/play/data-safety.md` — answers for the Play Console Data Safety form.
+* `docs/play/photos-video-declaration.md` — paste-ready text for the Play Console
+  "Photos and Videos" permissions declaration (`READ_MEDIA_IMAGES`/`VIDEO`).
 * `docs/play/privacy-policy.md` — the app's published privacy policy. Covers software
   that receives nothing; its central claim is "the app sends nothing to the author",
   which a single analytics SDK would invalidate.
