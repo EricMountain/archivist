@@ -43,13 +43,9 @@
          needed below it either, since pre-scoped-storage reads were never redacted. -->
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
 
-    <!-- Plan step 2.10: the upload worker runs as a foreground service (via
-         WorkManager's own SystemForegroundService) so Android doesn't kill it
-         mid-transfer. POST_NOTIFICATIONS is declared but not requested at runtime
-         yet — see STATUS.md; the worker still runs without it, the notification just
-         won't be visible on API 33+ until a future step adds that permission prompt. -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- The upload worker is a plain background WorkManager job, not a foreground
+         service, so no FOREGROUND_SERVICE* permissions. POST_NOTIFICATIONS covers its
+         optional progress and needs-unlock notifications. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -104,17 +100,6 @@
                 android:value="androidx.startup"
                 tools:node="remove" />
         </provider>
-
-        <!-- WorkManager's own manifest declares this service with no
-             foregroundServiceType at all — confirmed live, not assumed: without this
-             override, UploadWorker.setForeground()'s FOREGROUND_SERVICE_TYPE_DATA_SYNC
-             request crashed on API 34+ with "foregroundServiceType 0x1 is not a subset
-             of foregroundServiceType attribute 0x0 in service element of manifest
-             file", since the runtime-requested type must be declared here first. -->
-        <service
-            android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="dataSync"
-            tools:node="merge" />
     </application>
 
 </manifest>

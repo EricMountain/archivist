@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -15,7 +14,6 @@ import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
-import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -117,7 +115,7 @@ class WorkManagerUploadScheduler
  * duplicate.
  *
  * The actual upload logic lives in [UploadRepository] — this class is WorkManager
- * plumbing around it: constraints, backoff, the foreground notification, mapping
+ * plumbing around it: constraints, backoff, the progress notification, mapping
  * [UploadOutcome] onto [Result], and (2026-09-07) a separate low-priority notification
  * for [UploadOutcome.NeedsUnlock] — the master key is no longer cleared just for being
  * backgrounded (see `ArchivistApplication`'s own doc), so in practice this only fires
@@ -129,14 +127,12 @@ class WorkManagerUploadScheduler
  * all-or-nothing OS permission with no way to split at that layer (see plan step 2.19's
  * `PermissionOnboardingScreen`, which is what actually requests it).
  *
- * **`uploadAsForegroundService` (2026-09-08) picks which of two ways this worker keeps
- * itself alive during a large transfer.** Foreground (the default): more reliable,
- * since Android is much less willing to defer or kill a foreground job under memory
- * pressure, but its notification is mandatory — an OS requirement, not something this
- * app chooses. Background: an ordinary `CoroutineWorker`, at real (if smaller) risk of
- * being deferred or killed mid-upload, but its progress notification becomes genuinely
- * optional (`showUploadProgressNotification`), since nothing about a plain background
- * job requires one.
+ * **Background-only, deliberately (2026-10-03).** This is an ordinary `CoroutineWorker`,
+ * never a foreground service: at real (if smaller) risk of being deferred or killed
+ * mid-upload, in exchange for no `FOREGROUND_SERVICE_DATA_SYNC` declaration and a
+ * progress notification that's genuinely optional (`showUploadProgressNotification`).
+ * An earlier version offered a foreground mode (`setForeground`) behind a Settings
+ * toggle; it was removed rather than kept as an option.
  */
 @HiltWorker
 class UploadWorker
@@ -162,16 +158,10 @@ class UploadWorker
                 val queueId = inputData.getLong(KEY_QUEUE_ID, -1L)
                 if (queueId < 0) return@withPermit Result.failure()
 
-                // Settings.uploadAsForegroundService picks the mechanism; only the
-                // background path needs its own cleanup below -- WorkManager dismisses a
-                // foreground notification itself once setForeground's window ends, but a
-                // plain NotificationManagerCompat.notify() here has no such owner.
-                val settings = syncSettingsStore.settings.first()
-                if (settings.uploadAsForegroundService) {
-                    setForeground(foregroundInfo())
-                } else if (settings.showUploadProgressNotification) {
-                    postProgressNotification()
-                }
+                // A plain NotificationManagerCompat.notify() has no owner that dismisses
+                // it when this work item ends, hence the cleanup in the finally below.
+                val showProgress = syncSettingsStore.settings.first().showUploadProgressNotification
+                if (showProgress) postProgressNotification()
 
                 try {
                     when (val outcome = uploadRepository.uploadOne(queueId)) {
@@ -206,21 +196,19 @@ class UploadWorker
                     // cancellation" pitfall), skipping this notification cleanup
                     // entirely rather than running it.
                     withContext(NonCancellable) {
-                        if (!settings.uploadAsForegroundService) {
-                            if (uploadQueueDao.getActiveIds().isEmpty()) {
-                                cancelProgressNotification()
-                            } else {
-                                postProgressNotification()
-                            }
+                        if (uploadQueueDao.getActiveIds().isEmpty()) {
+                            cancelProgressNotification()
+                        } else if (showProgress) {
+                            postProgressNotification()
                         }
                     }
                 }
             }
 
         /** Per the Sync settings toggle (default on) -- a low-priority, alert-once
-         * notification, not the ongoing foreground one above: this fires from
-         * *outside* the foreground-service window (WorkManager already gave up on this
-         * attempt by the time [UploadOutcome.NeedsUnlock] comes back) and can span many
+         * notification, not the ongoing progress one: this fires after
+         * WorkManager has already given up on this attempt
+         * ([UploadOutcome.NeedsUnlock] has come back) and can span many
          * backoff retries, possibly each a fresh `UploadWorker` instance with no memory
          * of the last one -- `setOnlyAlertOnce(true)` against the same fixed id is what
          * keeps re-posting it on every retry from re-alerting (sound/vibrate/heads-up)
@@ -268,10 +256,9 @@ class UploadWorker
         /** One notification for the whole batch (see [NOTIFICATION_ID]'s doc for why
          * this shows aggregate progress rather than naming the current file) —
          * "long-running worker with a foreground notification for large files, or
-         * Android kills it" (the plan's own words), extended to cover a long queue of
-         * small files running long in aggregate too. Shared between [foregroundInfo]
-         * and [postProgressNotification] — same content either way, only how it's
-         * delivered to the system differs. Content text is the queue depth
+         * Android kills it" (the plan's own words — since superseded: no foreground
+         * service any more), extended to cover a long queue of small files running long
+         * in aggregate too. Content text is the queue depth
          * ([UploadQueueDao.observeRemainingCount]) — same number Settings > Sync
          * shows — read fresh on every call, so whichever concurrently-running worker
          * (re)posts this next always shows the current true count rather than a stale
@@ -297,17 +284,7 @@ class UploadWorker
                 .build()
         }
 
-        private suspend fun foregroundInfo(): ForegroundInfo {
-            val notification = buildProgressNotification()
-            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-            } else {
-                ForegroundInfo(NOTIFICATION_ID, notification)
-            }
-        }
-
-        /** The background-mode equivalent of [foregroundInfo] — an ordinary, non-foreground
-         * notification, so it has no automatic lifecycle of its own; [cancelProgressNotification]
+        /** An ordinary notification with no automatic lifecycle of its own; [cancelProgressNotification]
          * is what removes it, but only once [UploadQueueDao.getActiveIds] says the whole
          * batch is done, not after each individual attempt (see the [doWork] `finally`
          * block's comment for why). */
@@ -383,11 +360,9 @@ class UploadWorker
 
             fun cancelAll(context: Context) {
                 WorkManager.getInstance(context).cancelAllWorkByTag(UPLOAD_WORK_TAG)
-                // A foreground notification is torn down by WorkManager itself once
-                // its service stops, but the background-mode one (posted/cancelled by
-                // plain NotificationManagerCompat calls -- see postProgressNotification's
-                // doc) has no such owner and nothing else ever reacts to "uploads
-                // paused" -- doWork()'s own finally block only clears it once the whole
+                // The progress notification (posted/cancelled by plain
+                // NotificationManagerCompat calls -- see postProgressNotification's
+                // doc) has no owner that reacts to "uploads paused" -- doWork()'s own finally block only clears it once the whole
                 // *queue* drains to done/failed, which never happens while paused with
                 // rows still sitting in it. Found live: pausing left the "uploading"
                 // notification showing indefinitely.

@@ -433,20 +433,6 @@ that actually reads `workManagerConfiguration`:
 See `AndroidManifest.xml`. No JVM test can catch this — `UploadRepositoryTest` calls
 `UploadRepository.uploadOne()` directly, bypassing `UploadWorker`/WorkManager entirely.
 
-**WorkManager's own manifest doesn't declare a `foregroundServiceType` for
-`SystemForegroundService` — a `ForegroundInfo(..., FOREGROUND_SERVICE_TYPE_DATA_SYNC)`
-call crashes on API 34+ without an explicit override.** `IllegalArgumentException:
-foregroundServiceType 0x1 is not a subset of foregroundServiceType attribute 0x0 in
-service element of manifest file` — confirmed live, not assumed from the docs (an
-earlier STATUS.md note guessed this was already declared; it wasn't). Fix, in the same
-manifest:
-```xml
-<service
-    android:name="androidx.work.impl.foreground.SystemForegroundService"
-    android:foregroundServiceType="dataSync"
-    tools:node="merge" />
-```
-
 **A new `@EntryPoint` interface must live in `app/src/main`, not `app/src/androidTest`,
 even if only instrumented tests ever call it.** Hilt aggregates every
 `@InstallIn(SingletonComponent::class)` declaration at the compilation that generates

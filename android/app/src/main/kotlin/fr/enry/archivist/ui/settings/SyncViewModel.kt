@@ -51,10 +51,6 @@ class SyncViewModel
             viewModelScope.launch { store.setShowUploadProgressNotification(show) }
         }
 
-        fun setUploadAsForegroundService(foreground: Boolean) {
-            viewModelScope.launch { store.setUploadAsForegroundService(foreground) }
-        }
-
         /** Turning this on cancels whatever's enqueued or running right now
          * ([UploadScheduler.cancelAll]) without touching `upload_queue` -- the rows
          * stay exactly where they were. Turning it off is what actually resumes them:

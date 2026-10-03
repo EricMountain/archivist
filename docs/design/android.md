@@ -268,14 +268,13 @@ dialog at a time regardless of how many are asked together:
   device could still hold this permission and upload real coordinates); someone who
   doesn't trust the app with their own coordinates, even transiently, can additionally
   deny this on just their own phone regardless of what the owner's switch says.
-* **`POST_NOTIFICATIONS`** (API 33+) — for the upload-progress foreground notification
+* **`POST_NOTIFICATIONS`** (API 33+) — for the upload-progress notification
   and the `notifyWhenUploadNeedsUnlock` alert (see "Upload pipeline" above). Declared in
   the manifest since plan step 2.10 but, until this step, never actually requested —
   meaning neither notification could show on API 33+ regardless of the manifest
   declaration, since a declared-but-unrequested dangerous permission is never granted.
 
-Nothing else needs a runtime prompt. `INTERNET`, `ACCESS_NETWORK_STATE`,
-`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC` are normal/install-time permissions
+Nothing else needs a runtime prompt. `INTERNET` and `ACCESS_NETWORK_STATE` are normal/install-time permissions
 Android grants automatically at install, with no dialog. No location permission is
 requested either: `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` govern live device
 location, which this app never reads — only EXIF- and box-embedded GPS already sitting
@@ -345,17 +344,13 @@ WorkManager constraints rather than custom logic:
 | Any network | `NetworkType.CONNECTED` |
 | Pause below 20% battery | `setRequiresBatteryNotLow(true)` |
 | Only while charging | `setRequiresCharging(true)` |
-| Run as a foreground service (default) | `setForeground(...)`, mandatory notification |
-| Run as a background job instead | plain `CoroutineWorker`, notification optional |
 
-Large uploads run as a long-running worker, foreground by default so Android is far
-less willing to defer or kill it under memory pressure — the trade-off being a
-notification, which a foreground service is required to carry. **`uploadAsForegroundService`**
-(Settings > Sync) lets an owner choose the background job instead, at real risk to a
-large upload's reliability, in exchange for **`showUploadProgressNotification`**
-becoming a genuine choice rather than something Android forces regardless of the app's
-own preference. Both default on — this is opt-out of the more reliable mode, not
-opt-in to a lesser-known one. Encryption is CPU-heavy enough to be noticeable on
+Uploads run as a plain background `CoroutineWorker` — deliberately not a foreground
+service (removed 2026-10-03; it used to be a Settings toggle). That trades some
+resilience (Android may defer or kill a background job under memory pressure; WorkManager
+retries it) for no `FOREGROUND_SERVICE_DATA_SYNC` declaration and a notification that's
+genuinely optional: **`showUploadProgressNotification`** (Settings > Sync, default on).
+Encryption is CPU-heavy enough to be noticeable on
 battery, so "only while charging" should be genuinely offered rather than buried.
 
 ## Screens

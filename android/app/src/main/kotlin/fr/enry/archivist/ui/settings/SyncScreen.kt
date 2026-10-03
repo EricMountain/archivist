@@ -81,23 +81,9 @@ fun SyncScreen(
             onCheckedChange = viewModel::setNotifyWhenUploadNeedsUnlock,
         )
         SettingsSwitchRow(
-            title = "Run uploads as a foreground service",
-            subtitle = "More reliable for large files — Android is much less likely to defer or kill " +
-                "a foreground job under memory pressure. Requires a persistent notification while " +
-                "an upload is running; that's an OS requirement, not optional.",
-            checked = settings.uploadAsForegroundService,
-            onCheckedChange = viewModel::setUploadAsForegroundService,
-        )
-        SettingsSwitchRow(
             title = "Show upload progress notification",
-            subtitle =
-                if (settings.uploadAsForegroundService) {
-                    "Always shown while running as a foreground service, above"
-                } else {
-                    "Optional while running in the background — off just means one less notification"
-                },
-            checked = settings.uploadAsForegroundService || settings.showUploadProgressNotification,
-            enabled = !settings.uploadAsForegroundService,
+            subtitle = "Off just means one less notification; uploads run the same either way",
+            checked = settings.showUploadProgressNotification,
             onCheckedChange = viewModel::setShowUploadProgressNotification,
         )
         HorizontalDivider()

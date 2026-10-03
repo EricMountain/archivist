@@ -87,28 +87,6 @@ class SyncSettingsStoreTest {
         }
 
     @Test
-    fun `foreground service defaults on`() =
-        runTest {
-            assertTrue(newStore().settings.first().uploadAsForegroundService)
-        }
-
-    @Test
-    fun `foreground service setting round-trips independently of the notification setting`() =
-        runTest {
-            val store = newStore()
-            store.setUploadAsForegroundService(false)
-            store.setShowUploadProgressNotification(false)
-
-            val settings = store.settings.first()
-            assertFalse(settings.uploadAsForegroundService)
-            assertFalse(settings.showUploadProgressNotification)
-
-            store.setShowUploadProgressNotification(true)
-            assertFalse(store.settings.first().uploadAsForegroundService)
-            assertTrue(store.settings.first().showUploadProgressNotification)
-        }
-
-    @Test
     fun `uploads paused defaults off`() =
         runTest {
             assertFalse(newStore().settings.first().uploadsPaused)
