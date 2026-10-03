@@ -22,3 +22,5 @@ android/.gradle/
 #.idea/
 #*.iml
 local.properties
+
+.vscode
