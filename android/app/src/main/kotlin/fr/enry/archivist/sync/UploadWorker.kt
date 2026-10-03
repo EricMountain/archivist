@@ -65,6 +65,21 @@ private const val NEEDS_UNLOCK_NOTIFICATION_CHANNEL_ID = "needs-unlock"
  * needs a stable id to actually stay "only once" rather than re-alerting per file/retry. */
 private const val NEEDS_UNLOCK_NOTIFICATION_ID = 4202
 
+/** Constraints from settings (plan step 2.14's Sync section), shared by [UploadWorker]
+ * and [ScanWorker] --
+ * `setRequiresBatteryNotLow` stays hardcoded `true` regardless: the plan
+ * text only calls out network policy and charging as settings, not this
+ * one. `NetworkType.CONNECTED` (any network) rather than `NetworkType.METERED`
+ * when metered is allowed — WorkManager has no "unmetered-or-metered but
+ * not none" constraint, and "allow metered" is meant to mean "don't
+ * require Wi-Fi", not "require a metered connection specifically". */
+internal fun uploadConstraints(settings: SyncSettings): Constraints =
+    Constraints.Builder()
+        .setRequiredNetworkType(if (settings.allowMeteredNetwork) NetworkType.CONNECTED else NetworkType.UNMETERED)
+        .setRequiresBatteryNotLow(true)
+        .setRequiresCharging(settings.requiresCharging)
+        .build()
+
 /** The seam between [fr.enry.archivist.ui.settings.FoldersViewModel] (and anything
  * else that queues uploads) and WorkManager itself — same role
  * [fr.enry.archivist.sync.MediaStoreSource]/[Thumbnailer] play for their own platform
@@ -311,26 +326,13 @@ class UploadWorker
         companion object {
             private fun uniqueWorkName(queueId: Long) = "upload-$queueId"
 
-            /** Constraints from settings (plan step 2.14's Sync section) —
-             * `setRequiresBatteryNotLow` stays hardcoded `true` regardless: the plan
-             * text only calls out network policy and charging as settings, not this
-             * one. `NetworkType.CONNECTED` (any network) rather than `NetworkType.METERED`
-             * when metered is allowed — WorkManager has no "unmetered-or-metered but
-             * not none" constraint, and "allow metered" is meant to mean "don't
-             * require Wi-Fi", not "require a metered connection specifically". */
             private fun buildRequest(
                 queueId: Long,
                 settings: SyncSettings,
             ) = OneTimeWorkRequestBuilder<UploadWorker>()
                 .setInputData(workDataOf(KEY_QUEUE_ID to queueId))
                 .addTag(UPLOAD_WORK_TAG)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(if (settings.allowMeteredNetwork) NetworkType.CONNECTED else NetworkType.UNMETERED)
-                        .setRequiresBatteryNotLow(true)
-                        .setRequiresCharging(settings.requiresCharging)
-                        .build(),
-                )
+                .setConstraints(uploadConstraints(settings))
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, WorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
                 .build()
 

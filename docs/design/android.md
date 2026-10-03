@@ -350,6 +350,18 @@ service (removed 2026-10-03; it used to be a Settings toggle). That trades some
 resilience (Android may defer or kill a background job under memory pressure; WorkManager
 retries it) for no `FOREGROUND_SERVICE_DATA_SYNC` declaration and a notification that's
 genuinely optional: **`showUploadProgressNotification`** (Settings > Sync, default on).
+
+**Discovering new photos** (`ScanWorker`, added 2026-10-03; before that a scan only ran
+when a folder was toggled or rescanned in Settings). Three triggers, one worker
+(`ScanCoordinator.scanAndEnqueue()`: hash secret, `Scanner`, enqueue uploads):
+a one-shot WorkManager request with a MediaStore content-URI trigger (images + video,
+10 s update delay / 60 s max so a burst is one scan), which re-arms itself after every
+run because content triggers fire once; an hourly periodic backstop for missed triggers
+(reboot, force-stop, a change mid-run); and a scan on process start and each
+`MainActivity.onStart`. All carry the upload network/charging/battery constraints, so a
+scan only runs when its uploads could. Skipped (but re-armed) while uploads are paused —
+resuming scans once — or without media permission. A force-stopped app gets no triggers
+until next opened.
 Encryption is CPU-heavy enough to be noticeable on
 battery, so "only while charging" should be genuinely offered rather than buried.
 

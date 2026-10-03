@@ -6,6 +6,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.SyncSettings
 import fr.enry.archivist.data.local.SyncSettingsStore
 import fr.enry.archivist.data.local.db.UploadQueueDao
+import fr.enry.archivist.sync.ScanScheduler
 import fr.enry.archivist.sync.UploadScheduler
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
@@ -25,6 +26,7 @@ class SyncViewModel
         private val store: SyncSettingsStore,
         private val uploadQueueDao: UploadQueueDao,
         private val uploadScheduler: UploadScheduler,
+        private val scanScheduler: ScanScheduler,
     ) : ViewModel() {
         val settings: StateFlow<SyncSettings> =
             store.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncSettings())
@@ -65,6 +67,8 @@ class SyncViewModel
                     uploadScheduler.cancelAll()
                 } else {
                     uploadScheduler.enqueueAll(uploadQueueDao.getActiveIds())
+                    // Scans are skipped while paused, so catch up on anything taken since.
+                    scanScheduler.scanNow()
                 }
             }
         }

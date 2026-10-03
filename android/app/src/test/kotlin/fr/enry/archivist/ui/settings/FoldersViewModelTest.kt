@@ -12,6 +12,7 @@ import fr.enry.archivist.data.repo.EnrolmentRepository
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.sync.Scanner
+import fr.enry.archivist.sync.ScanCoordinator
 import fr.enry.archivist.sync.UploadScheduler
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeDeviceKeyProvider
@@ -103,10 +104,13 @@ class FoldersViewModelTest {
             FoldersViewModel(
                 mediaStoreSource = mediaStoreSource,
                 folderSelectionDao = db.folderSelectionDao(),
-                scanner = scanner,
-                enrolmentRepository = enrolmentRepository,
-                uploadQueueDao = db.uploadQueueDao(),
-                uploadScheduler = uploadScheduler,
+                scanCoordinator =
+                    ScanCoordinator(
+                        scanner = scanner,
+                        enrolmentRepository = enrolmentRepository,
+                        uploadQueueDao = db.uploadQueueDao(),
+                        uploadScheduler = uploadScheduler,
+                    ),
             )
     }
 

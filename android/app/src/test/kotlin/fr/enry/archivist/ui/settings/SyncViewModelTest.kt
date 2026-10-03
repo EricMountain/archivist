@@ -6,6 +6,7 @@ import fr.enry.archivist.data.local.db.AppDatabase
 import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.local.db.buildTestDatabase
+import fr.enry.archivist.testutil.FakeScanScheduler
 import fr.enry.archivist.testutil.FakeUploadScheduler
 import java.io.File
 import java.nio.file.Files
@@ -42,6 +43,7 @@ class SyncViewModelTest {
     private lateinit var db: AppDatabase
     private lateinit var store: SyncSettingsStore
     private lateinit var uploadScheduler: FakeUploadScheduler
+    private lateinit var scanScheduler: FakeScanScheduler
     private lateinit var viewModel: SyncViewModel
 
     private fun entry(
@@ -76,8 +78,15 @@ class SyncViewModelTest {
         tempDir = Files.createTempDirectory("sync-viewmodel-test").toFile()
         db = buildTestDatabase()
         uploadScheduler = FakeUploadScheduler()
+        scanScheduler = FakeScanScheduler()
         store = SyncSettingsStore(PreferenceDataStoreFactory.create(produceFile = { File(tempDir, "sync_settings.preferences_pb") }))
-        viewModel = SyncViewModel(store = store, uploadQueueDao = db.uploadQueueDao(), uploadScheduler = uploadScheduler)
+        viewModel =
+            SyncViewModel(
+                store = store,
+                uploadQueueDao = db.uploadQueueDao(),
+                uploadScheduler = uploadScheduler,
+                scanScheduler = scanScheduler,
+            )
     }
 
     @AfterEach
@@ -129,5 +138,8 @@ class SyncViewModelTest {
 
             assertFalse(store.settings.first().uploadsPaused)
             assertEquals(listOf(listOf(pending)), uploadScheduler.enqueuedCalls)
+            // Scans are skipped while paused, so resuming must catch up.
+            awaitState { scanScheduler.scanNowCallCount == 1 }
+            assertEquals(1, scanScheduler.scanNowCallCount)
         }
 }

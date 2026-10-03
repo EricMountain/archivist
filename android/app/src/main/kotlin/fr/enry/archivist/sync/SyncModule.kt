@@ -27,5 +27,9 @@ abstract class SyncModule {
 
     @Binds
     @Singleton
+    abstract fun bindScanScheduler(impl: WorkManagerScanScheduler): ScanScheduler
+
+    @Binds
+    @Singleton
     abstract fun bindDeviceStateMonitor(impl: AndroidDeviceStateMonitor): DeviceStateMonitor
 }

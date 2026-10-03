@@ -20,7 +20,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.CompositionLocalProvider
 import dagger.hilt.android.AndroidEntryPoint
+import androidx.lifecycle.lifecycleScope
 import fr.enry.archivist.data.repo.PreviewCache
+import fr.enry.archivist.sync.ScanScheduler
+import kotlinx.coroutines.launch
 import fr.enry.archivist.ui.preview.LocalPreviewCache
 import javax.inject.Inject
 import fr.enry.archivist.ui.onboarding.ConnectScreen
@@ -38,6 +41,16 @@ class MainActivity : ComponentActivity() {
      * ViewModels — see its own doc. */
     @Inject
     lateinit var previewCache: PreviewCache
+
+    @Inject
+    lateinit var scanScheduler: ScanScheduler
+
+    /** Picks up photos taken since the app was last in front (a no-op if a scan is
+     * already pending -- see [ScanScheduler.scanNow]). */
+    override fun onStart() {
+        super.onStart()
+        lifecycleScope.launch { scanScheduler.scanNow() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
