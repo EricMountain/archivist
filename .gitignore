@@ -24,3 +24,6 @@ android/.gradle/
 local.properties
 
 .vscode
+
+# direnv-managed Python venv.
+.direnv/

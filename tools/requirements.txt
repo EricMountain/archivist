@@ -1,0 +1,2 @@
+# Python deps for the scripts in tools/ (svg-to-android-icon.py).
+fonttools
