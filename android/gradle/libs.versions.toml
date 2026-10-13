@@ -57,6 +57,13 @@ androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+# Compose UI test harness -- instrumented only (androidTest), not Robolectric: see
+# AGENTS.md's "Robolectric has no native JUnit5 support" entry for why the JUnit4-based
+# instrumented-test path (already in use for Scanner/Thumbnailer/UploadWorker) was
+# chosen over a Robolectric+JUnit5 bridge. Versions come from the same compose-bom
+# platform already applied to androidTestImplementation below.
+androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePreferences" }
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }

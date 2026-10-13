@@ -473,6 +473,36 @@ alongside the existing Jupiter tests under the same `useJUnitPlatform()` task �
 `useJUnitPlatform()`/JUnit5 migration needed for Robolectric specifically, since Vintage
 lets both coexist. Prefer (b) unless there's a specific reason not to.
 
+**Compose UI tests ended up not needing Robolectric at all.** `TimelineScrollbarUiTest`
+(`app/src/androidTest/.../ui/timeline/`) uses `androidx.compose.ui:ui-test-junit4` +
+`ui-test-manifest` (debug-only) as ordinary JUnit4 instrumented tests — the same
+`AndroidJUnit4`/real-device path the Scanner/Thumbnailer/UploadWorker suite above already
+uses, sidestepping the Robolectric+JUnit5 incompatibility above entirely (`createComposeRule()`
+needs no Hilt/Activity for a plain `@Composable` under test — see that file for the
+pattern). `./gradlew :app:compileDebugAndroidTestKotlin` confirms it compiles.
+
+**This environment's two local AVDs (`Pixel_8a`, `Pixel_9a`, both `android-37.1` —
+a bleeding-edge preview image, not a stable release) can't actually *run* a Compose UI
+test that touches the screen.** `performTouchInput`/`performClick` route through
+Espresso's `UiController`, whose `InputManagerEventInjectionStrategy` reflectively calls
+the hidden `android.hardware.input.InputManager.getInstance()` static method — removed
+(or renamed) on this preview build's framework, confirmed live via `am instrument`
+against `Pixel_8a`:
+```
+java.lang.NoSuchMethodException: android.hardware.input.InputManager.getInstance []
+	at androidx.test.espresso.base.InputManagerEventInjectionStrategy.initialize(...)
+```
+Not a bug in the test or in `TimelineScrollbar` — every gesture-driving Compose UI test
+will fail identically against either local AVD until one of them is replaced with a
+stable-release system image. Verify these against the `pixel2api30` Gradle Managed
+Device instead (`./gradlew :app:pixel2api30DebugAndroidTest`, real API 30 `aosp-atd` —
+plan step 2.16's own CI already runs it green) — first use downloads and licenses that
+system image (~3 min total with the download). Confirmed passing there locally for `TimelineScrollbarUiTest`. A
+same-file test that *doesn't* touch the screen (no `performTouchInput`/`performClick`) —
+just composing content and reading semantics, e.g. `onNodeWithText(...).assertExists()`
+— has no reason to hit this and should run fine against either local AVD; only real
+touch/click injection goes through the broken `InputManager` path.
+
 **`MediaStore.createDeleteRequest` requires type-specific media URIs
 (`MediaStore.Images.Media`/`MediaStore.Video.Media`) — a `MediaStore.Files` URI crashes
 it outright.** Found live, plan step 2.13: `AndroidMediaStoreSource` builds every URI it

@@ -212,6 +212,17 @@ dependencies {
     kspAndroidTest(libs.hilt.compiler)
     androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.okhttp.mockwebserver)
+
+    // Compose UI test harness -- createComposeRule()/performTouchInput() etc. Runs as
+    // an ordinary instrumented test (JUnit4/AndroidJUnit4, same as the suite above), not
+    // via Robolectric -- see the version catalog entry's own comment.
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.ui.test.junit4)
+    androidTestImplementation(libs.androidx.paging.runtime)
+    androidTestImplementation(libs.androidx.paging.compose)
+    // Hosts the Activity createComposeRule() launches under the hood; debug-only so it
+    // never ships in a release APK.
+    debugImplementation(libs.androidx.ui.test.manifest)
 }
 
 tasks.withType<Test> {
