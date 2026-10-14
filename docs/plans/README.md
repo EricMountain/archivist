@@ -6,6 +6,7 @@ Ordered, implementable plans. Work through them in sequence.
 | --- | --- |
 | [01-aws-backend.md](01-aws-backend.md) | Every AWS resource: Cognito, API Gateway, Lambdas, CloudFront, plus the shared key-building library and the crypto format spec |
 | [02-android-mvp.md](02-android-mvp.md) | Archivist MVP: connect, sign in, back up, browse |
+| [03-automated-updates.md](03-automated-updates.md) | Dependabot → CI-gated automerge → Lambda redeploy on every merge to main, weekly Play internal-track release. Front-loaded with the manual AWS/GitHub/Play setup |
 | [timeline-date-bubbles.md](timeline-date-bubbles.md) | Follow-up to 2.11: immersive, continuously-flowing grid with floating date bubbles and a floating menu |
 
 **[STATUS.md](STATUS.md) tracks progress against both, step by step.** Read it before
@@ -74,3 +75,4 @@ These can't be automated and block specific steps:
 | A domain in Route 53 | step 1.14 |
 | Google Play declaration for broad media permissions | shipping, not building |
 | Play upload keystore + service account | step 2.16 |
+| GitHub OIDC provider, environments, secrets, rulesets, SHA-pinning and release-immutability settings, Dependabot settings, automerge GitHub App | plan 03 — see its Part A |

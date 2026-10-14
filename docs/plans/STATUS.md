@@ -1,7 +1,7 @@
 # Implementation status
 
-Tracks progress against [01-aws-backend.md](01-aws-backend.md) and
-[02-android-mvp.md](02-android-mvp.md), step by step. This file is the source of truth
+Tracks progress against [01-aws-backend.md](01-aws-backend.md),
+[02-android-mvp.md](02-android-mvp.md) and [03-automated-updates.md](03-automated-updates.md), step by step. This file is the source of truth
 for "is X done" — don't infer it from memory of a past session, and don't infer it from
 a file's mere existence either: a file can exist and still not meet its step's "Done
 when". See "Keeping this file honest" in [README.md](README.md) for the rule that keeps
@@ -511,6 +511,30 @@ Live-verified via `adb`/`uiautomator` (single-pointer only, same limitation as e
 **Same day, follow-up.** Two changes, both at the user's explicit direction. (1) Removed the bundled-sample fallback: an empty device now shows a plain "No photos on this device" message instead — the user judged the sample images misleading. `ReviewerPreviewUiState` simplified to `Loading`/`Empty`/`Loaded(files: List<DeviceMediaFile>)`, `ReviewerPreviewItem`'s `Device`/`Sample` sealed variants collapsed to plain `DeviceMediaFile` throughout `ReviewerPreviewScreen.kt`, and the 4 `res/drawable-nodpi/reviewer_sample_*.png` files deleted. (2) Added an About pane (`ui/settings/AboutScreen.kt`, no ViewModel) to both the real Settings menu and `ReviewerSettingsScreen`: version via `PackageManager`, GPLv3 license text plus a link to it, and a link to `https://github.com/EricMountain/archivist`. That URL is a second hardcoded personal-identifying string beyond `fr.enry.archivist` — flagged to the user before writing it (this repo's own `CLAUDE.md` names exactly one exception), and the user chose to hardcode it and amend `CLAUDE.md`'s exception clause accordingly, reasoning it's the one canonical upstream for every deployment rather than deployment-specific config. `CLAUDE.md` updated in the same change. **Verified**: `:app:testDebugUnitTest` full suite green (updated `ReviewerPreviewViewModelTest` for the new `Empty`/`Loaded(files)` shape); `:app:assembleDebug` succeeds. **Then actually run** on the same Pixel 8a-class emulator, fresh install: confirmed the empty-device grid now reads exactly "No photos on this device" with no sample images; navigated Settings → About from reviewer preview mode, confirmed version/license/repo link render correctly, and tapped the GitHub link through to a real launch of Chrome at `github.com/EricMountain/...` — no crash. Did not separately verify the real (non-reviewer) `SettingsScreen`'s new About entry live, since that requires a signed-in session against a real instance; it's the same `AboutScreen` composable already verified via the reviewer path, wired into `SettingsScreen.kt`'s destination enum the same way every other section already is.
 
 **Same day, second follow-up.** At the user's request, replaced the reviewer-preview intro `AlertDialog` with the explanation folded directly into `ConnectScreen`: a `HorizontalDivider` under the `Connect` button, then a full `Button` (same weight as `Connect`, not the previous subordinate `TextButton`) reading "Preview without an account", with its explanatory body text placed directly below it rather than shown as a popup only after tapping through. `ReviewerPreviewScreen`'s `showIntro`/`AlertDialog` and the now-unused `AlertDialog` import were removed entirely — the persistent in-mode banner ("Preview — no account, nothing uploaded") is the only reminder once inside. `docs/design/android.md`'s "Reviewer preview mode" section updated to match. **Verified**: `:app:testDebugUnitTest` full suite green, `:app:assembleDebug` succeeds (no test changes needed — this is pure Composable restructuring, nothing `ConnectViewModelTest` exercises). **Then actually run** on the same Pixel 8a-class emulator, fresh install: `ConnectScreen` now shows the "Preview without an account" button and its explanation inline, with no dialog; tapping the button goes straight into the grid/empty-state with no popup at any point. |
+
+## Plan 03 — Automated updates
+
+Plan written 2026-10-14; nothing implemented. Part A (manual setup) not started either —
+note in particular that `main` has no required checks, so 3.5's automerge workflow must
+not land before A8's ruleset (see the plan's "What exists today"). The existing
+`renovate.json` was never acted on (the app was never installed) and is replaced by
+Dependabot in 3.5.
+
+| Step | Status | Notes |
+| --- | --- | --- |
+| A1–A11 Manual setup | not started | |
+| 3.0 Pin actions by SHA | not started | |
+| 3.1 CI deploy role | not started | |
+| 3.2 `make deploy` records deployed commit | not started | |
+| 3.3 Backend CI | not started | |
+| 3.4 Always-reporting gate jobs | not started | |
+| 3.5 Dependabot configuration and automerge | not started | |
+| 3.6 Callable Android release workflow + GitHub Release | not started | |
+| 3.7 Weekly Android auto-release | not started | |
+| 3.8 Lambda deploy on every merge | not started | |
+| 3.9 Failure notification | not started | |
+| 3.10 Documentation | not started | |
+| 3.11 End-to-end verification | not started | |
 
 ## Last audit
 
