@@ -514,27 +514,37 @@ Live-verified via `adb`/`uiautomator` (single-pointer only, same limitation as e
 
 ## Plan 03 — Automated updates
 
-Plan written 2026-10-14; nothing implemented. Part A (manual setup) not started either —
-note in particular that `main` has no required checks, so 3.5's automerge workflow must
-not land before A8's ruleset (see the plan's "What exists today"). The existing
+Plan written 2026-10-14; nothing implemented, manual steps included. Note in particular that `main` has no required checks, so 3.18's automerge workflow must
+not land before step 3.17's required checks (see the plan's "What exists today"). The existing
 `renovate.json` was never acted on (the app was never installed) and is replaced by
-Dependabot in 3.5.
+Dependabot in 3.18.
 
 | Step | Status | Notes |
 | --- | --- | --- |
-| A1–A11 Manual setup | not started | |
-| 3.0 Pin actions by SHA | not started | |
-| 3.1 CI deploy role | not started | |
-| 3.2 `make deploy` records deployed commit | not started | |
-| 3.3 Backend CI | not started | |
-| 3.4 Always-reporting gate jobs | not started | |
-| 3.5 Dependabot configuration and automerge | not started | |
-| 3.6 Callable Android release workflow + GitHub Release | not started | |
-| 3.7 Weekly Android auto-release | not started | |
-| 3.8 Lambda deploy on every merge | not started | |
-| 3.9 Failure notification | not started | |
-| 3.10 Documentation | not started | |
-| 3.11 End-to-end verification | not started | |
+| 3.1 Lock down Actions defaults; release immutability (manual) | not started | |
+| 3.2 Play secrets into `play` environment (manual) | not started | |
+| 3.3 GitHub OIDC provider in AWS (manual) | not started | |
+| 3.4 `dev`/`prod` environments (manual) | not started | |
+| 3.5 Dependabot alerts and security updates (manual) | not started | |
+| 3.6 Automerge GitHub App (manual) | not started | |
+| 3.7 Protect `main` and release tags (manual) | not started | |
+| 3.8 Play Console permission check (manual) | not started | |
+| 3.9 Pin actions by SHA | not started | |
+| 3.10 Require SHA-pinned actions (manual) | not started | |
+| 3.11 CI deploy role | not started | |
+| 3.12 `make deploy` records deployed commit | not started | |
+| 3.13 Apply CI deploy role (manual) | not started | |
+| 3.14 Deploy secrets and kill switches (manual) | not started | |
+| 3.15 Backend CI | not started | |
+| 3.16 Always-reporting gate jobs | not started | |
+| 3.17 Require status checks (manual) | not started | |
+| 3.18 Dependabot configuration and automerge | not started | |
+| 3.19 Callable Android release + GitHub Release | not started | |
+| 3.20 Weekly Android auto-release | not started | |
+| 3.21 Lambda deploy on every merge | not started | |
+| 3.22 Failure notification | not started | |
+| 3.23 Documentation | not started | |
+| 3.24 End-to-end verification (manual) | not started | |
 
 ## Last audit
 
