@@ -89,6 +89,7 @@ fun VideoPreview(
                 playWhenReady = true
             }
         }
+    PauseWhenStopped(player)
 
     var firstFrameRendered by remember(player) { mutableStateOf(false) }
     var aspect by remember(player) { mutableFloatStateOf(0f) }

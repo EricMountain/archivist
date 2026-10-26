@@ -497,11 +497,12 @@ will fail identically against either local AVD until one of them is replaced wit
 stable-release system image. Verify these against the `pixel2api30` Gradle Managed
 Device instead (`./gradlew :app:pixel2api30DebugAndroidTest`, real API 30 `aosp-atd` —
 plan step 2.16's own CI already runs it green) — first use downloads and licenses that
-system image (~3 min total with the download). Confirmed passing there locally for `TimelineScrollbarUiTest`. A
-same-file test that *doesn't* touch the screen (no `performTouchInput`/`performClick`) —
-just composing content and reading semantics, e.g. `onNodeWithText(...).assertExists()`
-— has no reason to hit this and should run fine against either local AVD; only real
-touch/click injection goes through the broken `InputManager` path.
+system image (~3 min total with the download). Confirmed passing there locally for `TimelineScrollbarUiTest`.
+**This also applies to Compose tests that never touch the screen.** `composeRule.runOnIdle`
+(and anything else that waits for idle) goes through `Espresso.onIdle`, which sets up the
+same `InputManager` injection strategy and fails identically. Confirmed with
+`PauseWhenStoppedTest` on `Pixel_8a`, which has no touch input at all. Use `pixel2api30` for
+any `createComposeRule` test.
 
 **`MediaStore.createDeleteRequest` requires type-specific media URIs
 (`MediaStore.Images.Media`/`MediaStore.Video.Media`) — a `MediaStore.Files` URI crashes
