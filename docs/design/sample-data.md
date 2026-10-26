@@ -2,8 +2,9 @@
 
 Ten assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
 parts of `design.md` rather than the happy path: multi-rendition grouping, all four
-`takenAtSrc` rungs, five `tzSrc` rungs, chunked encryption, a sort-key tie, and
-location stripped on upload.
+`takenAtSrc` rungs, five `tzSrc` rungs, chunked encryption, a sort-key tie, location
+stripped on upload, and the location cases: a full place, a region-only place, GPS with no
+place at all (open sea), and a trashed located asset.
 
 ## Conventions
 
@@ -16,6 +17,8 @@ location stripped on upload.
   `{bucket, key, iv, bytes}`, with keys of the form `th/<ownerId>/<photoId>/<size>`.
 * `preview` (video assets only) is written on one line as its byte count — it really
   holds `{bucket, key, iv, bytes}` too, with the key `th/<ownerId>/<photoId>/preview`.
+* Place identifiers follow GeoNames' formats (ISO country code, `<cc>.<admin1>` region
+  key, numeric `geonameid`). Treat the specific values as illustrative, like the ULIDs.
 
 ### Key
 
@@ -34,6 +37,7 @@ location stripped on upload.
 | `#PTR` | the resolved-id payload of any pointer item (`STEM#`, `PATH#`, `HASH#`, `IDP#`) |
 | `#SETTINGS` / `#PROFILE` | the one settings item on an `O#` partition, or profile item on a `U#` partition |
 | `#DEVICES` / `#KEYS` | fixed `pk` suffixes marking an owner's device-config or key-wrapping collection |
+| `#PLACES` | fixed `pk` suffix marking an owner's place vocabulary (pattern 16); its `sk`s are `C#<cc>`, `R#<region>`, `L#<geonameid>` |
 | `#TRASH` | `pk` suffix marking the trash partition of `timeline_gsi` (see "Trashing reuses `timeline_gsi`" in `design.md`) |
 | `REGISTRY#OWNERS` | the one fixed `pk` listing every owner in the deployment, for the purge sweep |
 
@@ -49,16 +53,16 @@ closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
 
 | # | Asset | Renditions | Exercises |
 | --- | --- | --- | --- |
-| A1 | Temple, Kyoto | 1 (heic) | the ordinary case |
+| A1 | Temple, Kyoto | 1 (heic) | the ordinary case; a full `place`, whose town and region share a name |
 | A2 | Canon R5 frame | 2 (cr3 + jpg) | grouping, chunking, device tz default |
-| A3 | Live Photo | 2 (heic + mov) | motion rendition, no stray video in timeline |
+| A3 | Live Photo, Kyoto | 2 (heic + mov) | motion rendition, no stray video in timeline; a second photo in the same place (`n 2`) |
 | A4 | Scanned 1998 wedding photo | 1 (jpg) | no EXIF at all → `file-mtime`, `assumed-utc` |
 | A5 | Alps, wrong camera clock | 1 (jpg) | `upload-forced` offset override |
-| A6 | Burst frame 1 | 1 (jpg) | identical `takenAt` … |
-| A7 | Burst frame 2 | 1 (jpg) | … resolved by `photoId` tiebreak |
-| A8 | Video clip | 1 (mp4) | 480 MB, chunked, video as its own asset |
-| A9 | Trashed duplicate | 1 (jpg) | soft delete — absent from the timeline, present in trash |
-| A10 | Beach, GPS present on the phone | 1 (jpg) | `stripLocationOnUpload` — no GPS in `exifEnc`, offset ladder skips rung 3 |
+| A6 | Burst frame 1, from the ferry | 1 (jpg) | identical `takenAt` …; GPS but no `place` (open sea) |
+| A7 | Burst frame 2, from the ferry | 1 (jpg) | … resolved by `photoId` tiebreak |
+| A8 | Video clip, mountain hike | 1 (mp4) | 480 MB, chunked, video as its own asset; location from the MP4's ISO-6709 tag; region-only `place` |
+| A9 | Trashed duplicate | 1 (jpg) | soft delete — absent from the timeline, present in trash; its place facets lose their keys and it isn't counted in `#PLACES` |
+| A10 | Beach, GPS present on the phone | 1 (jpg) | `stripLocationOnUpload` — no GPS in `exifEnc`, no `place`, offset ladder skips rung 3 |
 
 ---
 
@@ -89,8 +93,16 @@ O#01J7X…#M#01K5A2Q8ZCV1D9KXM3BQNR7T2F
                                               uploadedAt  2026-08-04T11:31:00.000Z
                                               thumbs      {256: 14336, 1024: 152576,
                                                            2048: 358400}
-                                              exifEnc     <b64>   ← includes GPS
+                                              exifEnc     <b64>   ← includes GPS: gpsLat
+                                                          35.01161, gpsLon 135.76804
                                               exifIv      <b64>
+                                              place       {cc: JP,
+                                                           region: {id: JP.22,
+                                                                    name: Kyoto},
+                                                           locality: {id: 1857910,
+                                                                      name: Kyoto},
+                                                           src: geonames-cities500@
+                                                                2026-10-20}
                                               groupSrc    stem
                                               status      ready
                                               timelinePk  O#01J7XQP4M2N8VBKD3RTYFW9GHC
@@ -115,15 +127,24 @@ O#01J7X…#M#01K5A2Q8ZCV1D9KXM3BQNR7T2F
                                               addedAt      2026-08-04T11:31:00.000Z
 
                                   F#CAMERA#Google Pixel 9
+                                  F#COUNTRY#JP
                                   F#DEVICE#google|pixel 9|-
                                   F#LABEL#architecture
                                   F#LABEL#building
                                   F#LABEL#shrine
                                   F#LABEL#temple
                                   F#LABEL#tree
+                                  F#PLACE#1857910
+                                  F#REGION#JP.22
                                   F#REND#display
                                   F#YEAR#2026
 ```
+
+Town and region are both "Kyoto" (Kyoto city in Kyoto prefecture). They are still two
+places with two ids and two facets, which is the point of keying on ids. The client
+collapses the duplicate when it renders the label: "Kyoto, Japan", with "Japan" rendered
+from `cc` in the viewer's locale and never stored. The coordinates are inside `exifEnc`
+only. The server sees the town, not the street.
 
 Every facet item carries the same shape. One expanded, to show that it holds enough to
 paint a grid cell without touching `#META`:
@@ -222,6 +243,8 @@ O#01J7X…#M#01K5A2QDM4TZB6QNH9FKW3PXR2
                          tzSrc       exif-offset
                          takenAtSrc  exif
                          deviceKey   google|pixel 9|-
+                         place       {cc: JP, region: JP.22 Kyoto,
+                                      locality: 1857910 Kyoto, src: …}
 
                 R#01K5A2QDM4VXK2BQ7NTWHRD9FM
                          role  display   path  2026/07-japan/IMG_4022.HEIC
@@ -233,7 +256,8 @@ O#01J7X…#M#01K5A2QDM4TZB6QNH9FKW3PXR2
                          plainBytes 3355443   encChunkSize 0
 
                 F#REND#display   F#REND#motion   F#CAMERA#Google Pixel 9
-                … 9 more facets
+                F#COUNTRY#JP     F#REGION#JP.22  F#PLACE#1857910
+                … 6 more facets
 ```
 
 ---
@@ -306,6 +330,12 @@ Both exposed within the same second, so EXIF gives both `11:03:12`. The `photoId
 suffix in `timelineSk` is what keeps the ordering total, and therefore what keeps cursor
 pagination from skipping or repeating a row.
 
+Shot from the overnight ferry to Hokkaidō, mid-Sea of Japan. Both carry GPS, and the
+coordinates are in their `exifEnc`, but the nearest populated place is over 100 km away.
+So they have **no `place` and no location facets**. The detail screen shows the bare
+coordinates and its map link still works. In the timeline, their date bubble shows the
+date alone.
+
 ```text
 O#01J7X…#M#01K5A2QKB8YM5RVT7NQXHD2WFG
                 #META    stem     2026/07-japan/IMG_4030
@@ -344,6 +374,13 @@ O#01J7X…#M#01K5A2QPF9XT2HMB5RKWNVQ3YD
                          takenAtSrc  exif
                          thumbs      {256: 12288, 1024: 141312, 2048: 331776}
                          preview     1843216      ← 60 s cap, ≤200 px, no audio
+                         exifEnc     <b64>        ← gpsLat/gpsLon from the MP4's
+                                                    ISO-6709 location tag; no EXIF
+                                                    segment in a video
+                         place       {cc: JP,
+                                      region: {id: JP.12, name: Hokkaido},
+                                      src: …}     ← no locality: nearest town
+                                                    is beyond the 25 km cap
 
                 R#01K5A2QPF94QXM7BND2VTKWRHG
                          role  display   path  2026/07-japan/VID_0009.MP4
@@ -352,7 +389,8 @@ O#01J7X…#M#01K5A2QPF9XT2HMB5RKWNVQ3YD
                          encChunkSize 1048576        ← chunked, so seeking works
 
                 F#REND#display   F#YEAR#2026   F#DEVICE#google|pixel 9|-
-                … 8 more facets
+                F#COUNTRY#JP     F#REGION#JP.12
+                … 6 more facets
 ```
 
 The ciphertext is 7,736 bytes larger than the plaintext: a 40-byte stream header plus
@@ -367,6 +405,11 @@ mode so 16 bytes more than its 1,843,200-byte plaintext. This clip is 90 s long,
 preview covers its first minute and the client fades it out and loops. It is a separate
 attribute rather than a `thumbs` entry so that nothing iterating `thumbs` mistakes it for
 a still rung. A1–A7, A9 and A10 are stills and carry no `preview` at all.
+
+Its `place` is the region-only case. A hike in the Daisetsuzan interior is between 25 and
+100 km from the nearest named town, so the region is named and no town is invented. There
+is a `F#REGION#` and a `F#COUNTRY#` facet, and no `F#PLACE#`. In the timeline, A8's bubble
+shows "Hokkaido".
 
 ---
 
@@ -385,6 +428,8 @@ O#01J7X…#M#01K5A2QRG2WBK4XN7QTMVD3HRY
                          tzSrc       exif-offset
                          takenAtSrc  exif
                          deviceKey   google|pixel 9|-
+                         place       {cc: JP, region: JP.22 Kyoto,
+                                      locality: 1857910 Kyoto, src: …}   ← kept, for restore
                          deletedAt   2026-08-06T20:14:52.000Z
                          deletedBy   "Pixel 9"
                          status      ready                      ← orthogonal to deletion
@@ -398,8 +443,9 @@ O#01J7X…#M#01K5A2QRG2WBK4XN7QTMVD3HRY
 
                 F#LABEL#temple        ← still exists, but with NO facetPk/facetSk
                 F#CAMERA#Google Pixel 9
+                F#PLACE#1857910       ← likewise: "photos in Kyoto" won't find it
                 F#REND#display
-                … 9 more facets, all with their facet_gsi keys removed
+                … 8 more facets, all with their facet_gsi keys removed
 ```
 
 Two things to notice. `timelineSk` sorts by `deletedAt`, not `takenAt` — the trash is
@@ -441,10 +487,11 @@ O#01J7X…#M#01K5A2QYN4WRB8VXK3TDMQ7HFC
                          takenAtSrc  exif
                          deviceKey   apple|iphone 15|-
                          exifEnc     <b64>   ← camera make/model/dateTimeOriginal only,
-                                              no gpsDateTimeUtc field: the GPS tags were
-                                              gone from the working copy before this
-                                              client-side blob was ever built
+                                              no gpsDateTimeUtc or coordinates: the GPS
+                                              tags were gone from the working copy before
+                                              this client-side blob was ever built
                          exifIv      <b64>
+                         place       (absent — no coordinates reached the geocoder)
                          status      ready
 
                 R#01K5A2QYN4XKD7QMB9TWVRH3F
@@ -586,9 +633,10 @@ it — three versions minted over this library's life, the third current.
 
 Every `#META` item, one row each, no renditions, no facets, no pointers. Queried
 descending, this is the infinite scroll. Each row carries the projection
-`[thumbs, preview, encDek, encKeyId, width, height, mime, tzOffsetMin, status]`; of the
-ten assets, only A8's row has a `preview` to project (`facet_gsi`, which projects the same
-list minus `preview`, is covered below).
+`[thumbs, preview, place, encDek, encKeyId, width, height, mime, tzOffsetMin, status]`. Of
+the ten assets, only A8's row has a `preview` to project. A1, A3 and A8 have a `place`;
+A8's has no locality. `facet_gsi`, which projects the same list minus `preview` and
+`place`, is covered below.
 
 ```text
 timelinePk                    timelineSk                                          asset
@@ -645,9 +693,32 @@ same transaction that moved it to the `#TRASH` partition of `timeline_gsi`. `ver
 is 9 rather than 11 only because this sample is written as its end state; a real
 partition that had created and then trashed A9 would read `version 11, total 9`.
 
+## Place vocabulary items (pattern 16)
+
+The `O#<ownerId>#PLACES` partition, maintained by the same transactions as the histogram
+above. Three live located assets: A1 and A3 in Kyoto, A8 in Hokkaido.
+
+```text
+pk                                   sk          attributes
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  #META       version 3   total 3
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#JP        n 3                                 A1, A3, A8
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#1857910   name Kyoto   regionName Kyoto
+                                                 cc JP        n 2                    A1, A3
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.12     name Hokkaido   cc JP   n 1         A8
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.22     name Kyoto      cc JP   n 2         A1, A3
+```
+
+**A9 is absent, though it was taken in Kyoto.** It was counted when created and
+decremented when trashed, in the same transaction that removed its facet keys. Kyoto's `n`
+is 2, not 3. As with the histogram, `version` is shown as the end state.
+
+**A6, A7 and A10 are absent for different reasons.** A6 and A7 have coordinates, but in
+`exifEnc`, which this partition never sees, and no place to count. A10 has no location at
+all. Nothing about A6/A7's position is readable here or anywhere else on the server.
+
 ## facet_gsi
 
-A slice, showing three different facet types sharing one index:
+A slice, showing four different facet types sharing one index:
 
 ```text
 facetPk                                         facetSk                       asset
@@ -661,6 +732,13 @@ O#01J7X…#F#DEVICE#canon|eos r5|042024001234     2026-07-13T16:48:20.000Z#01K5�
 O#01J7X…#F#CAMERA#Google Pixel 9                2026-07-16T04:15:33.000Z#01K5…  A8
 O#01J7X…#F#CAMERA#Google Pixel 9                2026-07-14T10:05:41.000Z#01K5…  A3
 O#01J7X…#F#CAMERA#Google Pixel 9                2026-07-14T09:22:05.000Z#01K5…  A1
+
+O#01J7X…#F#PLACE#1857910                        2026-07-14T10:05:41.000Z#01K5…  A3
+O#01J7X…#F#PLACE#1857910                        2026-07-14T09:22:05.000Z#01K5…  A1
+
+O#01J7X…#F#COUNTRY#JP                           2026-07-16T04:15:33.000Z#01K5…  A8
+O#01J7X…#F#COUNTRY#JP                           2026-07-14T10:05:41.000Z#01K5…  A3
+O#01J7X…#F#COUNTRY#JP                           2026-07-14T09:22:05.000Z#01K5…  A1
 ```
 
 Same sort key shape as timeline_gsi, which is why "temples, newest first" and "temples in July"
@@ -683,7 +761,11 @@ are one query with a different `BETWEEN`.
    so a facet query paints a grid with no second read.
 6. **`path` appears in exactly two places**: `R#` items and pointer items. Not on
    `#META`, not in facets, not in either GSI — which is what makes renaming cheap.
-7. **Nothing in the media partitions references a `userId`.** Media hangs off
+7. **Location is split by precision.** A1, A3, A6, A7 and A8 all carry coordinates, but
+   only inside `exifEnc`. What's readable is the place: a town for A1/A3, a region for
+   A8, nothing for A6/A7 at sea. A10, stripped, has neither. Place keys are ids, so the
+   town and the region both called "Kyoto" never collide.
+8. **Nothing in the media partitions references a `userId`.** Media hangs off
    `ownerId`; users reach it through a membership item. That's what would let a second
    person be added without touching a single photo row.
 
@@ -862,6 +944,43 @@ same key as timeline_gsi:
   ScanIndexForward: false
 }
 // → A8 only
+```
+
+### Place search (patterns 16, 4c)
+
+Two steps. First, fetch the vocabulary: one query on the `#PLACES` partition, ETag'd by
+`version` exactly like the histogram, so it's a 304 almost every time.
+
+```js
+{
+  TableName: "archivist-media",
+  KeyConditionExpression: "pk = :pk",
+  ExpressionAttributeValues: { ":pk": "O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES" }
+}
+// → #META, C#JP, L#1857910, R#JP.12, R#JP.22 (zero-count rows filtered out)
+```
+
+The client folds the query and every name (NFKD, strip accents, lowercase): `kyo` →
+`kyo`; `Kyoto` → `kyoto`. It then matches on substrings, including each `cc` rendered as
+a country name in the viewer's locale. `kyo` returns two suggestions: "Kyoto · Japan · 2"
+(the town) and "Kyoto (region) · Japan · 2". `hok` returns "Hokkaido (region) · 1".
+`japon` under a French locale returns "Japon · 3".
+
+Second, the chosen suggestion is an ordinary facet query:
+
+```js
+{
+  IndexName: "facet_gsi",
+  KeyConditionExpression: "facetPk = :f",
+  ExpressionAttributeValues: { ":f": "O#01J7X…#F#PLACE#1857910" },
+  ScanIndexForward: false
+}
+// → A3, A1        (A9 was taken here too, but is trashed and has no facetPk)
+```
+
+```js
+":f": "O#01J7X…#F#REGION#JP.12"   // → A8
+":f": "O#01J7X…#F#COUNTRY#JP"     // → A8, A3, A1
 ```
 
 ### One photo (patterns 1, 1b, 1c)
@@ -1083,9 +1202,13 @@ selective side and filter:
 Fine at two facets and a few hundred candidates. If this becomes a normal user action
 rather than an occasional one, it's the signal to add OpenSearch — not a third GSI.
 
-**Search text.** There is no substring or fuzzy matching. `F#LABEL#temp` matches
-nothing; facet values are exact. Autocomplete over an owner's known label vocabulary
-would need its own item or a client-side cache of the facet list.
+**Search text, except place names.** Facet values are exact: `F#LABEL#temp` matches
+nothing. Places are the one exception, because the `#PLACES` vocabulary partition exists
+so the client can do substring matching on names (above). Labels have no equivalent yet.
+Autocomplete over them would need its own vocabulary item, built the same way.
+
+**Search near a point.** "Within 5 km of here" isn't possible. The server never sees
+coordinates, and a place facet is a name, not a geometry.
 
 **Sort by anything but time.** Both GSIs sort by `takenAt`. "Largest files first" or
 "by camera then date" means a scan, or another index.

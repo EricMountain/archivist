@@ -8,7 +8,7 @@ Ordered, implementable plans. Work through them in sequence.
 | [02-android-mvp.md](02-android-mvp.md) | Archivist MVP: connect, sign in, back up, browse |
 | [03-automated-updates.md](03-automated-updates.md) | Dependabot → CI-gated automerge → Lambda redeploy on every merge to main, weekly Play internal-track release. Front-loaded with the manual AWS/GitHub/Play setup |
 | [timeline-date-bubbles.md](timeline-date-bubbles.md) | Follow-up to 2.11: immersive, continuously-flowing grid with floating date bubbles and a floating menu |
-| [geolocation.md](geolocation.md) | On-device reverse geocoding, searchable place facets, location + map link on detail, place in date bubbles. Proposed — decisions D1–D10 await confirmation |
+| [geolocation.md](geolocation.md) | On-device reverse geocoding, searchable place facets, location + map link on detail, place in date bubbles. Decisions D1–D10 confirmed 2026-10-25 |
 
 **[STATUS.md](STATUS.md) tracks progress against both, step by step.** Read it before
 starting work here; update it in the same change when you finish. It is the source of

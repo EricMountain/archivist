@@ -1,7 +1,7 @@
 # Implementation status
 
 Tracks progress against [01-aws-backend.md](01-aws-backend.md),
-[02-android-mvp.md](02-android-mvp.md) and [03-automated-updates.md](03-automated-updates.md), step by step. This file is the source of truth
+[02-android-mvp.md](02-android-mvp.md), [03-automated-updates.md](03-automated-updates.md) and [geolocation.md](geolocation.md), step by step. This file is the source of truth
 for "is X done" — don't infer it from memory of a past session, and don't infer it from
 a file's mere existence either: a file can exist and still not meet its step's "Done
 when". See "Keeping this file honest" in [README.md](README.md) for the rule that keeps
@@ -545,6 +545,25 @@ Dependabot in 3.18.
 | 3.22 Failure notification | not started | |
 | 3.23 Documentation | not started | |
 | 3.24 End-to-end verification (manual) | not started | |
+
+## Geolocation
+
+Plan [geolocation.md](geolocation.md), written 2026-10-25. Decisions D1–D10 were confirmed
+by the user the same day, with D3 changed to `cities500`.
+
+| Step | Status | Notes |
+| --- | --- | --- |
+| 1 Design first | done | Docs only. `design.md` ("Location", "Place vocabulary (query 16)", patterns 16/4c, `#META.place`, facet types, `timeline_gsi` projection, open question 6), `sample-data.md` (A1/A3/A6–A10 location cases, `#PLACES` rows, place-search queries) and `api.md` (routes marked **Planned**). Verified by reading the three back against each other; nothing executable to run. The privacy documents are deliberately moved to step 11 so the published policy matches the shipped app. |
+| 2 Gazetteer build tool and asset | not started | |
+| 3 `ReverseGeocoder` (Kotlin) | not started | |
+| 4 Backend | not started | Note: no ingest path writes any `F#` facet today (verified 2026-10-25), so this step builds the facet write path rather than reusing one. |
+| 5 Extraction and upload (Android + laptop importer) | not started | |
+| 6 Room + timeline bubbles | not started | |
+| 7 Detail screen location row | not started | |
+| 8 Search screen (places) | not started | |
+| 9 In-app "Update location" | not started | |
+| 10 Laptop script `modify_media.py location` | not started | |
+| 11 Docs, privacy documents, status | not started | |
 
 ## Last audit
 

@@ -50,6 +50,11 @@ wherever the two describe bytes.**
   ciphertext only. See "Encryption" below for what this costs.
 * **The raw EXIF blob is encrypted too**, because it carries precise GPS. Only derived,
   query-shaped metadata stays in the clear.
+* **Approximate location is plaintext; precise location is not.** The client
+  reverse-geocodes GPS **on the device**, at upload, against a bundled GeoNames gazetteer,
+  and submits only the result: country, region and town, as `#META.place` plus `COUNTRY`/
+  `REGION`/`PLACE` facets. Precise coordinates go into the encrypted EXIF blob and nowhere
+  else. No coordinate is ever sent to a geocoding service. See "Location".
 * **A random master key, wrapped separately per enrolled device, plus a mandatory
   recovery code.** Every route to the master key is a wrapping, and at least two must
   exist at all times. Enrolment is not complete until the recovery code is confirmed.
@@ -86,6 +91,8 @@ wherever the two describe bytes.**
 | 13 | List every owner in the deployment (for the purge sweep) | `REGISTRY#OWNERS`, `Query` on PK |
 | 14 | Oldest and newest `takenAt`, by owner (fast-scroll range) | `timeline_gsi`, `Limit 1`, `ScanIndexForward` true/false |
 | 15 | Live photos per local day, by owner (scrollbar density) | `O#<ownerId>#HIST`, `Query` on PK |
+| 16 | The owner's distinct places with live counts (place search vocabulary) | `O#<ownerId>#PLACES`, `Query` on PK |
+| 4c | List photos in a country / region / town, by owner | `facet_gsi`, `F#COUNTRY#…` / `F#REGION#…` / `F#PLACE#…` |
 
 Queries 4 and 5 collapse into one index: "contains a dog" and "shot on a Canon R5"
 are both *facets* — a `(type, value)` pair attached to a photo. One index, one code
@@ -277,6 +284,9 @@ preview      {bucket, key, iv, bytes}    # video assets only; the preview clip, 
                                          # ciphertext. Absent for stills. See "Video preview clip"
 exifEnc      <b64>                       # the EXIF blob, encrypted with this asset's
 exifIv       <b64>                       # DEK. Contains GPS — see "Encrypted EXIF"
+place        { cc, region: {id, name},   # approximate location, plaintext. Absent if no
+               locality: {id, name},     # GPS, location stripped, or nowhere near a
+               src }                     # named place. See "Location"
 groupSrc     stem | manual               # how the renditions came to be grouped
 status       ready | processing | failed # orthogonal to deletion
 deletedAt    (absent unless trashed)     # UTC; presence is the trash flag
@@ -456,7 +466,10 @@ width / height
 
 Facet types (closed vocabulary): `LABEL`, `CAMERA` (`<Make> <Model>`), `DEVICE`
 (`<deviceKey>`), `REND` (`display|raw|motion|sidecar`), `LENS`, `YEAR`, `ALBUM`,
-`FAVOURITE`, `PERSON`.
+`FAVOURITE`, `PERSON`, `COUNTRY` (ISO 3166-1 alpha-2), `REGION` (GeoNames admin1 key,
+`JP.22`), `PLACE` (GeoNames `geonameid`).
+
+The three location facets hold **identifiers, not names** — see "Location" for why.
 
 No `ISO`, `FSTOP` or shutter speed. Browsing by exposure setting is a photographer's
 fantasy rather than a real access pattern, and every facet type is a write and an index
@@ -485,10 +498,11 @@ library is ~2M items / ~600 MB. Trivial at DynamoDB pricing.
 | PK | `timelinePk` | `O#<ownerId>` |
 | SK | `timelineSk` | `<takenAt>#<photoId>` |
 
-Projection: `INCLUDE [thumbs, preview, encDek, encKeyId, width, height, mime,
+Projection: `INCLUDE [thumbs, preview, place, encDek, encKeyId, width, height, mime,
 tzOffsetMin, status]` — enough to render a grid page without a second round-trip,
-decryption material included. (`preview` is timeline_gsi only; `facet_gsi` keeps the
-projection without it, since facet items carry no preview.) Note `path` is not projected; the grid doesn't need it, and
+decryption material included. (`preview` and `place` are timeline_gsi only; `facet_gsi`
+keeps the projection without them, since facet items carry neither. `place` is there for
+the timeline's date bubbles — see "Location".) Note `path` is not projected; the grid doesn't need it, and
 excluding it keeps renames cheap.
 
 Written **only on `#META` items**, so the index is sparse and holds exactly one entry
@@ -546,6 +560,35 @@ histogram read `total: 0` despite a fully populated timeline. `tools/backfill-hi
 prod, or `ALL=1` for every owner)
 rebuilds an owner's histogram from `timeline_gsi` directly and overwrites rather than
 adds, so it's safe to re-run.
+
+## Place vocabulary (query 16)
+
+Partition `O#<ownerId>#PLACES`, one item per distinct place the owner has live photos
+in, plus a `#META` item:
+
+| sk | Attributes | Meaning |
+| --- | --- | --- |
+| `#META` | `version`, `total` | Changes so far, and live located photos |
+| `C#<cc>` | `n` | A country |
+| `R#<admin1 key>` | `name`, `cc`, `n` | A region |
+| `L#<geonameid>` | `name`, `regionName`, `cc`, `n` | A town |
+
+**Why it exists.** Place search has to match *part of a name*, case- and
+accent-insensitively ("kyo", "quebec" for Québec). DynamoDB can't do that against an
+index key, and a filtered scan of the timeline reads the whole library per search. An
+owner's *distinct* places, though, are a few hundred to a few thousand rows. So the
+client downloads this partition (one `Query`, ETag'd by `version` like the histogram),
+matches on the device, and runs one `facet_gsi` query for the place the user picks.
+Matching on the device also lets "allemagne" find `DE`, because country names are
+rendered from `cc` in the viewer's own locale and never stored.
+
+**Counted the same way as the histogram, for the same reasons.** `n` counts *live*
+photos and is updated inside the transactions that already maintain `O#<ownerId>#HIST`
+(create and attach in `repo/ingest.ts`, trash and restore in `repo/trash.ts`), plus
+`PUT /photos/{photoId}/location`, which moves a photo from its old place's counters to
+the new one. A place whose `n` reaches 0 keeps a zero-valued item and is filtered out on
+read. Account deletion removes the partition. `tools/backfill-places.mjs` rebuilds it
+from `facet_gsi`, overwriting rather than adding, as `backfill-histogram` does.
 
 ## facet_gsi (queries 4, 5)
 
@@ -841,8 +884,10 @@ working without the coordinates ever reaching the server.
 
 The blob's own shape isn't specified here or in `crypto-format.md` — it's a JSON summary
 of whichever fields a client already extracted (camera make/model/serial, lens, the raw
-`DateTimeOriginal`/`OffsetTimeOriginal` strings, the resolved GPS UTC instant), not the
-raw EXIF binary segment. See `ExifBlob` in Android's `domain/ExifExtractor.kt` for the
+`DateTimeOriginal`/`OffsetTimeOriginal` strings, the resolved GPS UTC instant, and the
+precise coordinates as `gpsLat`/`gpsLon`/`gpsAltM`), not the raw EXIF binary segment.
+The coordinates are what the detail screen's map link opens. Assets uploaded before they
+were added have none, which "Location"'s manual update repairs. See `ExifBlob` in Android's `domain/ExifExtractor.kt` for the
 concrete shape one client uses; nothing requires other clients to match it byte-for-byte,
 only to encrypt *something* under `exifEnc`/`exifIv` that their own detail screen can
 decode back.
@@ -854,9 +899,108 @@ can't mine it from data it can't read; a client holding the originals has to
 re-submit. **Extract at ingest anything you might plausibly want to index**, because
 going back means a pass over the local backup.
 
-A related trap for later: reverse-geocoded `PLACE#Kyoto` facets would be plaintext, and
-city-granularity location is most of what encrypting the coordinates was protecting.
-Worth deciding deliberately rather than adding it as an obvious feature.
+**Decided 2026-10-25: approximate location is plaintext.** This paragraph used to warn
+that reverse-geocoded place facets would be plaintext, and that town-level location is
+most of what encrypting the coordinates protects. That is still true, and it was weighed
+deliberately rather than slipped in as an obvious feature: searching "photos in Kyoto"
+and showing a place in the timeline are worth the server knowing which town. It still
+never knows where in the town. See "Location".
+
+### Location
+
+**What is stored where.**
+
+| What | Where | Readable by the server |
+| --- | --- | --- |
+| Precise coordinates (lat/lon/alt) | `exifEnc` | No |
+| Country, region, town | `#META.place`, `F#COUNTRY#`/`F#REGION#`/`F#PLACE#`, `O#<ownerId>#PLACES` | Yes |
+
+Precise coordinates stay encrypted because none of the location features needs the
+*server* to read them. Search runs on place facets. The timeline shows the place name. The
+detail screen's map link is opened by the client after it decrypts `exifEnc`, which it
+already does for the details dialog. Plaintext coordinates would buy only server-side
+geometry (map views, radius search, server-side re-geocoding). If those are ever wanted,
+that is a separate, additive decision.
+
+**Geocoding happens on the device, at upload.** The platform `android.location.Geocoder`
+is ruled out: on most devices it is backed by a network service, which would send every
+photo's coordinates to a third party. Instead, the app bundles a gazetteer built from
+GeoNames (`cities500`: about 185k populated places with population over 500, or
+administrative seats down to PPLA4; plus `admin1CodesASCII` and `countryInfo`; CC BY 4.0,
+credited on the About screen). The lookup is nearest populated place by haversine
+distance over a 1°×1° cell grid, with longitude wrapped at ±180°:
+
+* **Nearest place ≤ 25 km:** the full `place` (country, region, town).
+* **≤ 100 km:** `cc` and `region` only; naming a town that far off would mislead.
+* **Further, e.g. open sea:** no `place`. The detail screen shows the coordinates.
+
+The thresholds are constants in one place. Every client that uploads (the Android app,
+`tools/import-from-local`) must produce the same `place` for the same coordinates, or one
+town becomes two facet values. So the gazetteer is one committed binary
+(`tools/gazetteer/build.py` → `gazetteer.bin`, from a recorded GeoNames snapshot), and
+`tools/gazetteer/vectors.json` is a shared conformance set every implementation must pass,
+on the same model as `crypto-format.md`'s vectors. GeoNames keeps no versioned archives,
+which is why the binary is committed rather than rebuilt.
+
+**Identifiers, not names, in keys.** `F#PLACE#1857910`, not `F#PLACE#Kyoto`. Names
+collide (Paris, Texas), change between dataset snapshots, and differ by language. IDs
+don't. The names live once on `#META.place` and once on the vocabulary item, for display
+and search.
+
+**`place.src`** names the dataset and snapshot (`geonames-cities500@2026-10-20`). A later
+re-geocode against a newer gazetteer can find exactly what an older one produced. The
+manual update also skips assets whose `src` is already current.
+
+**Validation.** `place` is client-asserted input crossing the trust boundary, like the
+rest of the extracted metadata. `POST /uploads` and `PUT /photos/{photoId}/location` check
+that:
+
+* `cc` matches `^[A-Z]{2}$`;
+* the region id matches `^[A-Z]{2}\.[0-9A-Z]{1,20}$` and its prefix equals `cc`;
+* the locality id matches `^[0-9]{1,12}$`;
+* names are 1–200 characters with no control characters;
+* `src` is at most 64 characters.
+
+The server can't check `place` against the coordinates, which it never sees.
+
+**Ingest precedence.** `place` is set when an asset is created. A later-attaching rendition
+fills it only if the asset has none ("improve, never replace", as with `takenAt`). For a
+RAW+JPEG pair, both files usually carry the same GPS anyway.
+
+**Manual update.** The same procedure runs for one photo (the Android detail screen's
+"Update location") or for a whole library (`modify_media.py location --all`, on a
+laptop):
+
+1. Decrypt `exifEnc`.
+2. Take its coordinates if present. Otherwise read them from the primary rendition's
+   original: from a local copy if one is at hand, else by downloading and decrypting it.
+3. Geocode.
+4. `PUT /photos/{photoId}/location`. When step 2 had to read the original, the request
+   carries a re-encrypted `exifEnc` with the coordinates added, so the original is never
+   needed again.
+
+No coordinates anywhere means `place: null`, which clears a stale place. The whole-library
+run is a laptop script rather than an in-app worker because it can reach every asset's
+original, not only the ones still on the phone. It runs on mains power and a fast network,
+and it reuses `tools/import-from-local`'s existing authenticated, key-holding client.
+
+**Strip-on wins.** With `stripLocationOnUpload` on:
+
+* no coordinates reach extraction (see below), so no `place` is ever produced;
+* the app hides "Update location";
+* the script refuses unless explicitly told to ignore the setting.
+
+Turning the setting on later affects **future uploads only**, the same as it does for the
+originals' own GPS tags. Places already stored stay until removed. A bulk "remove stored
+locations" action is not built yet.
+
+**What place search can't do.**
+
+* It can't find places the gazetteer doesn't name: streets, venues, landmarks.
+* Names are GeoNames' primary spelling, plus the viewer's own localized country names.
+  Not every language's spelling of every town is included, because that would multiply
+  the bundle size.
+* It can't do "within 5 km of here", which needs plaintext coordinates (above).
 
 ### Stripping location on upload
 
@@ -889,9 +1033,10 @@ Doing the strip *before* extraction, rather than extracting first and then filte
 result, is what makes "location information must not be set in DynamoDB for the image
 either" true by construction rather than by a second checklist: `ExifBlob` is built from
 whatever `ExifExtractor` reads off the stripped copy, and the stripped copy has no GPS
-tags to read. `gpsDateTimeUtc` comes back `null`, never gets written to `exifEnc`, and
-rung 3 of the offset ladder (below) is correctly unreachable for that photo — not
-filtered out afterward, just never produced. Thumbnails are unaffected either way: they
+tags to read. `gpsDateTimeUtc` and the coordinates come back `null` and never get written
+to `exifEnc`. The geocoder runs on those coordinates, so no `place` and no location facets
+are produced either. And rung 3 of the offset ladder (below) is correctly unreachable for
+that photo — not filtered out afterward, just never produced. Thumbnails are unaffected either way: they
 are freshly re-encoded from decoded pixels (`Bitmap.compress`), never copy EXIF through,
 so they carry no location with the setting on *or* off.
 
@@ -1929,3 +2074,17 @@ see "Manually correcting `takenAt`" above, which is exactly this.
    Nothing here is implemented. On acceptance: update `sample-data.md` (a video asset with
    `preview`, and the changed `timeline_gsi` projection), `api.md`, `crypto-format.md`
    (objectRef `p` plus a conformance vector) and `docs/play/`.
+
+6. **Location follow-ups (open, 2026-10-25).** Raised while designing "Location"
+   (`docs/plans/geolocation.md`), and deliberately left out of it:
+   * (a) **Borders.** Nearest-place lookup can put a photo taken just inside one country
+     in the town across the border (Geneva/Annemasse). Deciding the country by
+     point-in-polygon against Natural Earth admin-0 (public domain), then restricting the
+     nearest-place search to it, would fix that. Whether it's needed is for the
+     gazetteer's border fixtures to show.
+   * (b) **A timezone rung.** Every GeoNames row carries an IANA zone. A "zone of the
+     nearest place, resolved at `takenAt`" rung would beat the GPS-delta rule's
+     15-minute rounding and would also work without `GPSDateStamp`. It would need a
+     `tzSrc` value and a place in the ladder.
+   * (c) **Removing stored locations** in bulk, for an owner who turns
+     `stripLocationOnUpload` on after places were already stored.
