@@ -8,6 +8,7 @@ import fr.enry.archivist.crypto.KeyCustody
 import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.crypto.NoSecureLockScreenException
 import fr.enry.archivist.crypto.RecoveryCode
+import fr.enry.archivist.data.local.AuthSession
 import fr.enry.archivist.data.local.CachedDeviceWrap
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
@@ -49,6 +50,8 @@ class EnrolmentRepositoryTest {
     private lateinit var masterKeyHolder: MasterKeyHolder
     private lateinit var hashSecretHolder: HashSecretHolder
     private lateinit var repository: EnrolmentRepository
+    private lateinit var tokenStore: TokenStore
+    private lateinit var fakeCognitoApi: FakeCognitoAuthApi
     private val json = Json { ignoreUnknownKeys = true }
 
     private val host = "photos.example.com"
@@ -65,13 +68,15 @@ class EnrolmentRepositoryTest {
         deviceKeyProvider = FakeDeviceKeyProvider()
         masterKeyHolder = MasterKeyHolder()
         hashSecretHolder = HashSecretHolder()
+        tokenStore = TokenStore(FakeSharedPreferences(), json)
+        fakeCognitoApi = FakeCognitoAuthApi()
 
         val archivistApiFactory =
             ArchivistApiFactory(
                 baseOkHttpClient = OkHttpClient.Builder().build(),
                 json = json,
-                tokenStore = TokenStore(FakeSharedPreferences(), json),
-                cognitoAuthClient = CognitoAuthClient(FakeCognitoAuthApi(), json),
+                tokenStore = tokenStore,
+                cognitoAuthClient = CognitoAuthClient(fakeCognitoApi, json),
             )
 
         repository =
@@ -82,6 +87,7 @@ class EnrolmentRepositoryTest {
                 deviceKeystore = deviceKeyProvider,
                 masterKeyHolder = masterKeyHolder,
                 hashSecretHolder = hashSecretHolder,
+                tokenStore = tokenStore,
             )
     }
 
@@ -448,6 +454,70 @@ class EnrolmentRepositoryTest {
             val step = repository.determineStep()
 
             assertEquals(EnrolmentStep.NetworkError, step)
+        }
+
+    private fun saveSession() =
+        tokenStore.save(
+            host,
+            AuthSession(
+                username = "a@example.com",
+                accessToken = "expired-access",
+                idToken = "id",
+                refreshToken = "refresh-token",
+                accessTokenExpiresAt = 0,
+            ),
+        )
+
+    // Found live 2026-10-27: these 401s used to escape determineStep() uncaught and
+    // crash the app at launch.
+    @Test
+    fun `silent unlock hitting 401 with the session gone asks to sign in again, not a crash`() =
+        runTest {
+            connectInstance()
+            deviceKeyProvider.ensureKeyPair()
+            enrolmentStore.saveDeviceWrapId(host, "w1")
+            server.enqueue(MockResponse().setResponseCode(401))
+
+            assertEquals(EnrolmentStep.SessionExpired, repository.determineStep())
+        }
+
+    @Test
+    fun `silent unlock hitting 401 after a transient refresh failure falls back to the cached wrap`() =
+        runTest {
+            connectInstance()
+            val enrolment = KeyCustody.enrolFirstDevice(deviceKeyProvider.ensureKeyPair())
+            enrolmentStore.saveDeviceWrapId(host, "w1")
+            enrolmentStore.saveCachedDeviceWrap(
+                host,
+                CachedDeviceWrap(encode(enrolment.deviceWrap.epk), encode(enrolment.deviceWrap.wrappedKey)),
+            )
+            saveSession()
+            fakeCognitoApi.initiateAuthError = java.io.IOException("Cognito unreachable")
+            server.enqueue(MockResponse().setResponseCode(401))
+
+            assertEquals(EnrolmentStep.Unlocked, repository.determineStep())
+            assertNotNull(tokenStore.get(host))
+        }
+
+    @Test
+    fun `key lookup hitting 401 with the session gone asks to sign in again, not a crash`() =
+        runTest {
+            connectInstance()
+            server.enqueue(MockResponse().setResponseCode(401))
+
+            assertEquals(EnrolmentStep.SessionExpired, repository.determineStep())
+        }
+
+    @Test
+    fun `key lookup hitting 401 after a transient refresh failure is a retryable network error`() =
+        runTest {
+            connectInstance()
+            saveSession()
+            fakeCognitoApi.initiateAuthError = java.io.IOException("Cognito unreachable")
+            server.enqueue(MockResponse().setResponseCode(401))
+
+            assertEquals(EnrolmentStep.NetworkError, repository.determineStep())
+            assertNotNull(tokenStore.get(host))
         }
 
     @Test

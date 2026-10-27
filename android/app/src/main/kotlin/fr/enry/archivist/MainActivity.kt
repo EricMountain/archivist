@@ -31,6 +31,7 @@ import fr.enry.archivist.ui.onboarding.ConnectUiState
 import fr.enry.archivist.ui.onboarding.ConnectViewModel
 import fr.enry.archivist.ui.onboarding.PermissionOnboardingScreen
 import fr.enry.archivist.ui.onboarding.SignInScreen
+import fr.enry.archivist.ui.onboarding.SignInViewModel
 import fr.enry.archivist.ui.reviewer.ReviewerPreviewScreen
 import fr.enry.archivist.ui.theme.ArchivistTheme
 import fr.enry.archivist.ui.timeline.TimelineScreen
@@ -69,6 +70,7 @@ class MainActivity : ComponentActivity() {
 private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
     val connectState by connectViewModel.uiState.collectAsStateWithLifecycle()
     var signedIn by remember { mutableStateOf(false) }
+    val signInViewModel: SignInViewModel = hiltViewModel()
 
     Scaffold { innerPadding ->
         when (val s = connectState) {
@@ -94,13 +96,17 @@ private fun ArchivistApp(connectViewModel: ConnectViewModel = hiltViewModel()) {
                     // what actually closes the gap: TimelineScreen mounts exactly once,
                     // right after sign-in, and never again for the rest of the process.
                     TimelineScreen(
-                        onSessionEnded = { signedIn = false },
+                        onSessionEnded = {
+                            signInViewModel.onSessionEnded()
+                            signedIn = false
+                        },
                         contentPadding = innerPadding,
                     )
                 } else {
                     SignInScreen(
                         onSignedIn = { signedIn = true },
                         onChangeServer = connectViewModel::changeInstance,
+                        viewModel = signInViewModel,
                         modifier = Modifier.padding(innerPadding),
                     )
                 }

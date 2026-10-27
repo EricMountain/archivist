@@ -98,6 +98,7 @@ class KeysViewModelTest {
                 deviceKeystore = FakeDeviceKeyProvider(),
                 masterKeyHolder = masterKeyHolder,
                 hashSecretHolder = HashSecretHolder(),
+                tokenStore = TokenStore(FakeSharedPreferences(), json),
             )
         return KeysViewModel(enrolmentRepository)
     }

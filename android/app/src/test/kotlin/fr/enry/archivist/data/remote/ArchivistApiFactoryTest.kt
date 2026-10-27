@@ -140,6 +140,26 @@ class ArchivistApiFactoryTest {
             assertEquals(null, tokenStore.get(host))
         }
 
+    // Found live 2026-10-27: any failed refresh used to clear the session, so a moment of
+    // bad connectivity (or a Cognito 5xx/throttle) signed the user out.
+    @Test
+    fun `a refresh that fails transiently keeps the session for a later retry`() =
+        runTest {
+            saveSession("expired-access")
+            fakeCognitoApi.initiateAuthError = java.io.IOException("Cognito unreachable")
+            server.enqueue(MockResponse().setResponseCode(401))
+
+            val api = factory.create(host, region, clientId)
+            assertThrows(HttpException::class.java) {
+                kotlinx.coroutines.runBlocking {
+                    api.postSessionBootstrap(server.url("/session/bootstrap").toString(), SessionBootstrapRequest())
+                }
+            }
+
+            assertEquals(1, server.requestCount)
+            assertEquals("refresh-token", tokenStore.get(host)?.refreshToken)
+        }
+
     @Test
     fun `never retries more than once, even if the retry also gets 401`() =
         runTest {

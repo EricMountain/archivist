@@ -41,13 +41,17 @@ class TokenStore
             host: String,
             session: AuthSession,
         ) {
-            preferences.edit {
+            preferences.edit(commit = true) {
                 putString(sessionKey(host), json.encodeToString(AuthSession.serializer(), session))
             }
         }
 
+        /** `commit = true` here and in [save]: `apply()` writes to disk asynchronously, and a
+         * crash right after a clear (found live: the 401 that followed it crashed the app
+         * before the write landed) left the stale session on disk for the next launch to
+         * trip over again. */
         fun clear(host: String) {
-            preferences.edit { remove(sessionKey(host)) }
+            preferences.edit(commit = true) { remove(sessionKey(host)) }
         }
 
         private fun sessionKey(host: String) = "session_$host"

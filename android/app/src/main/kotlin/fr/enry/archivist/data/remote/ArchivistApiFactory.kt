@@ -77,10 +77,16 @@ private class ArchivistAuthenticator(
                         refreshToken = refreshed.result.refreshToken ?: session.refreshToken,
                         accessTokenExpiresAt = System.currentTimeMillis() + refreshed.result.expiresIn * 1000L,
                     )
-                else -> {
+                // Only Cognito actually rejecting the refresh token (expired or revoked)
+                // ends the session. A network error or an unexpected response (throttling,
+                // a Cognito 5xx) used to clear it too, signing the user out over a
+                // transient failure -- now this request just fails with its 401 and a
+                // later one retries the refresh with the same, still-valid token.
+                CognitoAuthResult.InvalidCredentials -> {
                     tokenStore.clear(host)
                     return null
                 }
+                else -> return null
             }
         tokenStore.save(host, newSession)
         return response.request.newBuilder().header("Authorization", "Bearer ${newSession.accessToken}").build()

@@ -163,6 +163,12 @@ fun TimelineScreen(
     val enrolmentViewModel: EnrolmentViewModel = hiltViewModel()
     val enrolmentState by enrolmentViewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(locked) { if (locked) enrolmentViewModel.checkStep() }
+    LaunchedEffect(enrolmentState) {
+        if (enrolmentState is EnrolmentUiState.SessionExpired) {
+            enrolmentViewModel.sessionExpiredHandled()
+            onSessionEnded()
+        }
+    }
 
     // `Checking` (a silent-unlock attempt in flight) and `Unlocked` (the one-frame
     // terminal state before `TimelineViewModel.locked` itself catches up and flips this

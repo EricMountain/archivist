@@ -73,6 +73,15 @@ class SignInViewModel
             }
         }
 
+        /** Called whenever the session ends (sign-out, account deletion, an expired
+         * session) before [SignInScreen] shows again. This view model is an Activity-wide
+         * singleton (`android/AGENTS.md`'s `hiltViewModel()` note) whose `init` check runs
+         * once, so without this it would still read [SignInUiState.SignedIn] and bounce the
+         * user straight back into the timeline with no session. */
+        fun onSessionEnded() {
+            _uiState.value = SignInUiState.EnterUsername()
+        }
+
         /** First step for a returning user: try a passkey before ever asking for a
          * password. [CognitoAuthClient] confirmed live that an account with none
          * registered doesn't error here — it falls through to [CognitoAuthResult.NoPasskeyAvailable]. */

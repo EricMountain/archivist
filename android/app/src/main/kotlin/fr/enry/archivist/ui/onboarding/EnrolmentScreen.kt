@@ -55,7 +55,9 @@ fun EnrolmentScreen(
     }
 
     when (val s = state) {
-        EnrolmentUiState.Checking, EnrolmentUiState.Unlocked -> Centered(modifier) { CircularProgressIndicator() }
+        // SessionExpired: shown only for the frame before the host navigates to sign-in.
+        EnrolmentUiState.Checking, EnrolmentUiState.Unlocked, EnrolmentUiState.SessionExpired ->
+            Centered(modifier) { CircularProgressIndicator() }
 
         is EnrolmentUiState.EnterRecoveryCode ->
             RecoveryCodeForm(s, onSubmit = viewModel::submitRecoveryCode, modifier = modifier)

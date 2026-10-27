@@ -45,6 +45,10 @@ sealed interface EnrolmentUiState {
 
     data object NetworkError : EnrolmentUiState
 
+    /** [EnrolmentStep.SessionExpired]: the host screen sends the user back to sign-in and
+     * then calls [EnrolmentViewModel.sessionExpiredHandled]. */
+    data object SessionExpired : EnrolmentUiState
+
     data class Failed(val message: String) : EnrolmentUiState
 
     data object Unlocked : EnrolmentUiState
@@ -73,9 +77,17 @@ class EnrolmentViewModel
                         _uiState.value = EnrolmentUiState.EnterRecoveryCode(reenrolling = step.reenrolling)
                     EnrolmentStep.NeedsDeviceUnlock -> _uiState.value = EnrolmentUiState.NeedsDeviceUnlock
                     EnrolmentStep.NetworkError -> _uiState.value = EnrolmentUiState.NetworkError
+                    EnrolmentStep.SessionExpired -> _uiState.value = EnrolmentUiState.SessionExpired
                     is EnrolmentStep.Failed -> _uiState.value = EnrolmentUiState.Failed(step.message)
                 }
             }
+        }
+
+        /** This view model is an Activity-wide singleton (`android/AGENTS.md`'s
+         * `hiltViewModel()` note), so a consumed [EnrolmentUiState.SessionExpired] must be
+         * reset where it's consumed, or the next sign-in would bounce straight back out. */
+        fun sessionExpiredHandled() {
+            if (_uiState.value == EnrolmentUiState.SessionExpired) _uiState.value = EnrolmentUiState.Checking
         }
 
         private suspend fun beginFirstEnrolment() {

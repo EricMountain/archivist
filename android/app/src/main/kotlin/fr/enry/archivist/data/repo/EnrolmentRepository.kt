@@ -12,6 +12,7 @@ import fr.enry.archivist.data.local.CachedDeviceWrap
 import fr.enry.archivist.data.local.EnrolmentStore
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.StoredInstance
+import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.remote.ArchivistApi
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.KdfParamsDto
@@ -46,6 +47,12 @@ sealed interface EnrolmentStep {
     data object NeedsDeviceUnlock : EnrolmentStep
 
     data object NetworkError : EnrolmentStep
+
+    /** The server rejected the request and the stored session is gone: the refresh
+     * token was rejected by Cognito (expired after its 30 days, or revoked), so
+     * [fr.enry.archivist.data.remote.ArchivistApiFactory]'s authenticator cleared it.
+     * Only signing in again fixes this. */
+    data object SessionExpired : EnrolmentStep
 
     data class Failed(val message: String) : EnrolmentStep
 }
@@ -87,6 +94,7 @@ class EnrolmentRepository
         private val deviceKeystore: DeviceKeyProvider,
         private val masterKeyHolder: MasterKeyHolder,
         private val hashSecretHolder: HashSecretHolder,
+        private val tokenStore: TokenStore,
     ) {
         private var pendingFirstEnrolment: KeyCustody.FirstEnrolment? = null
         private var pendingRecoveryWrapId: String? = null
@@ -136,6 +144,13 @@ class EnrolmentRepository
                     // ever reachable. No cache yet (never unlocked before on this
                     // device) still reports NetworkError, same as before this existed.
                     enrolmentStore.cachedDeviceWrap(instance.host) ?: return EnrolmentStep.NetworkError
+                } catch (e: HttpException) {
+                    // Used to be uncaught: a 401 after a failed token refresh crashed the
+                    // app at launch (found live, 2026-10-27). A dead session needs a new
+                    // sign-in; anything else (a refresh that failed transiently, a 5xx)
+                    // is treated like being offline.
+                    if (sessionExpired(instance, e)) return EnrolmentStep.SessionExpired
+                    enrolmentStore.cachedDeviceWrap(instance.host) ?: return EnrolmentStep.NetworkError
                 }
             val (epk, wrappedKey) = material
 
@@ -182,6 +197,13 @@ class EnrolmentRepository
                     api.getKeys(keysUrl(instance.document.apiBase)).wraps
                 } catch (e: IOException) {
                     return EnrolmentStep.NetworkError
+                } catch (e: HttpException) {
+                    // See trySilentUnlock's identical catch.
+                    return when {
+                        sessionExpired(instance, e) -> EnrolmentStep.SessionExpired
+                        e.code() == 401 || e.code() >= 500 -> EnrolmentStep.NetworkError
+                        else -> EnrolmentStep.Failed("server rejected the key lookup (HTTP ${e.code()})")
+                    }
                 }
             if (wraps.isEmpty()) return EnrolmentStep.NeedsFirstEnrolment
 
@@ -516,6 +538,14 @@ class EnrolmentRepository
 
         private fun apiFor(instance: StoredInstance): ArchivistApi =
             archivistApiFactory.create(instance.host, instance.document.region, instance.document.cognito.clientId)
+
+        /** A 401 with no stored session left: the authenticator only clears the session
+         * when Cognito rejects the refresh token, so a 401 with the session still present
+         * means the refresh failed transiently and is worth retrying instead. */
+        private fun sessionExpired(
+            instance: StoredInstance,
+            e: HttpException,
+        ): Boolean = e.code() == 401 && tokenStore.get(instance.host) == null
 
         private suspend fun currentInstanceOrThrow(): StoredInstance =
             instanceStore.current.first() ?: error("no connected instance — 2.3/2.4 must complete before 2.5 can run")

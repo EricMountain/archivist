@@ -152,6 +152,23 @@ class SignInViewModelTest {
             assertEquals(SignInUiState.SignedIn, viewModel.uiState.value)
         }
 
+    // This view model outlives a sign-out (Activity-scoped), and its own session check
+    // only runs once, in init -- without this reset SignInScreen bounced straight back in.
+    @Test
+    fun `ending the session returns to EnterUsername`() =
+        runTest {
+            tokenStore.save(
+                host,
+                AuthSession("a@example.com", "access", "id", "refresh", System.currentTimeMillis() + 3_600_000),
+            )
+            dispatcher.scheduler.advanceUntilIdle()
+            assertEquals(SignInUiState.SignedIn, viewModel.uiState.value)
+
+            viewModel.onSessionEnded()
+
+            assertEquals(SignInUiState.EnterUsername(), viewModel.uiState.value)
+        }
+
     @Test
     fun `a registered passkey moves straight to the assertion ceremony`() =
         runTest {

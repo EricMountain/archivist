@@ -87,6 +87,7 @@ class FoldersViewModelTest {
                 deviceKeystore = FakeDeviceKeyProvider(),
                 masterKeyHolder = MasterKeyHolder(),
                 hashSecretHolder = hashSecretHolder,
+                tokenStore = TokenStore(FakeSharedPreferences(), json),
             )
 
         val scanner =

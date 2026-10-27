@@ -60,11 +60,12 @@ class EnrolmentViewModelTest {
             )
         val instanceStore = InstanceStore(dataStore, json)
         deviceKeyProvider = FakeDeviceKeyProvider()
+        val tokenStore = TokenStore(FakeSharedPreferences(), json)
         val archivistApiFactory =
             ArchivistApiFactory(
                 baseOkHttpClient = OkHttpClient.Builder().build(),
                 json = json,
-                tokenStore = TokenStore(FakeSharedPreferences(), json),
+                tokenStore = tokenStore,
                 cognitoAuthClient = CognitoAuthClient(FakeCognitoAuthApi(), json),
             )
         val repository =
@@ -75,6 +76,7 @@ class EnrolmentViewModelTest {
                 deviceKeystore = deviceKeyProvider,
                 masterKeyHolder = MasterKeyHolder(),
                 hashSecretHolder = HashSecretHolder(),
+                tokenStore = tokenStore,
             )
 
         runTest(dispatcher) {
@@ -116,6 +118,18 @@ class EnrolmentViewModelTest {
         }
         dispatcher.scheduler.advanceUntilIdle()
     }
+
+    // No stored session (this test never saves one), so a 401 means it's gone for good.
+    @Test
+    fun `a dead session reports SessionExpired, and handling it resets to Checking`() =
+        runTest {
+            server.enqueue(MockResponse().setResponseCode(401))
+
+            awaitState { viewModel.uiState.value == EnrolmentUiState.SessionExpired }
+
+            viewModel.sessionExpiredHandled()
+            assertEquals(EnrolmentUiState.Checking, viewModel.uiState.value)
+        }
 
     @Test
     fun `an empty wrap list leads straight to a generated recovery code`() =
