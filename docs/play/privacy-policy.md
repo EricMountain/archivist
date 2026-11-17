@@ -148,8 +148,8 @@ Archivist is not directed at children under 13.
 
 ## Changes to this policy
 
-If this policy changes materially, the date above is updated and the app notifies you
-before the change takes effect. Past versions are listed at the end.
+If this policy changes, the "Last updated" date above changes and the version history
+at the end summarises what changed. This page always shows the current version.
 
 ## Contact
 
