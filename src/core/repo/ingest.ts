@@ -2,7 +2,7 @@
 // all-or-nothing: a pointer and its target must never be able to disagree, so they
 // go in one TransactWriteItems rather than being written non-atomically.
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { ApiError } from "../errors";
+import { ApiError, cancelledWriteError } from "../errors";
 import { ddb, tableName } from "../db";
 import {
   hashPtrPk,
@@ -15,9 +15,10 @@ import {
   stemPtrPk,
   timelineGsi1Pk,
 } from "../keys";
-import type { AssetStatus, GroupSrc, MetaItem, RenditionItem, TakenAtSrc, TzSrc } from "../items";
+import type { AssetStatus, GroupSrc, MetaItem, Place, RenditionItem, TakenAtSrc, TzSrc } from "../items";
 import { histogramAdd, histogramMove } from "./histogram";
 import { getAssetPartition } from "./media";
+import { isLocationFacet, locationFacetPuts, placesAdd } from "./places";
 
 export interface CreateAssetInput {
   stem: string;
@@ -100,8 +101,16 @@ export async function createAsset(input: CreateAssetInput): Promise<void> {
   ];
 
   // Counted in the same transaction that makes the asset live, never alongside it —
-  // see repo/histogram.ts for why that is the whole design.
+  // see repo/histogram.ts for why that is the whole design. The place vocabulary
+  // (repo/places.ts) rides along on the same rule, with the location facets it
+  // counts.
   items.push(...histogramAdd(meta.ownerId, meta.takenAt, meta.tzOffsetMin));
+  if (meta.place) {
+    items.push(
+      ...locationFacetPuts(meta.ownerId, meta.photoId, meta.place, meta, true),
+      ...placesAdd(meta.ownerId, meta.place),
+    );
+  }
 
   await runTransaction(items, "stem, path or content hash already claimed");
 }
@@ -127,6 +136,12 @@ export interface AttachRenditionInput {
     takenAtSrc: TakenAtSrc;
   };
   newGroupSrc?: GroupSrc;
+  /** The uploaded rendition's `place`, when the asset has none yet — "improve, never
+   * replace", as with takenAt (design.md "Location", "Ingest precedence"). Writes
+   * `#META.place`, the location facets and the `#PLACES` counts. The `#META` update
+   * is conditioned on `place` still being absent, so a concurrent fill aborts this
+   * attach (409) rather than counting twice. */
+  fillPlace?: Place;
   /** Set when the new rendition becomes primary — its own original/thumbs
    * haven't landed yet, so the asset goes back to processing until the S3-event
    * Lambda (step 1.10) confirms them. */
@@ -183,6 +198,10 @@ export async function attachRendition(input: AttachRenditionInput): Promise<void
     names["#status"] = "status";
     values[":status"] = input.newStatus;
   }
+  if (input.fillPlace) {
+    setParts.push("place = :place");
+    values[":place"] = input.fillPlace;
+  }
 
   const items: TransactWriteCommandInput["TransactItems"] = [
     {
@@ -229,7 +248,9 @@ export async function attachRendition(input: AttachRenditionInput): Promise<void
         // Folded in rather than a separate ConditionCheck: DynamoDB transactions
         // reject two operations that target the same item, even a ConditionCheck
         // alongside the Update it's guarding.
-        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(deletedAt)",
+        ConditionExpression:
+          "attribute_exists(pk) AND attribute_not_exists(deletedAt)" +
+          (input.fillPlace ? " AND attribute_not_exists(place)" : ""),
         ExpressionAttributeValues: values,
         ...(Object.keys(names).length > 0 ? { ExpressionAttributeNames: names } : {}),
       },
@@ -246,12 +267,19 @@ export async function attachRendition(input: AttachRenditionInput): Promise<void
   // Always live here (never trashed): the #META Update above already
   // conditions on `attribute_not_exists(deletedAt)`, so if the asset was
   // trashed between this read and the transaction, the whole thing aborts.
-  if (input.takenAtImprovement) {
-    const { meta, facets } = await getAssetPartition(input.ownerId, input.photoId);
+  const partition =
+    input.takenAtImprovement || input.fillPlace
+      ? await getAssetPartition(input.ownerId, input.photoId)
+      : undefined;
+  if (input.takenAtImprovement && partition) {
+    const { meta, facets } = partition;
     if (meta) {
       const { takenAt, tzOffsetMin } = input.takenAtImprovement;
       items.push(
-        ...facets.map((facet) => ({
+        // A place fill below Puts the location facets afresh with the improved
+        // takenAt; updating them here too would touch one item twice in one
+        // transaction, which DynamoDB rejects.
+        ...facets.filter((facet) => !(input.fillPlace && isLocationFacet(facet))).map((facet) => ({
           Update: {
             TableName: tableName(),
             Key: { pk, sk: facet.sk },
@@ -271,6 +299,28 @@ export async function attachRendition(input: AttachRenditionInput): Promise<void
     }
   }
 
+  // Filling an absent place: the asset is live (the #META condition above), so the
+  // facets get their facet_gsi keys and the counts go up. Facets denormalise the
+  // post-attach values — the improved takenAt, the new primary's dimensions — since
+  // they're written in the same transaction that changes them. Thumbs follow later
+  // with setThumbs, as #META's own do.
+  if (input.fillPlace && partition?.meta) {
+    const meta = partition.meta;
+    const denorm = {
+      takenAt: input.takenAtImprovement?.takenAt ?? meta.takenAt,
+      tzOffsetMin: input.takenAtImprovement?.tzOffsetMin ?? meta.tzOffsetMin,
+      thumbs: meta.thumbs,
+      encDek: meta.encDek,
+      encKeyId: meta.encKeyId,
+      width: input.newWidth ?? meta.width,
+      height: input.newHeight ?? meta.height,
+    };
+    items.push(
+      ...locationFacetPuts(input.ownerId, input.photoId, input.fillPlace, denorm, true),
+      ...placesAdd(input.ownerId, input.fillPlace),
+    );
+  }
+
   await runTransaction(
     items,
     "asset was purged or trashed, or path/content hash already claimed",
@@ -284,17 +334,6 @@ async function runTransaction(
   try {
     await ddb().send(new TransactWriteCommand({ TransactItems: items }));
   } catch (err) {
-    if (isTransactionCancelled(err)) {
-      throw ApiError.conflict(conflictMessage);
-    }
-    throw err;
+    throw cancelledWriteError(err, conflictMessage) ?? err;
   }
-}
-
-function isTransactionCancelled(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.name === "TransactionCanceledException" ||
-      err.name === "ConditionalCheckFailedException")
-  );
 }

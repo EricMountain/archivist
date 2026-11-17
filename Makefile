@@ -1,6 +1,7 @@
 .PHONY: install build test typecheck deploy deploy-dev plan-dev clean \
 	test-infra-up test-infra-down test-infra-status test-integration \
-	teardown-load-test-dev backfill-histogram backfill-histogram-dev
+	teardown-load-test-dev backfill-histogram backfill-histogram-dev \
+	backfill-places backfill-places-dev
 
 install:
 	npm install
@@ -103,3 +104,23 @@ backfill-histogram:
 
 backfill-histogram-dev:
 	$(call backfill_histogram_recipe,backfill-histogram-dev,dev)
+
+# Rebuilds the place vocabulary (design.md pattern 16, O#<ownerId>#PLACES) from the
+# live assets' #META.place — tools/backfill-places.mjs's own doc has the details.
+# Same shape as backfill-histogram above: dry run by default (prints the per-row diff
+# against what's stored and a "differences: <n>" line, writes nothing), EXECUTE=1 to
+# overwrite, OWNER_ID=<ownerId> or ALL=1 required, and the -dev variant differs only
+# in which workspace supplies MEDIA_TABLE. A dry run reporting 0 differences is the
+# "counters haven't drifted" check.
+define backfill_places_recipe
+	@test -n "$(OWNER_ID)$(ALL)" || (echo "usage: make $(1) OWNER_ID=<ownerId> [EXECUTE=1]  (or ALL=1 for every owner)"; exit 1)
+	cd terraform && terraform workspace select $(2) >/dev/null && \
+	MEDIA_TABLE=$$(terraform output -raw media_table_name) \
+	node ../tools/backfill-places.mjs $(if $(ALL),--all-owners,--owner-id "$(OWNER_ID)") $(if $(EXECUTE),--yes)
+endef
+
+backfill-places:
+	$(call backfill_places_recipe,backfill-places,default)
+
+backfill-places-dev:
+	$(call backfill_places_recipe,backfill-places-dev,dev)

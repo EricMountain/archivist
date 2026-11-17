@@ -9,6 +9,7 @@ import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.FacetDto
 import fr.enry.archivist.data.remote.PhotoDetailResponse
+import fr.enry.archivist.data.remote.PlaceDto
 import fr.enry.archivist.data.remote.RenditionDto
 import fr.enry.archivist.domain.ExifBlob
 import java.io.ByteArrayInputStream
@@ -21,7 +22,6 @@ import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -82,6 +82,9 @@ data class PhotoDetail(
      * when [cameraMake]/[cameraModel] are too. */
     val exif: ExifBlob? = null,
     val facets: List<FacetDto> = emptyList(),
+    /** `#META.place`, the server-readable approximate location (design.md "Location").
+     * The precise coordinates are in [exif], when it decrypted. */
+    val place: PlaceDto? = null,
 )
 
 /**
@@ -105,7 +108,7 @@ class PhotoDetailRepository
         private val archivistApiFactory: ArchivistApiFactory,
         private val masterKeyHolder: MasterKeyHolder,
         private val okHttpClient: OkHttpClient,
-    ) {
+    ) : OriginalDownloader {
         suspend fun fetchDetail(photoId: String): PhotoDetail {
             val instance = instanceStore.current.first() ?: throw IOException("no connected instance")
             val api = archivistApiFactory.create(instance.host, instance.document.region, instance.document.cognito.clientId)
@@ -141,6 +144,7 @@ class PhotoDetailRepository
                 encKeyId = meta.encKeyId,
                 exif = exif?.blob,
                 facets = facets,
+                place = meta.place,
             )
         }
 
@@ -156,10 +160,7 @@ class PhotoDetailRepository
             if (encExif == null || exifIv == null) return null
             val masterKey = masterKeyHolder.current.value ?: return null
             return runCatching {
-                val dek = masterKey.unwrapDek(decode(encDek))
-                val plaintext =
-                    WholeObjectCipher.decrypt(dek, decode(exifIv), Aad.of(photoId, ObjectRef.Exif), decode(encExif))
-                exifJson.decodeFromString(ExifBlob.serializer(), plaintext.toString(Charsets.UTF_8))
+                ExifCrypto.decrypt(masterKey.unwrapDek(decode(encDek)), photoId, decode(exifIv), decode(encExif))
             }.getOrNull()?.let(::DecryptedExif)
         }
 
@@ -212,7 +213,7 @@ class PhotoDetailRepository
          * is what repair (when it falls back to the server copy) and "View original" of a video
          * use. On any failure [target] is deleted, never left half-written.
          */
-        suspend fun downloadOriginalToFile(
+        override suspend fun downloadOriginalToFile(
             photoId: String,
             encDek: String,
             rendition: RenditionSummary,
@@ -238,6 +239,18 @@ class PhotoDetailRepository
             }
         }
     }
+
+/** The "View original" streaming fetch-and-decrypt ([PhotoDetailRepository.downloadOriginalToFile]),
+ * as an interface so [LocationUpdateRepository]'s tests can stand in for the network: the real
+ * one hardcodes `https://` for the media host, which MockWebServer doesn't serve. */
+fun interface OriginalDownloader {
+    suspend fun downloadOriginalToFile(
+        photoId: String,
+        encDek: String,
+        rendition: RenditionSummary,
+        target: File,
+    )
+}
 
 /** Largest rendition [PhotoDetailRepository.downloadOriginal] will hold in memory: the
  * ciphertext, the plaintext, and (for an image) the decoded bitmap all coexist, on a heap of
@@ -304,5 +317,3 @@ private fun photoUrl(
 ) = "$apiBase/photos/$photoId"
 
 private fun decode(b64: String): ByteArray = Base64.getDecoder().decode(b64)
-
-private val exifJson = Json { ignoreUnknownKeys = true }

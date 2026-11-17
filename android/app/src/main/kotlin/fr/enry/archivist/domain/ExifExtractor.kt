@@ -32,6 +32,11 @@ data class ExifData(
      * name suggests, and `getGpsDateTime` is the library's own tested parser for
      * that. */
     val gpsDateTimeUtc: Instant?,
+    /** Where the photo was taken, from `ExifInterface.getLatLong()`/`getAltitude()`;
+     * null when the file has no usable GPS position. Strip-on (a stripped copy) and a
+     * denied `ACCESS_MEDIA_LOCATION` (a redacted read) both arrive here as null. For
+     * video, `UploadRepository` fills this in from the container instead ([Iso6709]). */
+    val location: GeoPoint? = null,
 )
 
 /**
@@ -52,6 +57,12 @@ data class ExifBlob(
     val dateTimeOriginal: String? = null,
     val offsetTimeOriginal: String? = null,
     val gpsDateTimeUtc: String? = null,
+    /** Decimal degrees, WGS84 (design.md "Encrypted EXIF"). What the detail screen's map
+     * link opens; never sent anywhere in plaintext. */
+    val gpsLat: Double? = null,
+    val gpsLon: Double? = null,
+    /** Metres above sea level; negative below it. */
+    val gpsAltM: Double? = null,
 ) {
     companion object {
         /** Null when every field would be null — nothing worth encrypting. */
@@ -65,6 +76,9 @@ data class ExifBlob(
                     dateTimeOriginal = exif.dateTimeOriginal,
                     offsetTimeOriginal = exif.offsetTimeOriginal,
                     gpsDateTimeUtc = exif.gpsDateTimeUtc?.toString(),
+                    gpsLat = exif.location?.lat,
+                    gpsLon = exif.location?.lon,
+                    gpsAltM = exif.location?.altM,
                 )
             return if (blob == ExifBlob()) null else blob
         }
@@ -99,7 +113,17 @@ object ExifExtractor {
             // Long with a negative sentinel and androidx's own @Nullable annotation
             // caught the bug at compile time.
             gpsDateTimeUtc = gpsMillis?.let { Instant.ofEpochMilli(it) },
+            location = location(exif),
         )
+    }
+
+    /** `getLatLong()` needs all four of latitude, longitude and their refs, and returns
+     * null on a malformed ref. `getAltitude` needs both `GPSAltitude` and
+     * `GPSAltitudeRef`; NaN is the "absent" sentinel passed in. [GeoPoint.of] then drops
+     * a non-finite, out-of-range or exactly-(0, 0) position. */
+    private fun location(exif: ExifInterface): GeoPoint? {
+        val latLong = exif.latLong ?: return null
+        return GeoPoint.of(latLong[0], latLong[1], exif.getAltitude(Double.NaN))
     }
 
     /** `<make>|<model>|<serial>`, lowercased, internal whitespace collapsed, a missing

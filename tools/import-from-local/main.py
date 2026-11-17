@@ -10,7 +10,7 @@ Usage (from tools/import-from-local/, with its own venv active):
         --host photos.example.com \\
         --username someone@example.com \\
         --source /path/to/your/photos \\
-        [--dry-run] [--limit 20]
+        [--dry-run] [--limit 20] [--gazetteer PATH]
 
 Credentials are never accepted as bare CLI flags (they'd sit in shell history
 and `ps` output) -- pass them via the environment or let the tool prompt:
@@ -27,6 +27,7 @@ import os
 import sys
 
 import cli_auth
+import gazetteer
 import takenat_ladder as ladder
 from importer import EnrollmentError, Importer, enroll
 
@@ -59,10 +60,23 @@ def main() -> int:
         "design.md's offsetMode=force -- default is offsetMode=fallback, which never "
         "clobbers a real per-file reading)",
     )
+    parser.add_argument(
+        "--gazetteer",
+        default=None,
+        help="the reverse-geocoding gazetteer.bin (default: $ARCHIVIST_GAZETTEER, else the "
+        "copy the Android app bundles, android/app/src/main/assets/gazetteer.bin)",
+    )
     args = parser.parse_args()
 
     if not os.path.isdir(args.source):
         print(f"error: --source {args.source!r} is not a directory", file=sys.stderr)
+        return 2
+    # Loaded before signing in, so a missing file fails fast rather than after the
+    # recovery-code prompt.
+    try:
+        gaz = gazetteer.load(args.gazetteer)
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
 
     try:
@@ -101,6 +115,7 @@ def main() -> int:
         dry_run=args.dry_run,
         restore_trashed=args.restore_trashed,
         upload_offset=upload_offset,
+        gazetteer=gaz,
     )
     stats = importer.run(limit=args.limit)
 
@@ -118,6 +133,7 @@ def main() -> int:
     print(f"offset resolved via GPS delta:            {stats.gps_rung_used}", file=sys.stderr)
     print(f"offset resolved via homeTz fallback:      {stats.owner_default_rung_used}", file=sys.stderr)
     print(f"location metadata stripped:               {stats.location_stripped}", file=sys.stderr)
+    print(f"with coordinates / geocoded to a place:   {stats.with_coordinates} / {stats.geocoded}", file=sys.stderr)
     print(f"videos uploaded with no thumbnail:        {stats.video_without_thumbnail}", file=sys.stderr)
     if stats.raw_uploaded_without_location_strip:
         print(

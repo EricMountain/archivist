@@ -6,6 +6,7 @@ import fr.enry.archivist.data.local.db.LocalTombstoneEntity
 import fr.enry.archivist.data.local.db.PhotoDao
 import fr.enry.archivist.data.local.db.UploadQueueDao
 import fr.enry.archivist.data.remote.ArchivistApiFactory
+import fr.enry.archivist.data.remote.TransactionConflictRetry
 import fr.enry.archivist.sync.MediaDeleteOutcome
 import fr.enry.archivist.sync.MediaStoreSource
 import java.io.IOException
@@ -74,7 +75,9 @@ class DeleteRepository
 
             val response =
                 try {
-                    api.deletePhoto("${instance.document.apiBase}/photos/$photoId")
+                    // Trash moves the HIST and #PLACES counters; a 409 TRANSACTION_CONFLICT
+                    // from a concurrent write to them is retried with backoff.
+                    TransactionConflictRetry.run { api.deletePhoto("${instance.document.apiBase}/photos/$photoId") }.response
                 } catch (e: IOException) {
                     return DeleteOutcome.Error(e.message ?: "network error")
                 } catch (e: HttpException) {

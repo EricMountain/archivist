@@ -129,10 +129,18 @@ The same procedure runs in both the app (one photo) and the script (one photo or
    1. The coordinates already in `ExifBlob`, if any (assets uploaded after step 5).
    2. Otherwise, read them from the **primary rendition's original**. The app downloads and
       decrypts the original, as "View original" already does. The script first looks for a
-      matching file under `--source-dir`, then downloads.
+      local copy under `--source-dir` (at the same relative path, else any file with the
+      same basename, case-insensitive), used only when its size and `contentHash` match,
+      then downloads. With `--local-only` it never downloads: an asset with no verified
+      local copy is reported as missing and left untouched (not cleared, not remembered as
+      no-GPS), and `--missing-report` lists them in a CSV. `--allow-content-mismatch` also
+      accepts a same-named copy whose bytes differ (re-saved, metadata edited), only when
+      no verified copy exists and exactly one such file has a capture time within 2 s of
+      `takenAt`; a copy accepted this way that has no GPS proves nothing about the original,
+      so it is treated as missing, never as no-GPS.
    3. Use only the first chunk when the original is chunked and the container keeps its
-      metadata near the start (JPEG/HEIC). MP4/MOV can keep `moov` at the end, so fetch the
-      whole file there.
+      metadata near the start (JPEG). HEIC and MP4/MOV can keep their metadata anywhere
+      (`meta` item locations, `moov` at the end), so fetch the whole file there.
 3. Geocode with the bundled gazetteer.
 4. `PUT /photos/{id}/location`. When step 2 had to read the original, this also sends a
    re-encrypted `ExifBlob` with the coordinates added, so the next update and the detail
@@ -196,10 +204,12 @@ the matching. The options:
 
 ## Geocoder
 
-* **Data:** GeoNames `cities500.txt` (~185k populated places: population > 500 or admin
+* **Data:** GeoNames `cities500.txt` (~237k places as of the 2026-11-13 snapshot: population > 500 or admin
   seats down to PPLA4), `admin1CodesASCII.txt`, `countryInfo.txt`. CC BY 4.0, so
   **attribution is mandatory**: About screen plus a `NOTICE` entry. The GPLv3 app can
   bundle CC BY data.
+  * Every row is kept, including `PPLX` city districts (user's decision, 2026-11-13; see
+    design.md "Location").
   * `cities500` was chosen over `cities1000` (~130k) for rural coverage (D3). If step 2
     measures the APK growth well above the estimate, raise it with the user rather than
     silently switching.
@@ -207,7 +217,7 @@ the matching. The options:
   the three files, records the snapshot date, and emits
   `android/app/src/main/assets/gazetteer.bin`:
   * a header with version, `src` string and counts;
-  * a string table of names;
+  * names stored inline per record (a shared string table was tried and is larger);
   * a region table;
   * place records as int32 micro-degree lat/lon, country index, region index, name offset
     and geonameid, sorted into a fixed 1°×1° cell grid with a cell index.
@@ -335,7 +345,7 @@ files, and the README records the snapshot date, size, and record count.
   `place`.
 * `terraform/locals.tf`: add `place` to `timeline_projection`. Note in STATUS that applying
   it rebuilds `timeline_gsi`; apply to dev first.
-* `tools/backfill-places.mjs` rebuilds `PLACES` from `facet_gsi`, overwriting rather than
+* `tools/backfill-places.mjs` rebuilds `PLACES` from each live asset's `#META.place` (facet_gsi holds ids only, not the names), overwriting rather than
   adding, like `backfill-histogram`.
 
 **Done when** the gated suites (`make test-integration`) cover:
@@ -422,7 +432,8 @@ verified on a device with a maps app and on the clean 9a AVD (no maps app → fa
 
 * Detail screen `⋮` menu: **Update location**, next to "Edit date" and "Repair thumbnails".
   It runs the procedure in "Manual updates" and shows progress in the existing status
-  line ("Locating…", then "Location updated." / "No location in this photo.").
+  line ("Locating…", then "Location updated." / "Coordinates saved. No place nearby." /
+  "No location in this photo.").
 * The action is hidden when strip is on (D8/strip rule).
 * On success it refreshes the detail and the Room row, so the bubble updates too.
 * The download-the-original path reuses the existing "View original" fetch and decrypt.
@@ -445,7 +456,14 @@ and `DetailViewModel`'s state transitions are unit-tested.
   place → new place` and the coordinate source (`exif-blob | source-dir | download |
   none`).
 * **Options:**
-  * `--source-dir` reads originals from a local backup before downloading.
+  * `--source-dir` reads originals from a local backup before downloading: the same
+    relative path, else any file with the same basename; size + `contentHash` must match.
+  * `--local-only` never downloads (assets without a local copy are left untouched and
+    reported); `--missing-report PATH` writes them to a CSV.
+  * `--allow-content-mismatch` (needs `--source-dir`) skips the size and `contentHash`
+    checks for a same-named copy when no verified one exists, but requires its own capture
+    time (EXIF `DateTimeOriginal`, video creation time) to match `takenAt` within 2 s;
+    every copy used this way is listed in the report.
   * `--force` ignores the skip rule.
   * `--concurrency N`, as `inspect_photo.py` has.
   * `--ignore-strip-setting`, as above.
@@ -463,7 +481,7 @@ and `DetailViewModel`'s state transitions are unit-tested.
 and a real `--all --execute` against dev:
 * locates every GPS-bearing asset, including ones with no copy on the phone;
 * is a no-op on immediate re-run (everything "skipped");
-* leaves `GET /places` counts equal to a `facet_gsi` recount
+* leaves `GET /places` counts equal to a recount from live `#META.place`
   (`tools/backfill-places.mjs --dry-run` diff = 0).
 
 Record wall time and bytes downloaded in STATUS.md. They tell us whether first-chunk-only

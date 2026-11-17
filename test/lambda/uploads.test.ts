@@ -2,7 +2,10 @@
 // trashed-live restore-or-record branch and the tombstone block-and-skip branch
 // that plan steps 1.9/1.12/1.13 added. Same DynamoDB Local + MinIO gate as the
 // other lambda-level suites.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { ddb } from "../../src/core/db";
+import { ApiError } from "../../src/core/errors";
 import { newUlid } from "../../src/core/ids";
 import { toIsoUtc } from "../../src/core/time";
 import { bootstrapUser } from "../../src/core/repo/session";
@@ -460,5 +463,52 @@ describe.skipIf(!RUN)("POST /uploads — hash hit on a purge tombstone", () => {
     expect(record.kind).toBe("purged");
     expect(record.blockedAttempts).toBe(1);
     expect(record.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+});
+
+describe.skipIf(!RUN)("POST /uploads — a transaction conflict on a shared counter row", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("surfaces as TRANSACTION_CONFLICT instead of falling through to attach", async () => {
+    const { userId, ownerId } = await newOwner();
+    const body = baseUploadBody();
+
+    // What DynamoDB does when another transaction holds the HIST/#PLACES row: the
+    // create is cancelled with TransactionConflict, and nothing is written.
+    const client = ddb();
+    const realSend = client.send.bind(client);
+    vi.spyOn(client, "send").mockImplementation(((command: unknown, ...rest: unknown[]) => {
+      if (command instanceof TransactWriteCommand) {
+        return Promise.reject(
+          Object.assign(new Error("Transaction cancelled"), {
+            name: "TransactionCanceledException",
+            CancellationReasons: [{ Code: "None" }, { Code: "TransactionConflict" }],
+          }),
+        );
+      }
+      return (realSend as (...a: unknown[]) => unknown)(command, ...rest);
+    }) as typeof client.send);
+
+    const err = await postUpload(uploadReq(ownerId, userId, body)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ code: "CONFLICT", reason: "TRANSACTION_CONFLICT" });
+    expect(await getHashPointer(ownerId, body.contentHash as string)).toBeUndefined();
+
+    // The identical request succeeds once the contention is gone.
+    vi.restoreAllMocks();
+    const retry = await postUpload(uploadReq(ownerId, userId, body));
+    expect(retry.body).toMatchObject({ created: true });
+  });
+
+  it("concurrent creates never fail with a plain 409", async () => {
+    const { userId, ownerId } = await newOwner();
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, () => postUpload(uploadReq(ownerId, userId, baseUploadBody()))),
+    );
+    for (const r of results) {
+      if (r.status === "rejected") {
+        expect(r.reason).toMatchObject({ code: "CONFLICT", reason: "TRANSACTION_CONFLICT" });
+      }
+    }
   });
 });

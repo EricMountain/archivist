@@ -5,7 +5,8 @@ available -- videos carry no EXIF at all), its display dimensions (`tkhd` of the
 first video track), and the two location-metadata schemes docs/design/design.md's
 "Stripping location on upload" names for video: `moov/udta/loci`, `moov/udta/©xyz`,
 and the `moov/meta` `keys`+`ilst` scheme keyed by
-`com.apple.quicktime.location.ISO6709`.
+`com.apple.quicktime.location.ISO6709`. The same three are also *read*
+(`probe_location`), so an import can geocode a video.
 
 Box headers only are read into memory; large payloads (`mdat`, thumbnails baked
 into a container, etc.) are skipped by seeking past their declared size, so this
@@ -20,6 +21,8 @@ through unstripped, silently."
 
 from __future__ import annotations
 
+import math
+import re
 import shutil
 import struct
 from dataclasses import dataclass
@@ -306,3 +309,146 @@ def _find_location_key_index(f, keys_box: Box) -> int | None:
             return index
         pos += entry_size
     return None
+
+
+# --- Location reading (geolocation plan step 5) ---------------------------------
+#
+# The same three schemes the stripper above removes, read instead of zeroed: the
+# `moov/meta` keys+ilst `com.apple.quicktime.location.ISO6709` entry and QuickTime's
+# `moov/udta/©xyz` (both an ISO-6709 string), and 3GPP's `moov/udta/loci` (binary
+# 16.16 fixed-point). Android's `MediaMetadataRetriever.METADATA_KEY_LOCATION`, which
+# the app uses, reads the first two; `loci` is read here too because the stripper
+# treats it as location, so an importer that ignored it would under-report.
+
+_ISO6709 = re.compile(
+    r"^([+-]\d{2}(?:\.\d+)?)([+-]\d{3}(?:\.\d+)?)([+-]\d+(?:\.\d+)?)?(?:CRS[^/]*)?/?$",
+    re.ASCII,
+)
+
+
+def plausible_coordinates(lat: float, lon: float) -> bool:
+    """Finite, in range, and not exactly (0, 0). Exactly zero is what a placeholder or a
+    redacted GPS block decodes to (Android zeroes location in a file read without
+    ACCESS_MEDIA_LOCATION), never a real fix in practice. Same rule as android
+    `domain/GeoPoint.kt`."""
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return False
+    if abs(lat) > 90.0 or abs(lon) > 180.0:
+        return False
+    return not (lat == 0.0 and lon == 0.0)
+
+
+def parse_iso6709(value: str | None) -> tuple[float, float, float | None] | None:
+    """`+35.0116+135.7681/` or `+35.0116+135.7681+012.5/` -> (lat, lon, alt_m or None).
+
+    Decimal degrees only (`±DD.D±DDD.D`), which is what phone encoders write; the
+    trailing `/` and a `CRS…` suffix are optional. The degree-minute forms ISO 6709
+    also allows, an implausible value (`plausible_coordinates`), or anything else
+    gives None rather than a guess. Mirrors android `domain/Iso6709.kt`; both have the same test table."""
+    if value is None:
+        return None
+    m = _ISO6709.match(value.strip())
+    if m is None:
+        return None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    if not plausible_coordinates(lat, lon):
+        return None
+    alt = float(m.group(3)) if m.group(3) is not None else None
+    return lat, lon, alt
+
+
+def probe_location(path: str) -> tuple[float, float, float | None] | None:
+    """A video's recorded location as (lat, lon, alt_m or None), or None. Preference
+    order: keys+ilst (Apple; the most precise), then `©xyz`, then `loci`."""
+    with open(path, "rb") as f:
+        size = _file_size(f)
+        moov = _find(f, 0, size, b"moov")
+        if moov is None:
+            return None
+        moov_start, moov_end = _payload_range(moov)
+
+        meta = _find(f, moov_start, moov_end, b"meta")
+        if meta is not None:
+            got = parse_iso6709(_read_quicktime_meta_location(f, meta))
+            if got is not None:
+                return got
+
+        udta = _find(f, moov_start, moov_end, b"udta")
+        if udta is None:
+            return None
+        udta_start, udta_end = _payload_range(udta)
+        xyz = _find(f, udta_start, udta_end, b"\xa9xyz")
+        if xyz is not None:
+            got = parse_iso6709(_read_xyz(f, xyz))
+            if got is not None:
+                return got
+        loci = _find(f, udta_start, udta_end, b"loci")
+        if loci is not None:
+            return _read_loci(f, loci)
+    return None
+
+
+def _read_payload(f, box: Box, limit: int = 4096) -> bytes:
+    start, end = _payload_range(box)
+    f.seek(start)
+    return f.read(min(end - start, limit))
+
+
+def _read_xyz(f, box: Box) -> str | None:
+    """QuickTime user-data text: u16 length, u16 language, then the string."""
+    payload = _read_payload(f, box)
+    if len(payload) < 4:
+        return None
+    n = struct.unpack(">H", payload[:2])[0]
+    return payload[4:4 + n].decode("ascii", errors="replace")
+
+
+def _read_quicktime_meta_location(f, meta: Box) -> str | None:
+    payload_start, payload_end = _payload_range(meta)
+    children_start = _pick_meta_children_start(f, payload_start, payload_end)
+    if children_start is None:
+        return None
+    keys_box = _find(f, children_start, payload_end, b"keys")
+    ilst_box = _find(f, children_start, payload_end, b"ilst")
+    if keys_box is None or ilst_box is None:
+        return None
+    target_index = _find_location_key_index(f, keys_box)
+    if target_index is None:
+        return None
+    ilst_start, ilst_end = _payload_range(ilst_box)
+    for i, child in enumerate(iter_boxes(f, ilst_start, ilst_end), start=1):
+        if i != target_index:
+            continue
+        child_start, child_end = _payload_range(child)
+        data = _find(f, child_start, child_end, b"data")
+        if data is None:
+            return None
+        raw = _read_payload(f, data)
+        # type indicator (4) + locale (4), then the value.
+        return raw[8:].decode("utf-8", errors="replace") if len(raw) > 8 else None
+    return None
+
+
+def _read_loci(f, box: Box) -> tuple[float, float, float | None] | None:
+    """3GPP TS 26.244 `loci`: FullBox header (4), language (2), a null-terminated name
+    (UTF-8, or UTF-16 with a BOM), role (1), then longitude, latitude and altitude as
+    signed 16.16 fixed point -- longitude first."""
+    payload = _read_payload(f, box)
+    pos = 6
+    if payload[pos:pos + 2] in (b"\xfe\xff", b"\xff\xfe"):
+        end = pos + 2
+        while end + 1 < len(payload) and payload[end:end + 2] != b"\x00\x00":
+            end += 2
+        pos = end + 2
+    else:
+        end = payload.find(b"\x00", pos)
+        if end < 0:
+            return None
+        pos = end + 1
+    pos += 1  # role
+    if pos + 12 > len(payload):
+        return None
+    lon, lat, alt = (v / 65536.0 for v in struct.unpack(">iii", payload[pos:pos + 12]))
+    if not plausible_coordinates(lat, lon):
+        return None
+    return lat, lon, alt

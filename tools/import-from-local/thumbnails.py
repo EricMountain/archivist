@@ -24,6 +24,8 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageOps
 
+import media_probe  # noqa: F401 -- registers the HEIC/HEIF opener with Pillow
+
 SIZES = (256, 1024, 2048)
 WEBP_QUALITY = 82
 

@@ -32,13 +32,16 @@ processor: it hosts the data and does nothing else with it.
 ## What is stored here
 
 **Encrypted, and unreadable by the operator:** your photos and videos, their previews,
-and the raw camera metadata block including any GPS coordinates.
+and the raw camera metadata block including any exact GPS coordinates.
 
 **Readable by the operator**, because search and browsing need it:
 
 - Dates, times and time zone offsets
 - Image dimensions, file sizes, file types
 - Camera make, model and lens
+- The approximate place a photo was taken: country, region and town. Your device works
+  this out from the photo's own GPS data, without sending it to any mapping or geocoding
+  service, and uploads only the result
 - Folder and file names — for example `2026/07-japan/IMG_4021.HEIC`
 - Search labels such as "beach" or "dog"
 - Album names and favourites
@@ -64,6 +67,10 @@ everyone.
 
 Nothing on this instance is shared with anyone. There is no advertising, no analytics,
 no tracking, and no third party involved beyond the hosting provider named above.
+
+If you tap a photo's location in the app, it opens a maps app of your choice on your own
+device at that photo's exact coordinates. That hand-off happens on your device, not on
+this server, and the maps app's own policy governs what it does with them.
 
 Other users of this instance cannot see your photos. Each account is a separate library.
 
@@ -124,3 +131,8 @@ actually rely on. Don't promise a notice period you won't honour.
 
 **Revise this if you** enable server-side labelling that decrypts photos, add analytics,
 change region, or open registration.
+
+**Location.** Users' "Strip location from uploads" setting (Settings > Privacy in the
+app) stops new uploads carrying a location or place. It doesn't remove places already
+stored, and there is no bulk "remove stored locations" action yet. Don't describe the
+setting to your users as retroactive.

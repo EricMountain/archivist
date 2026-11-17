@@ -19,6 +19,10 @@ abstract class SyncModule {
 
     @Binds
     @Singleton
+    abstract fun bindVideoLocationReader(impl: AndroidVideoLocationReader): VideoLocationReader
+
+    @Binds
+    @Singleton
     abstract fun bindPreviewGenerator(impl: TransformerPreviewGenerator): PreviewGenerator
 
     @Binds

@@ -1,11 +1,12 @@
 // Patterns 4, 5, 4b, 5b, 7, 8 — facet_gsi. One query shape serves all of them; only
 // the partition key (type + value) and an optional date range differ.
-import { QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ddb, tableName } from "../db";
 import { decodeCursor, encodeCursor } from "../cursor";
-import { facetGsiPk, ownerPk, parseFacetGsiPk, photoIdFromMediaPk } from "../keys";
+import { facetGsiPk, mediaPk, ownerPk, parseFacetGsiPk, photoIdFromMediaPk } from "../keys";
 import type { FacetEntry, FacetType } from "../items";
 import type { Page } from "./timeline";
+import { getAssetPartition } from "./media";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -97,4 +98,38 @@ export async function listFacetVocabulary(ownerId: string): Promise<FacetVocabul
   } while (exclusiveStartKey);
 
   return results;
+}
+
+/**
+ * Copies `#META`'s current `thumbs`/`width`/`height` onto every facet item of one
+ * asset. Facet items denormalise them so a facet_gsi page can paint a grid cell
+ * without touching `#META` (design.md "`F#` facet items"), but `#META.thumbs` is
+ * only filled in *after* the create/attach transaction (uploads.ts's `setThumbs`,
+ * because the keys need a photoId) and is replaced again by a thumbnail repair. So
+ * whatever sets them on `#META` calls this afterwards.
+ *
+ * Best-effort and outside any transaction, like `setThumbs` itself. Each update is
+ * conditioned on the facet still existing, so a facet deleted concurrently (a
+ * location change) is skipped rather than resurrected as a fragment.
+ */
+export async function syncFacetDenorm(ownerId: string, photoId: string): Promise<void> {
+  const { meta, facets } = await getAssetPartition(ownerId, photoId);
+  if (!meta || facets.length === 0) return;
+  const pk = mediaPk(ownerId, photoId);
+  for (const facet of facets) {
+    await ddb()
+      .send(
+        new UpdateCommand({
+          TableName: tableName(),
+          Key: { pk, sk: facet.sk },
+          UpdateExpression: "SET thumbs = :thumbs, width = :w, height = :h",
+          ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeValues: { ":thumbs": meta.thumbs, ":w": meta.width, ":h": meta.height },
+        }),
+      )
+      .catch((err: unknown) => {
+        if (err instanceof Error && err.name === "ConditionalCheckFailedException") return;
+        throw err;
+      });
+  }
 }

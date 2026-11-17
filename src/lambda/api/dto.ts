@@ -10,6 +10,7 @@ export function timelineEntryDto(item: TimelineEntry) {
     takenAt: parseSortKey(item.timelineSk).timestamp,
     thumbs: item.thumbs,
     ...(item.preview ? { preview: item.preview } : {}),
+    ...(item.place ? { place: item.place } : {}),
     encDek: item.encDek,
     encKeyId: item.encKeyId,
     width: item.width,

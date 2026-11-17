@@ -164,6 +164,36 @@ export function histogramMetaSk(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Place vocabulary (pattern 16) — counters maintained alongside the histogram.
+// ---------------------------------------------------------------------------
+
+/** `O#<ownerId>#PLACES` — one item per distinct place with live photos, plus `#META`
+ * carrying the version every `GET /places` response is ETagged with. */
+export function placesPk(ownerId: string): string {
+  return `${ownerPk(ownerId)}${SEP}PLACES`;
+}
+
+/** sk of the place vocabulary's own `#META` item. */
+export function placesMetaSk(): string {
+  return "#META";
+}
+
+/** sk of a country counter: `C#<cc>`. */
+export function placeCountrySk(cc: string): string {
+  return `C${SEP}${cc}`;
+}
+
+/** sk of a region counter: `R#<admin1 key>`, e.g. `R#JP.22`. */
+export function placeRegionSk(regionId: string): string {
+  return `R${SEP}${regionId}`;
+}
+
+/** sk of a town counter: `L#<geonameid>`. */
+export function placeLocalitySk(geonameId: string): string {
+  return `L${SEP}${geonameId}`;
+}
+
+// ---------------------------------------------------------------------------
 // facet_gsi (queries 4, 5, 7, 8) — sparse, written only on F# items.
 // ---------------------------------------------------------------------------
 

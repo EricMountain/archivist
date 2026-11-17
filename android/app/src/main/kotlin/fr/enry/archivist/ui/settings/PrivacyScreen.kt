@@ -67,11 +67,19 @@ fun PrivacyScreen(
                     enabled = !s.isSaving,
                     onCheckedChange = viewModel::setStripLocationOnUpload,
                 )
+                // D8 (geolocation plan): the switch is not retroactive, and the screen says so.
+                Text(
+                    "Turning this on affects future uploads only. Photos already uploaded keep any " +
+                        "location and place (town, region, country) stored for them.",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
                 Text(
                     "The original file on this device is never touched — only the uploaded copy has its " +
-                        "location removed. Covers photos and MP4/MOV video; other video formats and RAW " +
-                        "files aren't supported yet and upload with their location intact. Applies to " +
-                        "every device backing up to this library, not just this one.",
+                        "location removed, and no place name is worked out for it. Covers photos and " +
+                        "MP4/MOV video; other video formats and RAW files aren't supported yet and upload " +
+                        "with their location intact. Applies to every device backing up to this library, " +
+                        "not just this one.",
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
@@ -105,7 +113,8 @@ private fun MediaLocationAlternative(context: Context = LocalContext.current) {
                 "Archivist on this device — another app you've separately granted the same " +
                 "permission to would still see the original. Unlike the switch above, it's a " +
                 "choice made here rather than shared across your library, and it also means " +
-                "this device can't use a photo's GPS fix to help place it in the timeline.",
+                "this device can't use a photo's GPS fix to help place it in the timeline, or " +
+                "work out where it was taken.",
             style = MaterialTheme.typography.bodySmall,
         )
         Text(

@@ -16,11 +16,16 @@ import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.remote.ArchivistApi
 import fr.enry.archivist.data.remote.ArchivistApiFactory
+import fr.enry.archivist.data.remote.PlaceDto
 import fr.enry.archivist.data.remote.PostUploadRequest
 import fr.enry.archivist.data.remote.PostUploadResponse
 import fr.enry.archivist.data.remote.ThumbDescriptorDto
+import fr.enry.archivist.data.remote.TransactionConflictRetry
 import fr.enry.archivist.domain.ExifBlob
+import fr.enry.archivist.domain.ExifData
 import fr.enry.archivist.domain.ExifExtractor
+import fr.enry.archivist.domain.Iso6709
+import fr.enry.archivist.domain.ReverseGeocoder
 import fr.enry.archivist.domain.Timestamps
 import fr.enry.archivist.domain.Ulid
 import fr.enry.archivist.sync.LocationStripper
@@ -28,6 +33,7 @@ import fr.enry.archivist.sync.MediaStoreSource
 import fr.enry.archivist.sync.PreviewClip
 import fr.enry.archivist.sync.PreviewGenerator
 import fr.enry.archivist.sync.Thumbnailer
+import fr.enry.archivist.sync.VideoLocationReader
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -43,7 +49,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -134,6 +139,8 @@ class UploadRepository
         private val locationStripper: LocationStripper,
         private val baseOkHttpClient: OkHttpClient,
         private val uploadEvents: UploadEvents,
+        private val videoLocationReader: VideoLocationReader,
+        private val reverseGeocoder: ReverseGeocoder,
     ) {
         /** The current master key version (`mk-<n>`) rarely changes (only on
          * rotation, which nothing in this app triggers yet) — cached for the life of
@@ -176,14 +183,25 @@ class UploadRepository
                 // naturally absent when this is on, never produced rather than
                 // filtered out afterward. See "Stripping location on upload" in
                 // design.md.
-                if (ownerSettingsRepository.stripLocationOnUpload().getOrDefault(false)) {
+                val stripLocation = ownerSettingsRepository.stripLocationOnUpload().getOrDefault(false)
+                if (stripLocation) {
                     strippedFile = locationStripper.strip(row.localUri, mime)
                 }
 
                 val exif =
-                    withContext(Dispatchers.IO) {
-                        effectiveInputStream(strippedFile, row.localUri).use { ExifExtractor.extract(it) }
-                    }
+                    withLocation(
+                        exif =
+                            withContext(Dispatchers.IO) {
+                                effectiveInputStream(strippedFile, row.localUri).use { ExifExtractor.extract(it) }
+                            },
+                        mime = mime,
+                        localUri = row.localUri,
+                        strippedFile = strippedFile,
+                        stripLocation = stripLocation,
+                    )
+                // Geolocation plan step 5: geocoded on the device, from whatever
+                // coordinates survived the strip above. No coordinates, no place.
+                val place = exif.location?.let { geocode(it.lat, it.lon) }
                 val fileMtime = row.fileMtimeEpochSec?.let(Instant::ofEpochSecond) ?: Instant.now()
                 val deviceKey =
                     ExifExtractor.deviceKey(exif.cameraMake, exif.cameraModel, exif.cameraSerial).takeUnless { it == "-|-|-" }
@@ -247,17 +265,7 @@ class UploadRepository
                 val chunkSize = if (plainBytes > STREAMING_THRESHOLD_BYTES) STREAMING_CHUNK_SIZE else 0L
                 val candidateIv = if (chunkSize == 0L) EnvelopeCrypto.generateIv() else null
 
-                val exifBlob = ExifBlob.from(exif)
-                val exifIv = exifBlob?.let { EnvelopeCrypto.generateIv() }
-                val exifCiphertext =
-                    exifBlob?.let {
-                        WholeObjectCipher.encrypt(
-                            candidateDek,
-                            exifIv!!,
-                            Aad.of(candidatePhotoId, ObjectRef.Exif),
-                            exifJson.encodeToString(ExifBlob.serializer(), it).toByteArray(Charsets.UTF_8),
-                        )
-                    }
+                val encryptedExif = ExifBlob.from(exif)?.let { ExifCrypto.encrypt(candidateDek, candidatePhotoId, it) }
 
                 val encryptedThumbs =
                     thumbnails.map { t ->
@@ -297,8 +305,8 @@ class UploadRepository
                         tzOffsetMin = tzOffsetMin,
                         tzSrc = tzSrc,
                         deviceKey = deviceKey,
-                        exifEnc = exifCiphertext?.let(::encode),
-                        exifIv = exifIv?.let(::encode),
+                        exifEnc = encryptedExif?.ciphertext?.let(::encode),
+                        exifIv = encryptedExif?.iv?.let(::encode),
                         encDek = encode(masterKey.wrapDek(candidateDek)),
                         encKeyId = masterKeyVer,
                         encIv = candidateIv?.let(::encode),
@@ -309,9 +317,22 @@ class UploadRepository
                             }.ifEmpty { null },
                         preview = encryptedPreview?.let { ThumbDescriptorDto(it.ciphertext.size.toLong(), encode(it.iv)) },
                         photoId = candidatePhotoId,
+                        place = place?.let(PlaceDto::forUpload),
                     )
 
-                val httpResponse = api.postUpload(uploadsUrl(apiBase), request)
+                // Concurrent uploads contend for the same counter rows server-side; a
+                // 409 TRANSACTION_CONFLICT is retried here, a few hundred ms apart,
+                // rather than through WorkManager, whose first backoff is 10s and
+                // whose retry redoes extraction, thumbnailing and encryption. If the
+                // attempts run out it falls back to that ordinary transient retry.
+                val attempted =
+                    TransactionConflictRetry.run {
+                        api.postUpload(uploadsUrl(apiBase), request)
+                    }
+                val httpResponse = attempted.response
+                if (attempted.transactionConflict) {
+                    return recordAttempt(row, "server busy (HTTP 409 transaction conflict after ${attempted.attempts} tries)")
+                }
                 if (!httpResponse.isSuccessful) return classifyHttpFailure(row, httpResponse.code())
                 val response = httpResponse.body() ?: return recordAttempt(row, "empty response body")
 
@@ -497,6 +518,39 @@ class UploadRepository
             return UploadOutcome.Success
         }
 
+        /**
+         * [exif] with its [ExifData.location] settled. A video has no EXIF, so its location
+         * comes from the container instead ([VideoLocationReader], read from the same
+         * stripped copy the PUT uses). With [stripLocation] on, no location survives at
+         * all, whichever the file type: that also covers a file [LocationStripper] can't
+         * strip (it returns no copy for a mime it doesn't know), whose original still
+         * carries its GPS but which then still gets no coordinates and no `place`.
+         */
+        private suspend fun withLocation(
+            exif: ExifData,
+            mime: String,
+            localUri: String,
+            strippedFile: File?,
+            stripLocation: Boolean,
+        ): ExifData =
+            when {
+                stripLocation -> exif.copy(location = null)
+                mime.startsWith("video/") -> exif.copy(location = Iso6709.parse(videoLocationReader.read(localUri, strippedFile)))
+                else -> exif
+            }
+
+        /** Best-effort, like the preview clip: a gazetteer that can't be read (a corrupt
+         * asset) must not stop the backup itself, so it logs and uploads without a place. */
+        private fun geocode(
+            lat: Double,
+            lon: Double,
+        ) = try {
+            reverseGeocoder.lookup(lat, lon)
+        } catch (e: Exception) {
+            Log.w("UploadRepository", "reverse geocoding failed, uploading without a place", e)
+            null
+        }
+
         private suspend fun generatePreviewOrNull(localUri: String): PreviewClip? =
             try {
                 previewGenerator.generate(localUri)
@@ -657,4 +711,3 @@ private fun decode(b64: String): ByteArray = Base64.getDecoder().decode(b64)
 
 private fun nowIso(): String = Instant.now().truncatedTo(ChronoUnit.MILLIS).toString()
 
-private val exifJson = Json { ignoreUnknownKeys = true }

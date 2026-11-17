@@ -5,6 +5,7 @@ import fr.enry.archivist.data.local.db.PhotoDao
 import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.PatchTakenAtRequest
+import fr.enry.archivist.data.remote.TransactionConflictRetry
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -50,7 +51,10 @@ class TakenAtRepository
 
             val response =
                 try {
-                    api.patchTakenAt(photoUrl(apiBase, photoId), PatchTakenAtRequest(takenAt, tzOffsetMin))
+                    // Moves the HIST counters; a 409 TRANSACTION_CONFLICT is retried with backoff.
+                    TransactionConflictRetry.run {
+                        api.patchTakenAt(photoUrl(apiBase, photoId), PatchTakenAtRequest(takenAt, tzOffsetMin))
+                    }.response
                 } catch (e: IOException) {
                     return TakenAtOutcome.Error(e.message ?: "network error")
                 } catch (e: HttpException) {

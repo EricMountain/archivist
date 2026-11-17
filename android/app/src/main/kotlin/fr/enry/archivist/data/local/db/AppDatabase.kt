@@ -3,6 +3,8 @@ package fr.enry.archivist.data.local.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
 
 /**
  * The local storage plan step 2.6 asks for: a timeline cache and an upload queue that
@@ -27,6 +29,13 @@ import androidx.room.TypeConverters
  *
  * Version 6 added `photos.preview` (the video preview clip's descriptor) with a real
  * migration ([MIGRATION_5_6]) that also empties the timeline cache — see its own doc.
+ *
+ * Version 7 added `photos.placeCc`/`placeName`/`placeKey` (geolocation plan step 6), the
+ * same way ([MIGRATION_6_7]).
+ *
+ * Version 8 added the `place_vocabulary` table (geolocation plan step 8): the cached
+ * `GET /places` answer, see [PlaceVocabularyEntity]. A plain `CREATE TABLE`
+ * ([MIGRATION_7_8]); nothing existing changes.
  */
 @Database(
     entities = [
@@ -39,8 +48,9 @@ import androidx.room.TypeConverters
         DeviceEntity::class,
         HistogramEntity::class,
         TimelineWindowEntity::class,
+        PlaceVocabularyEntity::class,
     ],
-    version = 6,
+    version = 8,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -62,6 +72,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun histogramDao(): HistogramDao
 
     abstract fun timelineWindowDao(): TimelineWindowDao
+
+    abstract fun placeVocabularyDao(): PlaceVocabularyDao
 }
 
 val MIGRATION_4_5 =
@@ -88,5 +100,44 @@ val MIGRATION_5_6 =
             db.execSQL("DELETE FROM photos")
             db.execSQL("DELETE FROM timeline_cursor")
             db.execSQL("DELETE FROM timeline_window")
+        }
+    }
+
+/**
+ * Adds `photos.placeCc`/`placeName`/`placeKey` and empties the timeline cache, for the
+ * same reason as [MIGRATION_5_6]: [TimelineRemoteMediator] only refreshes an *empty*
+ * cache, so rows cached before this would show no place in the date bubbles until each
+ * happened to be re-fetched. Leaves `upload_queue` and `sync_state` alone.
+ *
+ * Written against [SQLiteConnection] rather than `SupportSQLiteDatabase` so the JVM
+ * migration test (bundled driver) and the app (framework SQLite, which Room hands over
+ * as a connection wrapper) run the same code.
+ */
+val MIGRATION_6_7 =
+    object : androidx.room.migration.Migration(6, 7) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL("ALTER TABLE photos ADD COLUMN placeCc TEXT")
+            connection.execSQL("ALTER TABLE photos ADD COLUMN placeName TEXT")
+            connection.execSQL("ALTER TABLE photos ADD COLUMN placeKey TEXT")
+            connection.execSQL("DELETE FROM renditions")
+            connection.execSQL("DELETE FROM photos")
+            connection.execSQL("DELETE FROM timeline_cursor")
+            connection.execSQL("DELETE FROM timeline_window")
+        }
+    }
+
+/**
+ * Adds `place_vocabulary` (see [PlaceVocabularyEntity]). Touches nothing else: the new
+ * cache starts empty and the search screen fills it on first open. The `CREATE TABLE` is
+ * Room's own `createSql` from `schemas/.../8.json`, so the post-migration schema check
+ * passes. Connection form for the same reason as [MIGRATION_6_7].
+ */
+val MIGRATION_7_8 =
+    object : androidx.room.migration.Migration(7, 8) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `place_vocabulary` " +
+                    "(`id` INTEGER NOT NULL, `body` TEXT NOT NULL, `etag` TEXT, PRIMARY KEY(`id`))",
+            )
         }
     }

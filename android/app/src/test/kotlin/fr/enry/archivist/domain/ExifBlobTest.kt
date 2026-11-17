@@ -63,6 +63,29 @@ class ExifBlobTest {
     }
 
     @Test
+    fun `carries the coordinates as gpsLat, gpsLon and gpsAltM`() {
+        val blob = ExifBlob.from(exif().copy(location = GeoPoint(35.01161, 135.76804, 12.5)))!!
+        assertEquals(35.01161, blob.gpsLat)
+        assertEquals(135.76804, blob.gpsLon)
+        assertEquals(12.5, blob.gpsAltM)
+
+        // The JSON field names are the contract with the laptop importer's own blob
+        // (tools/import-from-local/importer.py, exif_blob) and design.md "Encrypted EXIF".
+        val json = kotlinx.serialization.json.Json.encodeToString(ExifBlob.serializer(), blob)
+        assertEquals("""{"gpsLat":35.01161,"gpsLon":135.76804,"gpsAltM":12.5}""", json)
+    }
+
+    @Test
+    fun `coordinates alone are enough to produce a blob, and no altitude is omitted`() {
+        val blob = ExifBlob.from(exif().copy(location = GeoPoint(-34.6, -58.375)))!!
+        assertNull(blob.gpsAltM)
+        assertEquals(
+            """{"gpsLat":-34.6,"gpsLon":-58.375}""",
+            kotlinx.serialization.json.Json.encodeToString(ExifBlob.serializer(), blob),
+        )
+    }
+
+    @Test
     fun `round-trips through JSON`() {
         val original = ExifBlob(cameraMake = "Canon", dateTimeOriginal = "2026:07:14 09:22:05")
         val json = kotlinx.serialization.json.Json.encodeToString(ExifBlob.serializer(), original)

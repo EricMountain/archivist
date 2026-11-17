@@ -64,6 +64,14 @@ CACHE_VERSION = 2
 
 Section = str  # "live" | "trashed" -- not an enum, since it only ever threads through as a dict key
 
+# A third section, not a detail snapshot: `modify_media.py location`'s memory of
+# assets whose original was read and carried no GPS, so a re-run of `--all` doesn't
+# download them again (docs/plans/geolocation.md "Manual updates"). photoId ->
+# {renditionId, contentHash} of the primary rendition that was read. Lives in the
+# same file so `_save_section`'s read-modify-write keeps it, and vice versa.
+NO_GPS_SECTION: Section = "locationNoGps"
+_ALL_SECTIONS = ("live", "trashed", NO_GPS_SECTION)
+
 
 def _cache_path(host: str, username: str) -> str:
     # Hashed rather than a literal "<host>__<username>.json" so an email
@@ -104,7 +112,7 @@ def _load_all(host: str, username: str) -> dict[Section, dict[str, dict]] | None
         return None  # corrupt/partial cache file -- treat exactly like no cache
     if data.get("version") != CACHE_VERSION or data.get("host") != host:
         return None
-    return {section: data[section] for section in ("live", "trashed") if section in data}
+    return {section: data[section] for section in _ALL_SECTIONS if section in data}
 
 
 def _save_all(host: str, username: str, sections: dict[Section, dict[str, dict]]) -> None:
@@ -245,3 +253,14 @@ def get_snapshot(
     return merged, SnapshotStats(
         from_cache=len(reused), fetched_fresh=len(fetched), dropped_stale=dropped, listing_checked_live=True
     )
+
+
+def load_no_gps(host: str, username: str) -> dict[str, dict]:
+    """The `NO_GPS_SECTION` map (empty when never written). See its comment."""
+    all_sections = _load_all(host, username) or {}
+    return dict(all_sections.get(NO_GPS_SECTION, {}))
+
+
+def save_no_gps(host: str, username: str, entries: dict[str, dict]) -> None:
+    """Replaces the `NO_GPS_SECTION` map, leaving the detail snapshots untouched."""
+    _save_section(host, username, NO_GPS_SECTION, entries)

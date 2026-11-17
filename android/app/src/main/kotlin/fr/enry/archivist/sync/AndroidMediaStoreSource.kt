@@ -101,19 +101,9 @@ class AndroidMediaStoreSource
          * mention of this as the per-device alternative to "Strip location from
          * uploads") must keep reading the ordinary, already-redacted `Uri`.
          */
-        override fun openInputStream(contentUri: String): InputStream {
-            val uri = Uri.parse(contentUri)
-            val requested =
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) ==
-                    PackageManager.PERMISSION_GRANTED
-                ) {
-                    MediaStore.setRequireOriginal(uri)
-                } else {
-                    uri
-                }
-            return context.contentResolver.openInputStream(requested) ?: throw FileNotFoundException(contentUri)
-        }
+        override fun openInputStream(contentUri: String): InputStream =
+            context.contentResolver.openInputStream(originalIfPermitted(context, Uri.parse(contentUri)))
+                ?: throw FileNotFoundException(contentUri)
 
         /**
          * API 30+ (`MediaStore.createDeleteRequest`, added in R): always returns one
@@ -200,4 +190,24 @@ class AndroidMediaStoreSource
         ) {
             context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use(block)
         }
+    }
+
+/**
+ * [uri] wrapped in `MediaStore.setRequireOriginal` when `ACCESS_MEDIA_LOCATION` is granted
+ * (API 29+), else [uri] itself — the rule [AndroidMediaStoreSource.openInputStream]'s doc
+ * explains. Shared with [AndroidVideoLocationReader], which opens a file descriptor rather
+ * than a stream, so a video's location is read under exactly the same permission rule as a
+ * still's EXIF: denied means a redacted read, which yields no location.
+ */
+internal fun originalIfPermitted(
+    context: Context,
+    uri: Uri,
+): Uri =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        MediaStore.setRequireOriginal(uri)
+    } else {
+        uri
     }

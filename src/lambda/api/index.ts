@@ -7,7 +7,7 @@ import type {
   Context,
 } from "aws-lambda";
 import { randomUUID } from "node:crypto";
-import { ApiError, HTTP_STATUS_BY_CODE } from "@archivist/core/errors";
+import { ApiError, HTTP_STATUS_BY_CODE, apiErrorBody } from "@archivist/core/errors";
 import { resolveAuth, extractJwtIdentity } from "./auth";
 import { routes } from "./router";
 import { toApiRequest } from "./http";
@@ -65,7 +65,7 @@ export async function handler(
         durationMs: Date.now() - start,
         errorCode: err.code,
       });
-      return respond(status, { error: err.message });
+      return respond(status, apiErrorBody(err));
     }
 
     // Never leak an SDK exception message to the client.

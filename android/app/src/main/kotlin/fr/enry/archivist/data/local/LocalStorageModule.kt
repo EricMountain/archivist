@@ -20,6 +20,7 @@ import fr.enry.archivist.data.local.db.PhotoDao
 import fr.enry.archivist.data.local.db.RenditionDao
 import fr.enry.archivist.data.local.db.TimelineCursorDao
 import fr.enry.archivist.data.local.db.UploadQueueDao
+import fr.enry.archivist.domain.ReverseGeocoder
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -93,6 +94,15 @@ object LocalStorageModule {
     @Singleton
     fun provideDeviceKeyProvider(): DeviceKeyProvider = DeviceKeystore()
 
+    /** [ReverseGeocoder] is plain Kotlin in `domain/` (its JVM tests read the same file
+     * from disk), so the Android asset source is chosen here. Construction is cheap; the
+     * asset is mapped on the first lookup. */
+    @Provides
+    @Singleton
+    fun provideReverseGeocoder(
+        @ApplicationContext context: Context,
+    ): ReverseGeocoder = ReverseGeocoder(AssetGazetteerSource(context))
+
     @Provides
     @Singleton
     fun provideAppDatabase(
@@ -104,6 +114,8 @@ object LocalStorageModule {
             .addMigrations(
                 fr.enry.archivist.data.local.db.MIGRATION_4_5,
                 fr.enry.archivist.data.local.db.MIGRATION_5_6,
+                fr.enry.archivist.data.local.db.MIGRATION_6_7,
+                fr.enry.archivist.data.local.db.MIGRATION_7_8,
             )
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()

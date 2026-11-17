@@ -94,6 +94,49 @@ class ExifExtractorTest {
         assertNull(data.gpsDateTimeUtc)
     }
 
+    private fun fixture(name: String) =
+        checkNotNull(javaClass.classLoader?.getResourceAsStream("exif-fixtures/$name")) { "missing test fixture exif-fixtures/$name" }
+
+    /**
+     * Geolocation plan step 5. `kyoto-gps.jpg` carries a full GPS block (35°0'41.796" N,
+     * 135°46'4.944" E, 12.5 m above sea level); `kyoto-gps-stripped.jpg` is the same file
+     * with the GPS IFD removed, as the importer's `strip_gps_from_image` does; and
+     * `gps-zeroed.jpg` has the refs but all-zero values, which is how a placeholder or a
+     * redacted read (no `ACCESS_MEDIA_LOCATION`) decodes. All three were written with
+     * Pillow, for the reason the class doc gives.
+     */
+    @Test
+    fun `GPS position and altitude are read from a GPS-tagged JPEG`() {
+        val location = fixture("kyoto-gps.jpg").use { ExifExtractor.extract(it) }.location!!
+
+        assertEquals(35.01161, location.lat, 1e-9)
+        assertEquals(135.76804, location.lon, 1e-9)
+        assertEquals(12.5, location.altM!!, 1e-9)
+    }
+
+    @Test
+    fun `a stripped copy has no location`() {
+        val data = fixture("kyoto-gps-stripped.jpg").use { ExifExtractor.extract(it) }
+
+        assertNull(data.location)
+        assertNull(data.gpsDateTimeUtc)
+        assertEquals("Pixel 8a", data.cameraModel) // the rest of the EXIF survives
+    }
+
+    @Test
+    fun `an all-zero GPS block is no location, not null island`() {
+        assertNull(fixture("gps-zeroed.jpg").use { ExifExtractor.extract(it) }.location)
+    }
+
+    @Test
+    fun `latitude without longitude is no location`() {
+        // canon-with-gps.jpg has GPSLatitude/Ref and a GPS timestamp, but no longitude.
+        val data = fixtureStream().use { ExifExtractor.extract(it) }
+
+        assertNull(data.location)
+        assertEquals(Instant.parse("2024-06-15T05:32:00Z"), data.gpsDateTimeUtc)
+    }
+
     @Test
     fun `image width falls back to the JPEG SOF-derived ImageWidth when PixelXDimension is absent`() {
         // The fixture has no PixelXDimension/PixelYDimension tags at all -- confirming

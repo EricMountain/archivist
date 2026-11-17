@@ -5,7 +5,7 @@
 // takenAtSrcOutranks): this is a direct, explicit per-photo edit, so it always wins —
 // see paths.ts's TAKEN_AT_SRC_RANK for why `manual` outranks every automatic rung.
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { ApiError } from "../errors";
+import { ApiError, cancelledWriteError } from "../errors";
 import { ddb, tableName } from "../db";
 import { mediaPk, metaSk, sortKey } from "../keys";
 import { getAssetPartition } from "./media";
@@ -76,12 +76,6 @@ export async function correctTakenAt(input: CorrectTakenAtInput): Promise<void> 
   try {
     await ddb().send(new TransactWriteCommand({ TransactItems: items }));
   } catch (err) {
-    if (
-      err instanceof Error &&
-      (err.name === "TransactionCanceledException" || err.name === "ConditionalCheckFailedException")
-    ) {
-      throw ApiError.conflict("asset was purged in the meantime");
-    }
-    throw err;
+    throw cancelledWriteError(err, "asset was purged in the meantime") ?? err;
   }
 }

@@ -367,7 +367,9 @@ internal const val RESEED_PAGE_SIZE = 120
 private fun nowIso(): String = Instant.now().truncatedTo(ChronoUnit.MILLIS).toString()
 
 /** `thumbs`' JSON-object keys arrive as strings (`"256"`) even though the server's own
- * `ThumbMap` is keyed by number — see [TimelineEntryDto]'s own doc. */
+ * `ThumbMap` is keyed by number — see [TimelineEntryDto]'s own doc. `place` is flattened
+ * to the most specific level it has: the locality, else the region (a locality can come
+ * without a region, e.g. Stanley, FK). */
 internal fun TimelineEntryDto.toEntity(): PhotoEntity =
     PhotoEntity(
         photoId = photoId,
@@ -381,4 +383,7 @@ internal fun TimelineEntryDto.toEntity(): PhotoEntity =
         encDek = encDek,
         encKeyId = encKeyId,
         preview = preview,
+        placeCc = place?.cc,
+        placeName = (place?.locality ?: place?.region)?.name,
+        placeKey = (place?.locality ?: place?.region)?.id,
     )

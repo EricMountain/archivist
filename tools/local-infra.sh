@@ -99,10 +99,24 @@ up() {
   # `docker run`) still has whatever a previous `up` already created, in-memory data
   # notwithstanding — DynamoDB Local's schema itself isn't in-memory-only, only its
   # items are, so re-describing before creating avoids a noisy "already exists" error.
+  #
+  # A table left over from an older version of this script, with a stale
+  # timeline_gsi projection, is dropped and recreated: a GSI's projection can't be
+  # altered in place, and the data is throwaway anyway. `place` is the newest
+  # projected attribute, so its presence is the check.
+  if aws dynamodb describe-table --table-name "$TABLE_NAME" --endpoint-url "http://localhost:${DYNAMO_PORT}" >/dev/null 2>&1; then
+    projected=$(aws dynamodb describe-table --table-name "$TABLE_NAME" --endpoint-url "http://localhost:${DYNAMO_PORT}" \
+      --query "Table.GlobalSecondaryIndexes[?IndexName=='timeline_gsi'].Projection.NonKeyAttributes[]" --output text)
+    if ! printf '%s\n' $projected | grep -qx place; then
+      aws dynamodb delete-table --table-name "$TABLE_NAME" --endpoint-url "http://localhost:${DYNAMO_PORT}" >/dev/null
+      echo "dropped $TABLE_NAME (stale timeline_gsi projection)"
+    fi
+  fi
   if ! aws dynamodb describe-table --table-name "$TABLE_NAME" --endpoint-url "http://localhost:${DYNAMO_PORT}" >/dev/null 2>&1; then
     # Mirrors terraform/dynamodb.tf: pk/sk keys, timeline_gsi + facet_gsi, same
-    # projection (terraform/locals.tf's grid_projection). Keep these two in sync by
-    # hand — there's no single source both Terraform and this script can read from.
+    # projections (terraform/locals.tf's timeline_projection and grid_projection). Keep
+    # these in sync by hand — there's no single source both Terraform and this script
+    # can read from.
     aws dynamodb create-table \
       --endpoint-url "http://localhost:${DYNAMO_PORT}" \
       --table-name "$TABLE_NAME" \
@@ -113,7 +127,7 @@ up() {
       --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
       --billing-mode PAY_PER_REQUEST \
       --global-secondary-indexes \
-        '[{"IndexName":"timeline_gsi","KeySchema":[{"AttributeName":"timelinePk","KeyType":"HASH"},{"AttributeName":"timelineSk","KeyType":"RANGE"}],"Projection":{"ProjectionType":"INCLUDE","NonKeyAttributes":["thumbs","encDek","encKeyId","width","height","mime","tzOffsetMin","status"]}},{"IndexName":"facet_gsi","KeySchema":[{"AttributeName":"facetPk","KeyType":"HASH"},{"AttributeName":"facetSk","KeyType":"RANGE"}],"Projection":{"ProjectionType":"INCLUDE","NonKeyAttributes":["thumbs","encDek","encKeyId","width","height","mime","tzOffsetMin","status"]}}]' \
+        '[{"IndexName":"timeline_gsi","KeySchema":[{"AttributeName":"timelinePk","KeyType":"HASH"},{"AttributeName":"timelineSk","KeyType":"RANGE"}],"Projection":{"ProjectionType":"INCLUDE","NonKeyAttributes":["thumbs","encDek","encKeyId","width","height","mime","tzOffsetMin","status","preview","place"]}},{"IndexName":"facet_gsi","KeySchema":[{"AttributeName":"facetPk","KeyType":"HASH"},{"AttributeName":"facetSk","KeyType":"RANGE"}],"Projection":{"ProjectionType":"INCLUDE","NonKeyAttributes":["thumbs","encDek","encKeyId","width","height","mime","tzOffsetMin","status"]}}]' \
       >/dev/null
     echo "created table $TABLE_NAME"
   fi

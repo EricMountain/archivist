@@ -3,6 +3,8 @@ package fr.enry.archivist.ui.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -15,6 +17,8 @@ import androidx.compose.ui.unit.dp
 
 private const val LICENSE_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
 const val REPO_URL = "https://github.com/EricMountain/archivist"
+private const val GEONAMES_URL = "https://www.geonames.org/"
+private const val CC_BY_URL = "https://creativecommons.org/licenses/by/4.0/"
 
 /**
  * Plan step 2.17's follow-up: an About pane, the "about box" GPLv3 itself suggests for
@@ -27,6 +31,10 @@ const val REPO_URL = "https://github.com/EricMountain/archivist"
  * allows — see CLAUDE.md's "Nothing personal in the committed tree": unlike a domain or
  * AWS account, this project's own GitHub repository isn't deployment-specific, so it
  * belongs alongside the application ID rather than being replaced with a placeholder.
+ *
+ * The "Place names" section is the attribution CC BY 4.0 requires for the bundled
+ * GeoNames gazetteer (`assets/gazetteer.bin`, see `tools/gazetteer/README.md`): title,
+ * source, licence with a link, and a note that the data was adapted.
  */
 @Composable
 fun AboutScreen(
@@ -42,7 +50,9 @@ fun AboutScreen(
             runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
         }
 
-    Column(modifier.padding(16.dp)) {
+    // Scrolls: with the GeoNames attribution added, the page no longer fits a small
+    // phone in landscape, and a legal notice that can't be reached isn't displayed.
+    Column(modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
         TextButton(onClick = onBack) { Text("← Back") }
         Text("About", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 8.dp))
         Text(
@@ -70,5 +80,16 @@ fun AboutScreen(
             modifier = Modifier.padding(bottom = 4.dp),
         )
         TextButton(onClick = { uriHandler.openUri(REPO_URL) }) { Text(REPO_URL) }
+        Text("Place names", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 16.dp))
+        Text(
+            "Place names come from the GeoNames geographical database (geonames.org), " +
+                "licensed under Creative Commons Attribution 4.0. Archivist adapts it: the " +
+                "data is converted to a compact lookup file that ships inside the app, so " +
+                "places are worked out on this device.",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        TextButton(onClick = { uriHandler.openUri(GEONAMES_URL) }) { Text("geonames.org") }
+        TextButton(onClick = { uriHandler.openUri(CC_BY_URL) }) { Text("View the CC BY 4.0 license") }
     }
 }

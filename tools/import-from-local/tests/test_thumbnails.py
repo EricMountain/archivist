@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PIL import Image
 
 import thumbnails
+from _heic import BLUE, RED, write_heic
 
 
 def _jpeg_with_orientation(width: int, height: int, orientation: int | None) -> str:
@@ -76,6 +77,25 @@ class GenerateForImage(unittest.TestCase):
             os.unlink(path)
         # 180 degrees doesn't swap width/height, just flips both axes.
         self.assertTrue(all(t.width >= t.height for t in thumbs))
+
+
+class GenerateForHeic(unittest.TestCase):
+    """HEIC decodes through pillow-heif, which applies the container's rotation
+    itself: the ladder must come out portrait (32x64) with red on top, rotated
+    exactly once."""
+
+    def test_heic_ladder_is_upright(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "IMG_0001.HEIC")
+            write_heic(path)
+            thumbs = thumbnails.generate_for_image(path)
+        self.assertEqual([(t.size, t.width, t.height) for t in thumbs], [(256, 32, 64), (1024, 32, 64), (2048, 32, 64)])
+        import io
+
+        with Image.open(io.BytesIO(thumbs[0].bytes_)) as im:
+            top, bottom = im.convert("RGB").getpixel((16, 8)), im.convert("RGB").getpixel((16, 56))
+        self.assertEqual(max(range(3), key=lambda i: top[i]), RED.index(max(RED)))
+        self.assertEqual(max(range(3), key=lambda i: bottom[i]), BLUE.index(max(BLUE)))
 
 
 if __name__ == "__main__":

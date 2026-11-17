@@ -4,6 +4,9 @@ import fr.enry.archivist.data.local.db.AssetStatus
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.localDate
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -22,11 +25,29 @@ class DateBubblesTest {
         row: Int,
         topPx: Int,
         vararg dates: LocalDate?,
-    ) = RowGeom(row, topPx, dates.toList())
+    ) = RowGeom(row, topPx, dates.map { it?.let { d -> BubbleCell(d, "${d}T12:00:00.000Z") } })
 
     private fun place(
         rows: List<RowGeom>,
         above: List<LocalDate?>? = null,
+    ) = placeBubbles(rows, above?.map { it?.let { d -> BubbleCell(d, "${d}T12:00:00.000Z") } }, stickyTop, h, gap, margin)
+
+    /** A located cell: [place] is both key and name, [time] the UTC time of day. */
+    private fun cell(
+        date: LocalDate,
+        place: String?,
+        time: String = "12:00:00",
+    ) = BubbleCell(date, "${date}T$time.000Z", place, place)
+
+    private fun placedRow(
+        row: Int,
+        topPx: Int,
+        vararg cells: BubbleCell,
+    ) = RowGeom(row, topPx, cells.toList())
+
+    private fun placeCells(
+        rows: List<RowGeom>,
+        above: List<BubbleCell?>? = null,
     ) = placeBubbles(rows, above, stickyTop, h, gap, margin)
 
     private fun photo(
@@ -133,5 +154,101 @@ class DateBubblesTest {
         val out = place(listOf(row(0, 0, d1), row(1, 100, d2), row(2, 200, d1)))
         assertEquals(listOf(d1, d2, d1), out.map { it.date })
         assertTrue(out.map { it.row }.toSet().size == 3)
+    }
+
+    // --- Places (geolocation plan step 6, D7) ---
+
+    @Test
+    fun `same date and a different place labels the row`() {
+        val out =
+            placeCells(
+                listOf(
+                    placedRow(0, 0, cell(d1, "Kyoto"), cell(d1, "Kyoto")),
+                    placedRow(1, 100, cell(d1, "Kyoto"), cell(d1, "Kyoto")),
+                    placedRow(2, 200, cell(d1, "Osaka"), cell(d1, "Osaka")),
+                ),
+            )
+        assertEquals(listOf(Bubble(d1, 8, 0, "Kyoto"), Bubble(d1, 208, 2, "Osaka")), out)
+    }
+
+    @Test
+    fun `an unknown place never labels a row, nor makes the next one different`() {
+        val out =
+            placeCells(
+                listOf(
+                    placedRow(0, 0, cell(d1, "Kyoto")),
+                    placedRow(1, 100, cell(d1, null)),
+                    placedRow(2, 200, cell(d1, "Kyoto")),
+                ),
+            )
+        assertEquals(listOf(Bubble(d1, 8, 0, "Kyoto")), out)
+    }
+
+    @Test
+    fun `a known place after an unknown one on the same date labels only if it changed`() {
+        val out =
+            placeCells(
+                listOf(
+                    placedRow(0, 0, cell(d1, "Kyoto")),
+                    placedRow(1, 100, cell(d1, null)),
+                    placedRow(2, 200, cell(d1, "Osaka")),
+                ),
+            )
+        assertEquals(listOf(Bubble(d1, 8, 0, "Kyoto"), Bubble(d1, 208, 2, "Osaka")), out)
+    }
+
+    @Test
+    fun `a new date with an unknown place is labelled with the date alone`() {
+        val out = placeCells(listOf(placedRow(0, 0, cell(d2, "Kyoto")), placedRow(1, 100, cell(d1, null))))
+        assertEquals(listOf(Bubble(d2, 8, 0, "Kyoto"), Bubble(d1, 108, 1, null)), out)
+    }
+
+    @Test
+    fun `the most common place wins`() {
+        val label = rowLabel(listOf(cell(d1, "Osaka", "18:00:00"), cell(d1, "Kyoto", "10:00:00"), cell(d1, "Kyoto", "09:00:00"), cell(d1, null)))
+        assertEquals(RowLabel(d1, "Kyoto", "Kyoto"), label)
+    }
+
+    @Test
+    fun `a tie goes to the place of the latest takenAt`() {
+        val cells = listOf(cell(d1, "Kyoto", "09:00:00"), cell(d1, "Osaka", "11:00:00"), cell(d1, "Kyoto", "10:00:00"), cell(d1, "Osaka", "08:00:00"))
+        assertEquals("Osaka", rowLabel(cells)?.placeKey)
+        assertEquals("Osaka", rowLabel(cells.reversed())?.placeKey)
+    }
+
+    @Test
+    fun `a row mixing dates takes its place only from the row date's photos`() {
+        // d2 is the row's date; the two d1 photos in Osaka don't vote.
+        val label = rowLabel(listOf(cell(d2, "Kyoto", "01:00:00"), cell(d1, "Osaka", "23:00:00"), cell(d1, "Osaka", "22:00:00")))
+        assertEquals(RowLabel(d2, "Kyoto", "Kyoto"), label)
+        // And with no located photo on the row's date, the row has no place.
+        assertEquals(RowLabel(d2), rowLabel(listOf(cell(d2, null), cell(d1, "Osaka"))))
+    }
+
+    @Test
+    fun `place keys, not names, tell places apart`() {
+        val paris = BubbleCell(d1, "${d1}T12:00:00.000Z", "2988507", "Paris")
+        val parisTx = BubbleCell(d1, "${d1}T11:00:00.000Z", "4717560", "Paris")
+        val out = placeCells(listOf(placedRow(0, 0, paris), placedRow(1, 100, parisTx)))
+        assertEquals(2, out.size)
+    }
+
+    @Test
+    fun `the sticky bubble shows the place it inherits`() {
+        val out = placeCells(listOf(placedRow(3, -50, cell(d1, null))), above = listOf(cell(d1, "Kyoto")))
+        assertEquals(listOf(Bubble(d1, stickyTop, 3, "Kyoto")), out)
+    }
+
+    @Test
+    fun `the row above decides whether the first visible row is different`() {
+        val out = placeCells(listOf(placedRow(3, -50, cell(d1, "Kyoto")), placedRow(4, 50, cell(d1, "Osaka"))), above = listOf(cell(d1, "Kyoto")))
+        assertEquals(listOf(Bubble(d1, 8, 3, "Kyoto"), Bubble(d1, 58, 4, "Osaka")), out)
+    }
+
+    @Test
+    fun `bubble text is date then place`() {
+        val fmt = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(Locale.UK)
+        assertEquals("14 Jul 2026" to " · Kyoto", bubbleText(Bubble(LocalDate.of(2026, 7, 14), 0, 0, "Kyoto"), fmt))
+        assertEquals("14 Jul 2026" to null, bubbleText(Bubble(LocalDate.of(2026, 7, 14), 0, 0), fmt))
     }
 }

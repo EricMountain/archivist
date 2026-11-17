@@ -46,6 +46,9 @@ in shell history):
   --dry-run          # remove this once the plan looks right
 ```
 
+Imports are geocoded offline from the repo's bundled gazetteer; see "Location" under
+"What this handles" for `--gazetteer`.
+
 `--dry-run` resolves and logs every file's plan (timestamp, offset, grouping)
 without calling the API at all — always run this first over a new source
 directory. `--limit N` caps it to the first N files, useful for a quick sanity
@@ -253,10 +256,11 @@ already knows for free.
 
 `modify_media.py` is the "something about this imported photo is wrong and
 only a human can fix it" tool — one entry point, subcommands for each kind of
-correction. Both target an exact asset via `--photo-id`/`--path` (same as
+correction. All target an exact asset via `--photo-id`/`--path` (same as
 `inspect_photo.py` above — never a fuzzy `--filename` search, since
 accidentally correcting the wrong photo because two shared a basename would
-be worse than not correcting it at all), and are a dry run by default;
+be worse than not correcting it at all; `location` also takes `--all`), and
+are a dry run by default;
 `--execute` applies.
 
 **`taken-at`** corrects `takenAt`/`tzOffsetMin` — for when the whole ladder in
@@ -330,9 +334,181 @@ then regenerates and uploads thumbnails from those same corrected pixels — one
 `--execute` run, two API calls, always in that order (original, then
 thumbnails, matching `POST /uploads`' own sequencing for a first-time upload).
 
-Neither subcommand does more than one photo per run, deliberately: each
-correction needs its own actual value, not a uniform shift or fix, so this
-doesn't try to guess a bulk mode — loop the script yourself if you have a list.
+Neither `taken-at` nor `orientation` does more than one photo per run,
+deliberately: each correction needs its own actual value, not a uniform shift
+or fix, so they don't try to guess a bulk mode — loop the script yourself if
+you have a list. `location` (below) is the exception, because its correction
+*is* uniform: re-derive the place from the photo's own coordinates.
+
+**`location`** re-geocodes a photo's place, or every photo's with `--all`
+(docs/plans/geolocation.md "Manual updates", design.md "Location" → "Manual
+update"). For assets uploaded before place names existed, or geocoded with an
+older gazetteer:
+
+```sh
+.venv/bin/python3 modify_media.py location \
+  --host photos.example.com \
+  --username someone@example.com \
+  --all --source-dir /path/to/local/backup
+# check the per-asset "old -> new" lines, then:
+.venv/bin/python3 modify_media.py location ... --all --source-dir ... --execute
+```
+
+Per asset it decrypts `exifEnc` and uses its `gpsLat`/`gpsLon` if present
+(`[coords: exif-blob]`). Otherwise it reads the primary rendition's original,
+from a local copy if there is one, else downloaded and decrypted from
+`/media/*` (`[coords: download]`). A chunked (≥ 32 MiB) JPEG fetches only its first 1 MiB
+ciphertext segment, since EXIF sits at the very start; videos are fetched
+whole, since `moov` can be at the end. Coordinates are read with the
+importer's own `media_probe.py`/`mp4box.py` code, (0, 0) counting as none. It
+then geocodes with the same gazetteer as the importer (`--gazetteer`, else
+`$ARCHIVIST_GAZETTEER`, else the Android app's bundled copy) and calls `PUT
+/photos/{photoId}/location`. When the coordinates came from the original, the
+PUT also carries `exifEnc` re-encrypted (same DEK, same `…:x` AAD, fresh IV)
+with `gpsLat`/`gpsLon`/`gpsAltM` added and every other field kept, so the
+next run never needs the original. No coordinates anywhere sends
+`place: null`, clearing a stale place.
+
+**Local copies (`--source-dir`).** The directory can have any layout; it
+doesn't have to mirror the server paths. It is walked once at the start and
+every file indexed by name. For each original needed, in order:
+
+1. `<source-dir>/<rendition path>`, the path `main.py` uploaded it under
+   (`[coords: source-dir]`);
+2. any file anywhere under `<source-dir>` with the same basename as the
+   server path (`-1739773001/IMG_1234.jpg` → `IMG_1234.jpg`), compared
+   case-insensitively and Unicode-normalised, since cameras, phones and copy
+   tools disagree on `IMG_1234.JPG` vs `img_1234.jpg` and macOS decomposes
+   accented names (`[coords: source-dir by filename]`, with the local path
+   after `<-`).
+
+A file counts only if its size and `contentHash` (the HMAC of the plaintext,
+keyed by the account's hash secret, so only this tool can compute it) are the
+stored original's. A same-named different photo, say `IMG_0001.jpg` from two
+cameras, is never read; when several files share the name, the one whose hash
+matches is used. Only files of the right size are hashed, each at most once
+per run. There is no persistent hash cache: normally exactly one file per asset
+is hashed, once `--execute` has stored the coordinates the asset is skipped
+for good, and a dry run writes no cache, so a cache wouldn't save the dry
+run → `--execute` re-read.
+
+**`--local-only`** (needs `--source-dir`) never downloads an original. An asset
+that needs one and has no verified local copy is reported as **missing
+locally** and left exactly as it is: no `place: null`, no entry in the no-GPS
+memory, not an error. A later run with more local copies, or without
+`--local-only`, picks it up. **`--missing-report PATH`** writes every asset that
+needed its original and had no verified local copy to a CSV (`photoId`, `path`,
+`filename`, `plainBytes`, `takenAt`, `reason`, `outcome`, `detail`,
+`candidates`, `usedLocalCopy`). `reason` is `no-file-by-name` or
+`name-found-content-differs` (with the rejected local paths in `candidates`),
+or one of the `content-differs-*` reasons below with `--allow-content-mismatch`;
+`outcome` is `left untouched`, `downloaded` (without `--local-only`),
+`download refused: archived` or `used unverified local copy`. The
+report is written in a dry run too: it's the dry run's output, not state.
+The first 20 missing assets are also printed after the summary.
+
+**`--allow-content-mismatch`** (needs `--source-dir`) is for local copies that
+are the same photo but not the same bytes as what was uploaded (re-saved,
+metadata edited by some tool). It skips both the size and the `contentHash`
+check — a different size always means a different hash, so they can't be
+separated — and puts a capture-time check in their place:
+
+* A verified copy (size + `contentHash` match) always wins; an unverified one
+  is only considered when no verified one exists.
+* A same-named candidate counts only if its own capture time is within 2 s of
+  the asset's `takenAt`, compared in UTC: a still's EXIF `DateTimeOriginal` is
+  read at the asset's `tzOffsetMin` (the offset `takenAt` was derived with)
+  and, if the file has one, at its own `OffsetTimeOriginal`; a video's
+  `mvhd` creation time is UTC already. 2 s because both are whole seconds
+  while `takenAt` has milliseconds, plus one second for a tool that rounds;
+  a same-named different photo (another camera, a counter reset) is not
+  going to have been shot in the same 2 s.
+* Exactly one candidate may pass (several byte-identical copies count as
+  one). None with a capture time → `content-differs-no-capture-time`; only
+  other times → `content-differs-time-mismatch`; several different files →
+  `content-differs-ambiguous`. None is used in those cases.
+* An accepted copy's coordinates go through the normal path (geocode,
+  `exifEnc` re-encrypted with them, PUT), shown as `[coords: source-dir
+  UNVERIFIED (name + capture time)]` with the local path after `<-`. An
+  accepted copy **without GPS** (`content-differs-no-gps`) or that can't be
+  read (`content-differs-unreadable`) proves nothing, since a re-saved copy
+  may have lost the GPS its original kept: it is treated as missing (the
+  original is downloaded in the same run, or left untouched with
+  `--local-only`), never cleared to `place: null` and never put in the no-GPS
+  memory.
+* Audit trail: every copy used this way is a row in `--missing-report`, with
+  `outcome` `used unverified local copy`, the file in `usedLocalCopy` and the
+  capture-time comparison in `detail`; the summary counts them separately
+  (`local copy, UNVERIFIED`) and breaks the rejections down by reason.
+
+The risk, in one sentence: the content of such a copy is not verified, so if a
+different photo has the same name *and* a capture time within 2 s of the
+original's, its GPS is what gets stored.
+
+A plain dry run (no `--local-only`) still **downloads** every original it
+needs and has no local copy of, so that it can say what `--execute` would do.
+On a library uploaded before geolocation that is nearly every original. Add
+`--local-only` to make it download nothing. For a whole library whose
+originals you also have locally:
+
+```sh
+# 1. Dry run: reads local files only, downloads nothing, writes nothing but the report.
+.venv/bin/python3 modify_media.py location \
+  --host photos.example.com --username someone@example.com \
+  --all --source-dir /path/to/local/photos --local-only \
+  --missing-report /tmp/location-missing.csv
+# Check the coverage line and the report. If coverage is good enough:
+# 2. Apply. Missing assets stay untouched and can be handled later.
+.venv/bin/python3 modify_media.py location \
+  --host photos.example.com --username someone@example.com \
+  --all --source-dir /path/to/local/photos --local-only \
+  --missing-report /tmp/location-missing.csv --execute
+```
+
+**Archive tiers.** Originals are stored in S3 Intelligent-Tiering (design.md
+"Tiering") with no opt-in archive tiers, so every one is readable by a plain
+GET, including objects that have sunk to the Archive Instant Access tier.
+Reading one carries no retrieval fee, but it moves the object back to the
+Frequent Access tier, billed at that rate until it goes 30 days unread
+again. That is the cost `--local-only` avoids. If an operator has enabled
+Intelligent-Tiering's Archive Access / Deep Archive Access tiers, or moved
+objects into a Glacier Flexible Retrieval / Deep Archive class, S3 refuses the
+GET with `403 InvalidObjectState`. Such an asset is reported as **archived**,
+its own category, not an error, and left untouched. Nothing here restores it.
+
+* **Skip rule:** an asset whose `place.src` is already the gazetteer's is
+  skipped straight off the `GET /photos` listing, with no per-asset fetch, so
+  `--all` is resumable and an immediate re-run does nothing. Assets whose
+  original had no GPS are remembered in the local cache (`.cache/`, see
+  "Local caching" above; keyed by photoId plus the primary rendition's id and
+  `contentHash`), so a re-run doesn't download them again. `--force` ignores
+  both.
+* **`--include-trash`** adds trashed assets to `--all` (the PUT works on them,
+  moving no place counts).
+* **Strip-on:** if the owner has `stripLocationOnUpload` on, it refuses before
+  asking for the recovery code, unless `--ignore-strip-setting`.
+* **Errors don't abort `--all`.** The summary counts updated, unchanged,
+  skipped (current `src`), no GPS, missing locally (with `--local-only`),
+  archived (when any) and errors, lists each error with its photoId, and gives
+  wall time, bytes downloaded and bytes read locally. A second block covers the
+  assets that needed their original: how many came from a local copy (exact
+  path / by filename / unverified with `--allow-content-mismatch`), were
+  downloaded, had no verified local copy (no file by that name / name found
+  but size or `contentHash` differs, broken down by `content-differs-*` reason
+  with `--allow-content-mismatch`) or were archived, and a coverage line,
+  `local copies found for N of M originals needed (P%)`.
+  Only errors make the exit status non-zero. A `409` (the photo changed
+  between read and write) is retried once from a fresh read.
+* **HEIC/HEIF originals** are read through `pillow-heif` (downloaded whole: their
+  EXIF isn't guaranteed to sit in the first segment the way a JPEG's does).
+* **Can't read:** RAW originals (Pillow has no decoder for them), so an asset
+  whose coordinates aren't already in `exifEnc` and whose primary is RAW is
+  reported as an error rather than cleared.
+* `--concurrency N` (default 8) assets at a time. Needs the recovery code
+  (`ARCHIVIST_RECOVERY_CODE`), like `orientation`.
+
+Afterwards, `make backfill-places-dev ALL=1` (a dry run of
+`tools/backfill-places.mjs`) should report `differences: 0`.
 
 ## What this handles
 
@@ -365,6 +541,32 @@ doesn't try to guess a bulk mode — loop the script yourself if you have a list
   boxes zeroed and retyped `free` in place — byte-identical everywhere else,
   regardless of whether `moov` sits before or after `mdat` in the source file
   (both orderings are real in this tool's own corpus).
+* **Location: every import is geocoded on this machine**, the same way the Android
+  app does it (design.md "Location"). Coordinates come from EXIF for stills
+  (`GPSLatitude`/`GPSLongitude` and their refs, plus `GPSAltitude`/`GPSAltitudeRef`)
+  and from the container for video (the `moov/meta` keys+ilst ISO 6709 entry, then
+  `©xyz`, then `loci`). They go into the encrypted EXIF blob as `gpsLat`/`gpsLon`/
+  `gpsAltM`, the same field names as the app's `ExifBlob`. `gazetteer.py` turns them
+  into the plaintext `place` sent with `POST /uploads`: nearest GeoNames place within
+  25 km gives country, region and town; within 100 km, country and region; further
+  out, no `place` at all. Nothing leaves the machine for this; there is no geocoding
+  service. A file with no coordinates, an all-zero GPS block, or any file while
+  `stripLocationOnUpload` is on gets neither coordinates nor a `place`.
+  `main.py`'s summary reports how many files had coordinates and how many got a
+  place. `--dry-run` prints the place it would send.
+
+  The gazetteer is the `gazetteer.bin` the app bundles, read from
+  `android/app/src/main/assets/gazetteer.bin` in this checkout by default. Point at
+  another copy with `--gazetteer PATH` or the `ARCHIVIST_GAZETTEER` environment
+  variable (the flag wins). It must be the same file the app ships, or the two
+  clients disagree about where a photo was (`tools/gazetteer/README.md`).
+  `tests/test_gazetteer.py` checks this reader against the shared
+  `tools/gazetteer/vectors.json`. Place names come from
+  [GeoNames](https://www.geonames.org/), CC BY 4.0.
+
+  The lookup is sent as-is. A place within 25 km whose GeoNames record has no region
+  (about 460 places, e.g. Stanley, Falkland Islands) goes up as `{cc, locality}`, which
+  `POST /uploads` accepts; the app does the same.
 * **Video creation time and dimensions** via a small ISO-BMFF (`mp4box.py`) box
   walker — no `ffprobe`/`ffmpeg` dependency for this part. 92/94 real videos in
   this tool's corpus resolved a usable creation time this way.
@@ -397,6 +599,12 @@ doesn't try to guess a bulk mode — loop the script yourself if you have a list
   creation time — sidecars would have rescued 3 of those. Not worth the
   complexity for this corpus; if yours is different (little to no EXIF, few
   filename timestamps), this would be the first thing worth adding.
+* **HEIC/HEIF is supported** via `pillow-heif` (BSD-licensed, bundling libheif),
+  registered with Pillow in `media_probe.py`: EXIF (takenAt, camera, GPS and
+  place) and the thumbnail ladder, upright — pillow-heif applies the container's
+  own rotation on decode. With `stripLocationOnUpload` on, a HEIC that has GPS is
+  re-encoded without it (quality 90; unlike JPEG there is no lossless re-save,
+  and auxiliary images such as depth maps or an HDR gain map are dropped).
 * **RAW formats are not decoded at all** — Pillow has no CR2/CR3/NEF/ARW/DNG/
   RAF/ORF/RW2 decoder, matching the Android client's own documented limitation
   ("the phone will not handle RAW"). A RAW file still uploads correctly as its

@@ -214,3 +214,46 @@ def _random_iv() -> bytes:
     import os
 
     return os.urandom(12)
+
+
+# --- Mode B, partial and file-backed reads --------------------------------------
+
+
+def decrypt_first_segment(dek: bytes, associated_data: bytes, ciphertext_prefix: bytes) -> bytes:
+    """The plaintext of segment 0 alone (the first `C0` bytes), from the first
+    `SEGMENT` bytes of a streaming-mode object that has **more than one segment** --
+    crypto-format.md "Byte-range mapping", for a caller that only needs the start of
+    a file (EXIF sits in a JPEG's first 64 KiB). Authenticated like any other
+    segment: decrypted as segment 0 with the last-segment flag clear, so it fails
+    when the object actually has only one segment (decrypt that whole instead) and
+    on any wrong key, AAD or byte.
+
+    Done by hand rather than through Tink, whose decrypting stream needs the
+    following segment to know segment 0 isn't the last. Same construction as
+    crypto-format.md "Mode B": streamKey = HKDF-SHA256(DEK, salt, info=aad),
+    nonce = prefix || uint32be(0) || 0x00, empty GCM associated data."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    if len(ciphertext_prefix) < SEGMENT:
+        raise ValueError(f"need the first {SEGMENT} ciphertext bytes, got {len(ciphertext_prefix)}")
+    if ciphertext_prefix[0] != HEADER:
+        raise ValueError(f"bad streaming header length byte {ciphertext_prefix[0]}")
+    salt = ciphertext_prefix[1:33]
+    nonce_prefix = ciphertext_prefix[33:HEADER]
+    stream_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=associated_data).derive(dek)
+    nonce = nonce_prefix + (0).to_bytes(4, "big") + b"\x00"
+    return AESGCM(stream_key).decrypt(nonce, ciphertext_prefix[HEADER:SEGMENT], b"")
+
+
+def streaming_decrypt_file(dek: bytes, associated_data: bytes, src_path: str, dst_path: str) -> None:
+    """`streaming_decrypt`, file to file, one read buffer at a time -- for a
+    downloaded video original that needn't sit in memory twice."""
+    prim = _streaming_handle(dek).primitive(streaming_aead.StreamingAead)
+    with open(src_path, "rb") as src, open(dst_path, "wb") as dst:
+        with prim.new_decrypting_stream(src, associated_data) as dec:
+            while True:
+                block = dec.read(SEGMENT)
+                if not block:
+                    break
+                dst.write(block)

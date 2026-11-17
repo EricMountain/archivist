@@ -38,7 +38,10 @@ Archivist transmits, **only to the server address you enter**:
   make and model, folder and file names, search labels, and albums or favourites you
   create
 - The full technical metadata block from your camera (EXIF), **encrypted** — this is
-  where GPS coordinates live, if your camera recorded them
+  where the exact GPS coordinates live, if your camera recorded them
+- The approximate place each photo was taken — country, region and town — worked out on
+  your device from the photo's own GPS data. No location is ever sent to a mapping or
+  geocoding service
 - Your account details on that server: email address, display name, sign-in identifiers
 
 That destination is a server you chose. The app has no default server and no fallback.
@@ -52,6 +55,16 @@ identifiers, no advertising identifiers, no "anonymous" telemetry. The app conta
 third-party SDK that transmits anything anywhere.
 
 The only network requests Archivist makes are to the server address you configured.
+
+## Opening a location in a maps app
+
+When a photo has a location, its detail screen shows it, and tapping it opens a maps app
+installed on your device — whichever one you choose — at that photo's exact coordinates.
+From that point the coordinates are in that other app, and what it does with them (for
+example, loading map tiles from its own servers) is governed by its own privacy policy,
+not this one. Archivist does not send them anywhere itself: this happens only when you
+tap, and if no maps app is installed the app copies the coordinates instead of opening a
+website.
 
 ## Preview without an account
 
@@ -73,13 +86,15 @@ it. Even on your own server, it is worth knowing which:
 
 **Readable:** dates and time zone offsets, image dimensions and file sizes, camera make
 and model and lens, folder and file names, search labels, album names and favourites,
-and a keyed fingerprint of each file used to avoid duplicates.
+the approximate place (country, region, town) a photo was taken, and a keyed fingerprint
+of each file used to avoid duplicates.
 
 **Encrypted:** the photos and videos themselves, their previews, and the raw camera
-metadata block including GPS coordinates.
+metadata block including the exact GPS coordinates.
 
-In practice, that means a folder named "Hospital appointments" is readable, and a photo
-labelled "wedding" is readable, while the photograph itself is not.
+In practice, that means a folder named "Hospital appointments" is readable, a photo
+labelled "wedding" is readable, and so is the fact that it was taken in Kyoto, while the
+photograph itself, and the exact spot it was taken, are not.
 
 ## We cannot recover your data
 
@@ -105,16 +120,19 @@ backup: Android hands Archivist copies of your photos and videos with that locat
 already removed, and there is nothing further for the app to do. This only affects what
 Archivist itself can read — it is an ordinary per-app permission, like any other, so
 another app you've separately granted it to would still see the original. If you allow
-it for Archivist, that location is uploaded encrypted along with everything else, unless
-your library owner has separately turned on "Strip location from uploads" in Settings,
-which removes it from every device's uploads regardless of this permission.
+it for Archivist, the exact location is uploaded encrypted, and the approximate place is
+uploaded readable, along with everything else — unless your library owner has
+separately turned on "Strip location from uploads" in Settings, which removes both from
+every device's uploads regardless of this permission. That setting applies to future
+uploads only: places already stored for earlier photos stay.
 
 **Notifications** — to show upload progress and let you stop a running backup.
 
 Archivist never requests permission to read your device's live location
 (`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`) and never reads GPS in real time. The
 only location data involved is what your camera already wrote into a photo or video —
-governed by the separate permission above — and it is encrypted before upload.
+governed by the separate permission above. The exact location is uploaded encrypted, and
+the approximate place is uploaded readable.
 
 ## Data stored on your device
 
@@ -186,9 +204,12 @@ lighter obligation than the previous, service-operator framing.
 | An update server, licence check, or version ping | Same |
 | A default or fallback server address | "The app has no default server" |
 | Rekognition, or any server-side pixel processing | "Your server stores ciphertext it cannot decrypt" |
-| Reverse-geocoded place labels | Location would become readable on the server |
+| Precise coordinates readable on the server, or geocoding via an online service | "The exact location is uploaded encrypted" and "No location is ever sent to a mapping or geocoding service" |
 
 The first two are worth guarding carefully. A single analytics SDK, added casually,
 invalidates the central claim of this document.
+
+**Place-name data.** The GeoNames attribution that CC BY 4.0 requires is on the app's
+About screen. This policy has no licences section, so it isn't repeated here.
 
 **Keep aligned with `data-safety.md`.** Reviewers read both.

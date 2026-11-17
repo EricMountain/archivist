@@ -6,6 +6,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -27,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -42,19 +46,38 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 
-/** One laid-out row as the grid currently has it. [dates] has one entry per cell,
+/** What the bubbles need from one photo. [takenAt] is the fixed-width ISO UTC instant,
+ * so it compares as a string; it only breaks ties between places. */
+internal data class BubbleCell(
+    val date: LocalDate,
+    val takenAt: String,
+    val placeKey: String? = null,
+    val placeName: String? = null,
+)
+
+internal fun PhotoEntity.bubbleCell(): BubbleCell = BubbleCell(localDate(), takenAt, placeKey, placeName)
+
+/** One laid-out row as the grid currently has it. [cells] has one entry per cell,
  * `null` for a paging placeholder that hasn't loaded yet. */
 internal data class RowGeom(
     val row: Int,
     val topPx: Int,
-    val dates: List<LocalDate?>,
+    val cells: List<BubbleCell?>,
 )
 
-/** A date bubble to draw at [yPx] (its top edge), for [row]. */
+/** A row's label: its date and, when known, its place (geolocation plan, D7). */
+internal data class RowLabel(
+    val date: LocalDate,
+    val placeKey: String? = null,
+    val placeName: String? = null,
+)
+
+/** A bubble to draw at [yPx] (its top edge), for [row]. */
 internal data class Bubble(
     val date: LocalDate,
     val yPx: Int,
     val row: Int,
+    val placeName: String? = null,
 )
 
 /**
@@ -63,22 +86,52 @@ internal data class Bubble(
  * disagree. `null` if any cell is a not-yet-loaded placeholder: better to show nothing
  * than a wrong date.
  */
-internal fun rowDate(cells: List<LocalDate?>): LocalDate? {
+internal fun rowDate(cells: List<BubbleCell?>): LocalDate? {
     if (cells.isEmpty() || cells.any { it == null }) return null
-    return cells.filterNotNull().max()
+    return cells.maxOf { it!!.date }
 }
+
+/**
+ * A row's [RowLabel]: [rowDate], plus the most common non-null `placeKey` among the
+ * photos *on that date* (a row can straddle midnight; the other day's photos don't
+ * vote). Ties go to the place of the latest `takenAt`. `null` if [rowDate] is.
+ */
+internal fun rowLabel(cells: List<BubbleCell?>): RowLabel? {
+    val date = rowDate(cells) ?: return null
+    val voters = cells.filterNotNull().filter { it.date == date && it.placeKey != null }
+    val winner =
+        voters
+            .groupBy { it.placeKey!! }
+            .maxWithOrNull(compareBy({ it.value.size }, { it.value.maxOf { c -> c.takenAt } }))
+            ?.value
+            ?.maxBy { it.takenAt }
+    return RowLabel(date, winner?.placeKey, winner?.placeName)
+}
+
+/** D7: (date, place) differs from the row above's. An unknown place on either side is
+ * never a difference. */
+private fun RowLabel.differsFrom(prev: RowLabel): Boolean =
+    date != prev.date || (placeKey != null && prev.placeKey != null && placeKey != prev.placeKey)
+
+/** A row with no place of its own carries on the place of the row above, if that is on
+ * the same date: so an unknown-place row between two Kyoto rows doesn't make the second
+ * one "different", while a Kyoto row, an unknown one and then an Osaka row still labels
+ * Osaka. */
+private fun RowLabel.inheriting(prev: RowLabel?): RowLabel =
+    if (placeKey == null && prev != null && prev.date == date) copy(placeKey = prev.placeKey, placeName = prev.placeName) else this
 
 /**
  * Where the floating date bubbles go. Pure, so it is unit-testable without Compose (this
  * repo has no Compose UI test harness) — same convention as [timelineContentState].
  *
- * A row is labelled iff it is row 0 or its date differs from the row above's; a row with
- * an unknown date ([rowDate] null) is never labelled and doesn't make the row below
- * "different". Labelled rows below the pin line get a bubble at their own natural
- * position (`topPx + marginPx`).
+ * A row is labelled iff it is row 0 or its (date, place) differs from the row above's
+ * ([rowLabel]; geolocation plan D7). A row with an unknown date is never labelled and
+ * doesn't make the row below "different"; an unknown *place* never triggers a label
+ * either, and the row inherits the place above it on the same date. Labelled rows below
+ * the pin line get a bubble at their own natural position (`topPx + marginPx`).
  *
  * The pin line is [stickyTopPx]. The last row whose natural position has reached it
- * owns the pinned bubble, showing its own date, like a sticky header. The next labelled
+ * owns the pinned bubble, showing its own label, like a sticky header. The next labelled
  * row's bubble travels with its row until it reaches the pin line and stops there; it
  * never overshoots and drops back. The bubble it replaces is pushed ahead of it, kept
  * `bubbleHeightPx + gapPx` above the incoming row's natural position, so it slides off
@@ -91,50 +144,64 @@ internal fun rowDate(cells: List<LocalDate?>): LocalDate? {
  */
 internal fun placeBubbles(
     rows: List<RowGeom>,
-    rowAboveFirst: List<LocalDate?>?,
+    rowAboveFirst: List<BubbleCell?>?,
     stickyTopPx: Int,
     bubbleHeightPx: Int,
     gapPx: Int,
     marginPx: Int,
 ): List<Bubble> {
     if (rows.isEmpty()) return emptyList()
-    val dates = rows.map { rowDate(it.dates) }
-    val aboveDate = rowAboveFirst?.let(::rowDate)
+    val aboveLabel = rowAboveFirst?.let(::rowLabel)
+    val own = rows.map { rowLabel(it.cells) }
+    // Each row's label with an unknown place filled in from above (same date only).
+    val labels = ArrayList<RowLabel?>(rows.size)
+    for (i in rows.indices) {
+        val prev = if (i == 0) aboveLabel else labels[i - 1]
+        labels += own[i]?.inheriting(prev)
+    }
     val labelled =
         rows.indices.map { i ->
-            val date = dates[i] ?: return@map false
+            val label = own[i] ?: return@map false
             if (rows[i].row == 0) return@map true
-            val prev = if (i == 0) aboveDate else dates[i - 1]
-            prev != null && prev != date
+            val prev = if (i == 0) aboveLabel else labels[i - 1]
+            prev != null && label.differsFrom(prev)
         }
     val natural = rows.map { it.topPx + marginPx }
     val visible = { y: Int -> y + bubbleHeightPx > 0 }
+    fun bubble(label: RowLabel, y: Int, row: Int) = Bubble(label.date, y, row, label.placeName)
 
     // The row at the pin line. Only the very top of the list can start below it.
     val pinned = natural.indexOfLast { it <= stickyTopPx }.coerceAtLeast(0)
     val result = mutableListOf<Bubble>()
 
     // Pinned bubble, pushed up by the next labelled row below it.
-    dates[pinned]?.let { date ->
+    labels[pinned]?.let { label ->
         var y = maxOf(natural[pinned], stickyTopPx)
         val next = (pinned + 1 until rows.size).firstOrNull { labelled[it] }
         if (next != null) y = minOf(y, natural[next] - bubbleHeightPx - gapPx)
-        if (visible(y)) result += Bubble(date, y, rows[pinned].row)
+        if (visible(y)) result += bubble(label, y, rows[pinned].row)
     }
 
     // The bubble the pinned one replaced, still sliding off ahead of its row.
     val sectionStart = (0..pinned).lastOrNull { labelled[it] }
     if (sectionStart != null) {
-        val before = if (sectionStart == 0) aboveDate else dates[sectionStart - 1]
+        val before = if (sectionStart == 0) aboveLabel else labels[sectionStart - 1]
         val y = natural[sectionStart] - bubbleHeightPx - gapPx
-        if (before != null && visible(y)) result += Bubble(before, y, rows[sectionStart].row - 1)
+        if (before != null && visible(y)) result += bubble(before, y, rows[sectionStart].row - 1)
     }
 
     for (i in pinned + 1 until rows.size) {
-        if (labelled[i] && visible(natural[i])) result += Bubble(dates[i]!!, natural[i], rows[i].row)
+        if (labelled[i] && visible(natural[i])) result += bubble(labels[i]!!, natural[i], rows[i].row)
     }
     return result
 }
+
+/** The bubble's two text parts: the date, which is never cut, and the place suffix
+ * (`" · Kyoto"`), which is the part that ellipsizes. Together: `14 Jul 2026 · Kyoto`. */
+internal fun bubbleText(
+    bubble: Bubble,
+    formatter: DateTimeFormatter,
+): Pair<String, String?> = bubble.date.format(formatter) to bubble.placeName?.let { " · $it" }
 
 /**
  * The photo in each of [infos], or null if the grid's last layout and [items] disagree.
@@ -213,14 +280,14 @@ internal fun DateBubbleOverlay(
             val infos = gridState.layoutInfo.visibleItemsInfo
             if (infos.isEmpty()) return@derivedStateOf emptyList()
             val photos = syncedVisiblePhotos(infos, items) ?: return@derivedStateOf last
-            val dateOf = infos.indices.associate { infos[it].index to photos[it].localDate() }
+            val cellOf = infos.indices.associate { infos[it].index to photos[it].bubbleCell() }
             val columns = infos.maxOf { it.column } + 1
             val rows =
                 infos
                     .groupBy { it.row }
                     .toSortedMap()
                     .map { (row, cells) ->
-                        RowGeom(row, cells.first().offset.y, cells.sortedBy { it.index }.map { dateOf[it.index] })
+                        RowGeom(row, cells.first().offset.y, cells.sortedBy { it.index }.map { cellOf[it.index] })
                     }
             val firstRow = rows.first()
             val firstIndex = infos.filter { it.row == firstRow.row }.minOf { it.index }
@@ -231,7 +298,7 @@ internal fun DateBubbleOverlay(
                     null
                 } else {
                     (maxOf(0, firstIndex - columns) until firstIndex).map { i ->
-                        if (i < items.itemCount) items.peek(i)?.localDate() else null
+                        if (i < items.itemCount) items.peek(i)?.bubbleCell() else null
                     }
                 }
             placeBubbles(rows, above, stickyTopPx, heightPx, gapPx, marginPx).also { last = it }
@@ -244,23 +311,37 @@ internal fun DateBubbleOverlay(
         exit = fadeOut(tween(300)),
         modifier = modifier,
     ) {
-        Box(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // Leaves room for the fast-scroll rail on the right; the place half of a long
+            // label ellipsizes inside this, the date never does.
+            val maxBubbleWidth = maxWidth * 0.75f
             for (bubble in bubbles) {
                 key(bubble.row) {
-                    Box(
+                    val (dateText, placeText) = bubbleText(bubble, BUBBLE_FORMATTER)
+                    Row(
                         Modifier
                             .offset { IntOffset(marginPx, bubble.yPx) }
+                            .widthIn(max = maxBubbleWidth)
                             .height(BUBBLE_HEIGHT)
                             .clip(RoundedCornerShape(50))
                             .background(MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.7f))
                             .padding(horizontal = 10.dp),
-                        contentAlignment = Alignment.Center,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            bubble.date.format(BUBBLE_FORMATTER),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.inverseOnSurface,
-                        )
+                        val style = MaterialTheme.typography.labelMedium
+                        val color = MaterialTheme.colorScheme.inverseOnSurface
+                        // Unweighted, so the Row measures it first, at full width.
+                        Text(dateText, style = style, color = color, maxLines = 1, softWrap = false)
+                        if (placeText != null) {
+                            Text(
+                                placeText,
+                                style = style,
+                                color = color,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                        }
                     }
                 }
             }

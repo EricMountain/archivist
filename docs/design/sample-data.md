@@ -1,10 +1,10 @@
 # Sample data
 
-Ten assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
+Eleven assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
 parts of `design.md` rather than the happy path: multi-rendition grouping, all four
 `takenAtSrc` rungs, five `tzSrc` rungs, chunked encryption, a sort-key tie, location
-stripped on upload, and the location cases: a full place, a region-only place, GPS with no
-place at all (open sea), and a trashed located asset.
+stripped on upload, and the location cases: a full place, a region-only place, a town
+with no region, GPS with no place at all (open sea), and a trashed located asset.
 
 ## Conventions
 
@@ -49,7 +49,7 @@ partition it's read from.
 Facet `<type>` values (`CAMERA`, `DEVICE`, `LABEL`, `LENS`, `REND`, `YEAR`, …) are a
 closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
 
-## The ten assets
+## The eleven assets
 
 | # | Asset | Renditions | Exercises |
 | --- | --- | --- | --- |
@@ -63,6 +63,7 @@ closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
 | A8 | Video clip, mountain hike | 1 (mp4) | 480 MB, chunked, video as its own asset; location from the MP4's ISO-6709 tag; region-only `place` |
 | A9 | Trashed duplicate | 1 (jpg) | soft delete — absent from the timeline, present in trash; its place facets lose their keys and it isn't counted in `#PLACES` |
 | A10 | Beach, GPS present on the phone | 1 (jpg) | `stripLocationOnUpload` — no GPS in `exifEnc`, no `place`, offset ladder skips rung 3 |
+| A11 | Harbour, Stanley, Falkland Islands | 1 (heic) | a town with no region — GeoNames has no admin1 for it, so `place` is `{cc, locality}`, with no `F#REGION#` and no `regionName` |
 
 ---
 
@@ -404,7 +405,7 @@ to at most 200 px on the longest edge, H.264, no audio — 1,843,216 bytes here,
 mode so 16 bytes more than its 1,843,200-byte plaintext. This clip is 90 s long, so the
 preview covers its first minute and the client fades it out and loops. It is a separate
 attribute rather than a `thumbs` entry so that nothing iterating `thumbs` mistakes it for
-a still rung. A1–A7, A9 and A10 are stills and carry no `preview` at all.
+a still rung. A1–A7 and A9–A11 are stills and carry no `preview` at all.
 
 Its `place` is the region-only case. A hike in the Daisetsuzan interior is between 25 and
 100 km from the nearest named town, so the region is named and no town is invented. There
@@ -506,6 +507,43 @@ The original file on the phone still has its GPS tags — only the uploaded copy
 was ever touched, and only in a temporary file the client deletes once this upload
 finishes. Nothing above depends on knowing that; it's a fact about the device, not
 about this row.
+
+## A11 — a town with no region
+
+Stanley, in the Falkland Islands, is one of 458 GeoNames `cities500` places with no admin1
+region (most of Lesotho is another). The photo is within 25 km of it, so the lookup names
+the town, but there is no region to name. The `place` is `{cc, locality}`, which the
+server accepts as is.
+
+```text
+O#01J7X…#M#01K5A2QZT6HM3XKD8VBQNW4RFY
+                #META    stem        2025/12-falklands/IMG_3307
+                         renditions  1
+                         mime        image/heic
+                         takenAt     2025-12-03T14:12:40.000Z
+                         tzOffsetMin -180
+                         tzSrc       exif-offset
+                         takenAtSrc  exif
+                         deviceKey   apple|iphone 15|-
+                         exifEnc     <b64>   ← gpsLat -51.6921, gpsLon -57.8589
+                         place       {cc: FK,
+                                      locality: {id: 3426691, name: Stanley},
+                                      src: …}     ← no region: GeoNames has none
+                         status      ready
+
+                R#01K5A2QZT7BN4WQX9MRKDH2TVG
+                         role  display   path  2025/12-falklands/IMG_3307.HEIC
+                         plainBytes 3866624   encChunkSize 0
+
+                F#CAMERA#Apple iPhone 15   F#REND#display   F#YEAR#2025
+                F#COUNTRY#FK     F#PLACE#3426691          ← and no F#REGION#
+                … 3 LABEL facets
+```
+
+It is the mirror image of A8: A8 has a region and no town, A11 a town and no region. Its
+`L#3426691` vocabulary row (below) has no `regionName` attribute at all, not an empty
+one, and there is no `R#` row for it to count towards. The timeline bubble shows
+"Stanley, Falkland Islands", with the country rendered from `cc`.
 
 ## Pointer items
 
@@ -634,8 +672,8 @@ it — three versions minted over this library's life, the third current.
 Every `#META` item, one row each, no renditions, no facets, no pointers. Queried
 descending, this is the infinite scroll. Each row carries the projection
 `[thumbs, preview, place, encDek, encKeyId, width, height, mime, tzOffsetMin, status]`. Of
-the ten assets, only A8's row has a `preview` to project. A1, A3 and A8 have a `place`;
-A8's has no locality. `facet_gsi`, which projects the same list minus `preview` and
+the eleven assets, only A8's row has a `preview` to project. A1, A3, A8 and A11 have a
+`place`; A8's has no locality and A11's no region. `facet_gsi`, which projects the same list minus `preview` and
 `place`, is covered below.
 
 ```text
@@ -648,10 +686,11 @@ O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-14T10:05:41.000Z#01K5A2QDM4TZB6QNH9FKW3PXR
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-14T09:22:05.000Z#01K5A2Q8ZCV1D9KXM3BQNR7T2F  A1
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-13T16:48:20.000Z#01K5A2QB3HN7WYP2GKD4RVXM8C  A2
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-06-21T14:30:00.000Z#01K5A2QH2WPB9NXK4TDMR6YFV3  A5
+O#01J7XQP4M2N8VBKD3RTYFW9GHC  2025-12-03T14:12:40.000Z#01K5A2QZT6HM3XKD8VBQNW4RFY  A11
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2011-03-02T19:44:10.000Z#01K5A2QF7NKD3VYB8MQXTG5HW9  A4
 ```
 
-Nine rows for **ten** assets, from twelve files. A2 and A3 each contribute two files
+Ten rows for **eleven** assets, from thirteen files. A2 and A3 each contribute two files
 and one row; A9 contributes none, because its `timelinePk` points at a different partition
 of this same index:
 
@@ -668,12 +707,13 @@ live partition.
 ## Histogram items (pattern 15)
 
 The `O#<ownerId>#HIST` partition, maintained by the same transactions that write the
-`timelinePk`/`timelineSk` above. Nine live assets, six days:
+`timelinePk`/`timelineSk` above. Ten live assets, seven days:
 
 ```text
 pk                                 sk              attributes
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  #META           version 9   total 9
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  #META           version 10  total 10
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2011-03-02    n 1          A4
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2025-12-03    n 1          A11
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-06-21    n 1          A5
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-14    n 3          A1, A2, A3
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-15    n 2          A6, A7
@@ -690,20 +730,23 @@ headers (which use the same offset rule) show A2 under 14 July alongside A1 and 
 
 **A9 is absent.** It was counted when created and decremented when trashed, in the
 same transaction that moved it to the `#TRASH` partition of `timeline_gsi`. `version`
-is 9 rather than 11 only because this sample is written as its end state; a real
-partition that had created and then trashed A9 would read `version 11, total 9`.
+is 10 rather than 12 only because this sample is written as its end state; a real
+partition that had created and then trashed A9 would read `version 12, total 10`.
 
 ## Place vocabulary items (pattern 16)
 
 The `O#<ownerId>#PLACES` partition, maintained by the same transactions as the histogram
-above. Three live located assets: A1 and A3 in Kyoto, A8 in Hokkaido.
+above. Four live located assets: A1 and A3 in Kyoto, A8 in Hokkaido, A11 in Stanley.
 
 ```text
 pk                                   sk          attributes
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  #META       version 3   total 3
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  #META       version 4   total 4
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#FK        n 1                                 A11
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#JP        n 3                                 A1, A3, A8
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#1857910   name Kyoto   regionName Kyoto
                                                  cc JP        n 2                    A1, A3
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#3426691   name Stanley
+                                                 cc FK        n 1                    A11
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.12     name Hokkaido   cc JP   n 1         A8
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.22     name Kyoto      cc JP   n 2         A1, A3
 ```
@@ -711,6 +754,10 @@ O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.22     name Kyoto      cc JP   n 2    
 **A9 is absent, though it was taken in Kyoto.** It was counted when created and
 decremented when trashed, in the same transaction that removed its facet keys. Kyoto's `n`
 is 2, not 3. As with the histogram, `version` is shown as the end state.
+
+**`L#3426691` has no `regionName`**, and there is no `R#FK…` row: Stanley has no region,
+so A11 counts towards `C#FK` and its town only. The attribute is absent rather than an
+empty string, and `GET /places` likewise leaves `regionName` out of that locality.
 
 **A6, A7 and A10 are absent for different reasons.** A6 and A7 have coordinates, but in
 `exifEnc`, which this partition never sees, and no place to count. A10 has no location at
@@ -746,7 +793,7 @@ are one query with a different `BETWEEN`.
 
 ## What to check while reading
 
-1. **Twelve files, ten assets, nine timeline rows.** A2 and A3 each contribute two
+1. **Thirteen files, eleven assets, ten timeline rows.** A2 and A3 each contribute two
    files and one row; A9 is trashed and contributes none. Nothing filters either case
    out — renditions never get timeline_gsi keys, and A9's point at a different partition.
 2. **A6 and A7 share a timestamp to the millisecond.** Only the ULID suffix separates
@@ -761,10 +808,11 @@ are one query with a different `BETWEEN`.
    so a facet query paints a grid with no second read.
 6. **`path` appears in exactly two places**: `R#` items and pointer items. Not on
    `#META`, not in facets, not in either GSI — which is what makes renaming cheap.
-7. **Location is split by precision.** A1, A3, A6, A7 and A8 all carry coordinates, but
-   only inside `exifEnc`. What's readable is the place: a town for A1/A3, a region for
-   A8, nothing for A6/A7 at sea. A10, stripped, has neither. Place keys are ids, so the
-   town and the region both called "Kyoto" never collide.
+7. **Location is split by precision.** A1, A3, A6, A7, A8 and A11 all carry
+   coordinates, but only inside `exifEnc`. What's readable is the place: a town for
+   A1/A3, a region for A8, a town with no region for A11, nothing for A6/A7 at sea.
+   A10, stripped, has neither. Place keys are ids, so the town and the region both
+   called "Kyoto" never collide.
 8. **Nothing in the media partitions references a `userId`.** Media hangs off
    `ownerId`; users reach it through a membership item. That's what would let a second
    person be added without touching a single photo row.
@@ -788,7 +836,7 @@ timeline_gsi's `INCLUDE` projection is what makes this a single round-trip.
   ScanIndexForward: false,
   Limit: 50
 }
-// → A10, A8, A7, A6, A3, A1, A2, A5, A4 — nine assets, never a rendition
+// → A10, A8, A7, A6, A3, A1, A2, A5, A11, A4 — ten assets, never a rendition
 ```
 
 Next page: pass back the previous response's `LastEvaluatedKey` verbatim.
@@ -823,7 +871,7 @@ July 2026 only (pattern 3) is the same query with a range condition:
   },
   ScanIndexForward: false
 }
-// → A8, A7, A6, A3, A1, A2 — the top six; A5 (June) and A4 (2011) fall outside
+// → A8, A7, A6, A3, A1, A2 — the top six; A5 (June), A11 (2025) and A4 (2011) fall outside
 ```
 
 Because the sort key is `<takenAt>#<photoId>`, `:to` needs no `#` suffix — every real
@@ -894,17 +942,17 @@ Query
   :pk                  O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST
 ```
 
-Returns the seven items above — `#META` first, because `#` sorts before `D`, so a
+Returns the eight items above — `#META` first, because `#` sorts before `D`, so a
 single forward query hands back the version before the days it describes. The handler
 turns them into:
 
 ```json
-{ "version": 9, "total": 9,
-  "days": { "2011-03-02": 1, "2026-06-21": 1, "2026-07-14": 3,
+{ "version": 10, "total": 10,
+  "days": { "2011-03-02": 1, "2025-12-03": 1, "2026-06-21": 1, "2026-07-14": 3,
             "2026-07-15": 2, "2026-07-16": 1, "2026-08-02": 1 } }
 ```
 
-served with `ETag: "tl-9"`. A client that already holds `"tl-9"` sends it back as
+served with `ETag: "tl-10"`. A client that already holds `"tl-10"` sends it back as
 `If-None-Match` and gets a bodiless 304 — for which the handler reads only the `#META`
 item, never the day rows. `GET /photos/bounds` shares the same ETag: both answers are
 functions of which photos are live, which is what `version` counts changes to.
@@ -957,14 +1005,16 @@ Two steps. First, fetch the vocabulary: one query on the `#PLACES` partition, ET
   KeyConditionExpression: "pk = :pk",
   ExpressionAttributeValues: { ":pk": "O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES" }
 }
-// → #META, C#JP, L#1857910, R#JP.12, R#JP.22 (zero-count rows filtered out)
+// → #META, C#FK, C#JP, L#1857910, L#3426691, R#JP.12, R#JP.22 (zero-count rows filtered out)
 ```
 
 The client folds the query and every name (NFKD, strip accents, lowercase): `kyo` →
 `kyo`; `Kyoto` → `kyoto`. It then matches on substrings, including each `cc` rendered as
 a country name in the viewer's locale. `kyo` returns two suggestions: "Kyoto · Japan · 2"
-(the town) and "Kyoto (region) · Japan · 2". `hok` returns "Hokkaido (region) · 1".
-`japon` under a French locale returns "Japon · 3".
+(the town) and "Kyoto (region) · Japan · 2". `hok` returns "Hokkaido (region) · Japan · 1".
+`japon` under a French locale returns "Japon · 3". `stan` returns "Stanley · Falkland
+Islands · 1": the `L#3426691` row has no `regionName`, so the suggestion names only the
+town and the country.
 
 Second, the chosen suggestion is an ordinary facet query:
 
@@ -981,6 +1031,8 @@ Second, the chosen suggestion is an ordinary facet query:
 ```js
 ":f": "O#01J7X…#F#REGION#JP.12"   // → A8
 ":f": "O#01J7X…#F#COUNTRY#JP"     // → A8, A3, A1
+":f": "O#01J7X…#F#PLACE#3426691"  // → A11, with no region to query it under
+":f": "O#01J7X…#F#COUNTRY#FK"     // → A11
 ```
 
 ### One photo (patterns 1, 1b, 1c)

@@ -22,6 +22,7 @@ import {
   postRestore,
 } from "./routes/photos";
 import { getFacetPage, getFacets } from "./routes/facets";
+import { getPlaces, putPhotoLocation } from "./routes/places";
 import { deleteAccount } from "./routes/account";
 import { deleteDeviceRoute, getDevices, patchDevice } from "./routes/devices";
 import { getSettings, patchSettings } from "./routes/settings";
@@ -74,11 +75,14 @@ export const routes: Record<string, RouteEntry> = {
   },
   "POST /photos/{photoId}/restore": { handler: postRestore, authMode: "owner" },
   "POST /photos/{photoId}/thumbs": { handler: postPhotoThumbs, authMode: "owner" },
+  "PUT /photos/{photoId}/location": { handler: putPhotoLocation, authMode: "owner" },
 
   "GET /trash": { handler: getTrash, authMode: "owner" },
 
   "GET /facets": { handler: getFacets, authMode: "owner" },
   "GET /facets/{type}/{value}": { handler: getFacetPage, authMode: "owner" },
+
+  "GET /places": { handler: getPlaces, authMode: "owner" },
 
   "GET /devices": { handler: getDevices, authMode: "owner" },
   "PATCH /devices/{deviceKey}": { handler: patchDevice, authMode: "owner" },

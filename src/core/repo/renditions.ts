@@ -1,7 +1,7 @@
 // Plan step 1.12 (continued) — rename and single-rendition deletion. Both are
 // bounded to one partition, per the "Deleting" and pointer sections of design.md.
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { ApiError } from "../errors";
+import { ApiError, cancelledWriteError } from "../errors";
 import { ddb, RESERVED_ATTRS, tableName } from "../db";
 import { facetSk, hashPtrPk, mediaPk, metaSk, pathPtrPk, ptrSk, renditionSk } from "../keys";
 import { roleOutranks } from "../paths";
@@ -47,10 +47,7 @@ export async function renameRendition(
   try {
     await ddb().send(new TransactWriteCommand({ TransactItems: items }));
   } catch (err) {
-    if (err instanceof Error && err.name === "TransactionCanceledException") {
-      throw ApiError.conflict("the new path is already in use");
-    }
-    throw err;
+    throw cancelledWriteError(err, "the new path is already in use") ?? err;
   }
 }
 
@@ -277,9 +274,11 @@ export async function replaceRenditionBytes(input: ReplaceRenditionInput): Promi
   try {
     await ddb().send(new TransactWriteCommand({ TransactItems: items }));
   } catch (err) {
-    if (err instanceof Error && err.name === "TransactionCanceledException") {
-      throw ApiError.conflict("that content already exists elsewhere, or the rendition changed underneath this request");
-    }
-    throw err;
+    throw (
+      cancelledWriteError(
+        err,
+        "that content already exists elsewhere, or the rendition changed underneath this request",
+      ) ?? err
+    );
   }
 }

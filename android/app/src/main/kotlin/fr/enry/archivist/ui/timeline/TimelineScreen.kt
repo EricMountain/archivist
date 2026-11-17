@@ -83,6 +83,7 @@ import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentUiState
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.onboarding.PermissionOnboardingScreen
+import fr.enry.archivist.ui.search.SearchScreen
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.LocalDate
 import androidx.compose.runtime.snapshotFlow
@@ -411,6 +412,15 @@ fun TimelineScreen(
             return@PermissionOnboardingScreen
         }
 
+        // Geolocation plan step 8: place search, the same plain-toggle pattern. It hosts
+        // its own DetailScreen for a tapped result, so its query and results survive that
+        // round trip.
+        var showSearch by remember { mutableStateOf(false) }
+        if (showSearch) {
+            SearchScreen(onBack = { showSearch = false }, modifier = padded)
+            return@PermissionOnboardingScreen
+        }
+
         // The grid is edge to edge and immersive only while it is CONTENT; the spinner,
         // error and empty states keep their normal bars, so the menu button clears them.
         val cutoutTop = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
@@ -433,9 +443,9 @@ fun TimelineScreen(
                 onCommit = viewModel::onJumpCommitted,
                 modifier = Modifier.fillMaxSize(),
             )
-            // A floating 3-dot menu rather than a bare "Settings" button — for consistency
-            // with DetailScreen's own top bar (plan step 2.12's repair/delete menu), even
-            // though Settings is currently its only entry. A text glyph: the project has
+            // A floating 3-dot menu rather than bare buttons — for consistency with
+            // DetailScreen's own top bar (plan step 2.12's repair/delete menu). Search and
+            // Settings are its entries. A text glyph: the project has
             // no material-icons dependency.
             var showMenu by remember { mutableStateOf(false) }
             Box(Modifier.align(Alignment.TopEnd).padding(top = topInset + MENU_MARGIN, end = MENU_MARGIN)) {
@@ -451,6 +461,13 @@ fun TimelineScreen(
                     Text("⋮", style = MaterialTheme.typography.titleLarge)
                 }
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Search") },
+                        onClick = {
+                            showMenu = false
+                            showSearch = true
+                        },
+                    )
                     DropdownMenuItem(
                         text = { Text("Settings") },
                         onClick = {
@@ -748,7 +765,7 @@ private fun TimelinePhotoGrid(
  * that's missing it — e.g. a plain-attach rendition, which (per plan step 1.9's own
  * known gap) never gets thumbnails uploaded at all, leaving [PhotoEntity.thumbs] empty. */
 @Composable
-private fun PhotoCell(
+internal fun PhotoCell(
     photo: PhotoEntity,
     host: String?,
     playPreview: Boolean,
@@ -789,7 +806,7 @@ private fun PhotoCell(
 }
 
 @Composable
-private fun PlaceholderCell(onClick: (() -> Unit)? = null) {
+internal fun PlaceholderCell(onClick: (() -> Unit)? = null) {
     Box(
         Modifier
             .fillMaxWidth()

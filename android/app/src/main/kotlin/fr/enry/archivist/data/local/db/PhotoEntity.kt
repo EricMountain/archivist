@@ -33,7 +33,8 @@ enum class AssetStatus {
 /**
  * The timeline cache — mirrors `timeline_gsi`'s own projection (`design.md`'s
  * `Projection: INCLUDE [thumbs, preview, encDek, encKeyId, width, height, mime,
- * tzOffsetMin, status]`) plus [photoId] and [takenAt], both recovered server-side from the GSI key
+ * tzOffsetMin, status, place]`, with `place` flattened into [placeCc]/[placeName]/
+ * [placeKey]) plus [photoId] and [takenAt], both recovered server-side from the GSI key
  * (`pk` / `timelineSk`) rather than projected as their own attributes — see `dto.ts`.
  * `path`/`stem` are deliberately absent, matching the server projection: the grid
  * doesn't need them.
@@ -62,6 +63,15 @@ data class PhotoEntity(
      * object (its own AAD, [fr.enry.archivist.crypto.ObjectRef.Preview]) and deliberately
      * not one of the [thumbs] rungs. `null` for stills and for videos without one. */
     val preview: ThumbEntry? = null,
+    /** `#META.place.cc` (design.md "Location"), or `null` when the photo has no `place`. */
+    val placeCc: String? = null,
+    /** What the timeline's date bubble shows: the locality's name, else the region's,
+     * else `null` (a country-only place, or none). */
+    val placeName: String? = null,
+    /** The id behind [placeName] (GeoNames locality id, else admin1 key like `JP.22`),
+     * which the bubbles compare to tell one place from the next — names collide, ids
+     * don't. `null` exactly when [placeName] is. */
+    val placeKey: String? = null,
 )
 
 /** [TimelinePagingSource]'s own paging key — the anchor item's own `takenAt#photoId`
@@ -82,8 +92,8 @@ interface PhotoDao {
      * sidesteps the whole exception-parsing path — SQLite resolves the conflict itself. */
     @Query(
         """
-        INSERT INTO photos (photoId, takenAt, tzOffsetMin, mime, width, height, status, thumbs, encDek, encKeyId, preview)
-        VALUES (:photoId, :takenAt, :tzOffsetMin, :mime, :width, :height, :status, :thumbs, :encDek, :encKeyId, :preview)
+        INSERT INTO photos (photoId, takenAt, tzOffsetMin, mime, width, height, status, thumbs, encDek, encKeyId, preview, placeCc, placeName, placeKey)
+        VALUES (:photoId, :takenAt, :tzOffsetMin, :mime, :width, :height, :status, :thumbs, :encDek, :encKeyId, :preview, :placeCc, :placeName, :placeKey)
         ON CONFLICT(photoId) DO UPDATE SET
             takenAt = excluded.takenAt,
             tzOffsetMin = excluded.tzOffsetMin,
@@ -94,7 +104,10 @@ interface PhotoDao {
             thumbs = excluded.thumbs,
             encDek = excluded.encDek,
             encKeyId = excluded.encKeyId,
-            preview = excluded.preview
+            preview = excluded.preview,
+            placeCc = excluded.placeCc,
+            placeName = excluded.placeName,
+            placeKey = excluded.placeKey
         """,
     )
     suspend fun upsertOne(
@@ -109,6 +122,19 @@ interface PhotoDao {
         encDek: String,
         encKeyId: String,
         preview: ThumbEntry?,
+        placeCc: String?,
+        placeName: String?,
+        placeKey: String?,
+    )
+
+    /** Geolocation plan step 9's "Update location": the place half of a row, without
+     * touching the rest. A no-op for a photo not in the cache (e.g. a search result). */
+    @Query("UPDATE photos SET placeCc = :placeCc, placeName = :placeName, placeKey = :placeKey WHERE photoId = :photoId")
+    suspend fun setPlace(
+        photoId: String,
+        placeCc: String?,
+        placeName: String?,
+        placeKey: String?,
     )
 
     @Transaction
@@ -126,6 +152,9 @@ interface PhotoDao {
                 photo.encDek,
                 photo.encKeyId,
                 photo.preview,
+                photo.placeCc,
+                photo.placeName,
+                photo.placeKey,
             )
         }
     }

@@ -21,16 +21,23 @@ import fr.enry.archivist.data.remote.DiscoveryDocument
 import fr.enry.archivist.data.remote.KeyWrapDto
 import fr.enry.archivist.data.remote.KeysResponse
 import fr.enry.archivist.data.remote.SettingsResponse
+import fr.enry.archivist.data.remote.TransactionConflictRetry
+import fr.enry.archivist.domain.ExifBlob
+import fr.enry.archivist.domain.FileGazetteerSource
+import fr.enry.archivist.domain.ReverseGeocoder
 import fr.enry.archivist.sync.LocationStripper
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
 import fr.enry.archivist.testutil.FakeMediaStoreSource
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import fr.enry.archivist.testutil.FakePreviewGenerator
 import fr.enry.archivist.testutil.FakeThumbnailer
+import fr.enry.archivist.testutil.FakeVideoLocationReader
 import fr.enry.archivist.testutil.SyntheticMp4
 import java.io.File
 import java.nio.file.Files
 import java.util.Base64
+import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -63,6 +70,7 @@ class UploadRepositoryTest {
     private lateinit var uploadEvents: UploadEvents
     private lateinit var repository: UploadRepository
     private val previewGenerator = FakePreviewGenerator()
+    private lateinit var videoLocationReader: FakeVideoLocationReader
 
     private val json = Json { ignoreUnknownKeys = true }
     private val host = "photos.example.com"
@@ -77,6 +85,15 @@ class UploadRepositoryTest {
 
     /** Set by a test before calling [uploadOne] to control `POST /uploads`'s response. */
     private var uploadResponseBody: String = ""
+
+    /** Answered, in order, to the default dispatcher's `POST /uploads` before it falls
+     * back to [uploadResponseBody]; [uploadPosts] counts every such request. */
+    private val uploadFailures = ConcurrentLinkedDeque<MockResponse>()
+    private val uploadPosts = AtomicInteger()
+
+    private fun transactionConflict(): MockResponse =
+        MockResponse().setResponseCode(409)
+            .setBody("""{"error":"another write to the same items was in progress; retry","code":"TRANSACTION_CONFLICT"}""")
 
     /** Plan step 2.18: backs every dispatcher's `GET /api/settings` response — off by
      * default, same as `stripLocationOnUpload`'s own server-side default. */
@@ -113,7 +130,10 @@ class UploadRepositoryTest {
                                     ),
                                 ),
                             )
-                        path == "/api/uploads" -> MockResponse().setResponseCode(200).setBody(uploadResponseBody)
+                        path == "/api/uploads" -> {
+                            uploadPosts.incrementAndGet()
+                            uploadFailures.poll() ?: MockResponse().setResponseCode(200).setBody(uploadResponseBody)
+                        }
                         else -> MockResponse().setResponseCode(200)
                     }
                 }
@@ -164,6 +184,8 @@ class UploadRepositoryTest {
                 locationStripper = locationStripper,
                 baseOkHttpClient = OkHttpClient.Builder().build(),
                 uploadEvents = uploadEvents,
+                videoLocationReader = FakeVideoLocationReader(mediaStoreSource).also { videoLocationReader = it },
+                reverseGeocoder = geocoder,
             )
     }
 
@@ -504,6 +526,54 @@ class UploadRepositoryTest {
             val outcome = repository.uploadOne(queueId)
 
             assertTrue(outcome is UploadOutcome.PermanentFailure)
+            assertEquals(UploadState.FAILED, db.uploadQueueDao().getById(queueId)!!.state)
+        }
+
+    @Test
+    fun `a 409 TRANSACTION_CONFLICT is resent in place and the upload completes`() =
+        runTest {
+            connectInstance()
+            val queueId = queueRow()
+            uploadResponseBody = """{"photoId":"p1","renditionId":"r1","duplicate":true}"""
+            repeat(2) { uploadFailures += transactionConflict() }
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Success, outcome)
+            assertEquals(3, uploadPosts.get())
+            val row = db.uploadQueueDao().getById(queueId)!!
+            assertEquals(UploadState.DONE, row.state)
+            assertEquals(0, row.attempts)
+        }
+
+    @Test
+    fun `a TRANSACTION_CONFLICT that outlasts the attempts ends like a 500, not FAILED`() =
+        runTest {
+            connectInstance()
+            val queueId = queueRow()
+            repeat(10) { uploadFailures += transactionConflict() }
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertEquals(UploadOutcome.Retry, outcome)
+            assertEquals(TransactionConflictRetry.DEFAULT.maxAttempts, uploadPosts.get())
+            val row = db.uploadQueueDao().getById(queueId)!!
+            assertEquals(UploadState.UPLOADING, row.state) // same as the 500 case below
+            assertEquals(1, row.attempts)
+            assertTrue(row.lastError!!.contains("409"), row.lastError)
+        }
+
+    @Test
+    fun `a plain 409, as an older server sends for every conflict, still fails permanently`() =
+        runTest {
+            connectInstance()
+            val queueId = queueRow()
+            uploadFailures += MockResponse().setResponseCode(409).setBody("""{"error":"stem, path or content hash already claimed"}""")
+
+            val outcome = repository.uploadOne(queueId)
+
+            assertTrue(outcome is UploadOutcome.PermanentFailure)
+            assertEquals(1, uploadPosts.get())
             assertEquals(UploadState.FAILED, db.uploadQueueDao().getById(queueId)!!.state)
         }
 
@@ -858,6 +928,191 @@ class UploadRepositoryTest {
             val plaintext = decryptOriginal("video-orig-2", "rv2")
             assertTrue(String(plaintext, Charsets.ISO_8859_1).contains("loci"))
         }
+
+    // ------------------------------------------------------------------
+    // Geolocation plan step 5: coordinates go into the encrypted ExifBlob, the
+    // on-device geocoded place into POST /uploads. No coordinates, no place: a
+    // stripped copy, a redacted (zeroed) GPS block and stripLocationOnUpload all
+    // send neither.
+    // ------------------------------------------------------------------
+
+    private fun sentUpload(): Map<String, JsonElement> =
+        json.decodeFromString<Map<String, JsonElement>>(String(recordedBodies["/api/uploads"]!!))
+
+    /** The ExifBlob this request encrypted, or null when it sent no `exifEnc`. */
+    private fun sentExifBlob(): ExifBlob? {
+        val sent = sentUpload()
+        if (!sent.containsKey("exifEnc")) return null
+        val dek = masterKey.unwrapDek(decode(sent.string("encDek")))
+        val plaintext =
+            WholeObjectCipher.decrypt(dek, decode(sent.string("exifIv")), Aad.of(sent.string("photoId"), ObjectRef.Exif), decode(sent.string("exifEnc")))
+        return json.decodeFromString(ExifBlob.serializer(), String(plaintext))
+    }
+
+    private suspend fun queueFixture(
+        name: String,
+        uri: String,
+    ): Long = queueVideoRow(uri, name, "hmac-sha256:$name", exifFixtureBytes(name))
+
+    /** A real QuickTime `©xyz` payload: u16 length, u16 language, then the string. */
+    private fun videoWithLocation(iso6709: String): ByteArray {
+        val text = iso6709.toByteArray(Charsets.US_ASCII)
+        val payload = byteArrayOf((text.size shr 8).toByte(), text.size.toByte(), 0x15, 0xC7.toByte()) + text
+        return SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox(SyntheticMp4.box("©xyz", payload))))
+    }
+
+    private val kyotoPlaceJson =
+        """{"cc":"JP","region":{"id":"JP.22","name":"Kyoto"},"locality":{"id":"1857910","name":"Kyoto"},"src":"geonames-cities500@2026-11-13"}"""
+
+    @Test
+    fun `a GPS-tagged JPEG sends its place and puts its coordinates in exifEnc`() =
+        runTest {
+            connectInstance()
+            val queueId = queueFixture("kyoto-gps.jpg", "content://media/gps-1")
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertEquals(json.parseToJsonElement(kyotoPlaceJson), sentUpload()["place"])
+            val blob = sentExifBlob()!!
+            assertEquals(35.01161, blob.gpsLat!!, 1e-9)
+            assertEquals(135.76804, blob.gpsLon!!, 1e-9)
+            assertEquals(12.5, blob.gpsAltM!!, 1e-9)
+            assertEquals("Pixel 8a", blob.cameraModel)
+        }
+
+    @Test
+    fun `a stripped copy of the same JPEG sends no place and no coordinates`() =
+        runTest {
+            connectInstance()
+            val queueId = queueFixture("kyoto-gps-stripped.jpg", "content://media/gps-2")
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertFalse(sentUpload().containsKey("place"))
+            val blob = sentExifBlob()!! // camera tags survive the strip
+            assertNull(blob.gpsLat)
+            assertNull(blob.gpsLon)
+            assertNull(blob.gpsAltM)
+            assertNull(blob.gpsDateTimeUtc)
+        }
+
+    @Test
+    fun `a zeroed GPS block, as a read without ACCESS_MEDIA_LOCATION gives, sends neither`() =
+        runTest {
+            connectInstance()
+            val queueId = queueFixture("gps-zeroed.jpg", "content://media/gps-3")
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertFalse(sentUpload().containsKey("place"))
+            assertNull(sentExifBlob()!!.gpsLat)
+        }
+
+    @Test
+    fun `stripLocationOnUpload on sends no place and no coordinates, even for a file it can't strip`() =
+        runTest {
+            connectInstance()
+            stripLocationEnabled = true
+            // A RAW-like extension LocationStripper has no mechanism for: the original keeps
+            // its GPS (a known gap, design.md "Scope"), but nothing derived from it is sent.
+            val queueId = queueVideoRow("content://media/gps-4", "IMG_4.dng", "hmac-sha256:gps-4", exifFixtureBytes("kyoto-gps.jpg"))
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertFalse(sentUpload().containsKey("place"))
+            val blob = sentExifBlob()!!
+            assertNull(blob.gpsLat)
+            assertNull(blob.gpsLon)
+        }
+
+    @Test
+    fun `a video's ISO 6709 location is geocoded and sent as a coordinates-only exifEnc`() =
+        runTest {
+            connectInstance()
+            val queueId = queueVideoRow("content://media/vgps-1", "clip.mp4", "hmac-sha256:vgps-1", videoWithLocation("+35.0116+135.7681+012.5/"))
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertEquals(json.parseToJsonElement(kyotoPlaceJson), sentUpload()["place"])
+            val blob = sentExifBlob()!!
+            assertEquals(ExifBlob(gpsLat = 35.0116, gpsLon = 135.7681, gpsAltM = 12.5), blob)
+            assertEquals(listOf("content://media/vgps-1" to null), videoLocationReader.reads)
+        }
+
+    @Test
+    fun `a video with stripLocationOnUpload on sends no place and no coordinates`() =
+        runTest {
+            connectInstance()
+            stripLocationEnabled = true
+            val queueId = queueVideoRow("content://media/vgps-2", "clip2.mp4", "hmac-sha256:vgps-2", videoWithLocation("+35.0116+135.7681/"))
+            server.dispatcher = createEchoDispatcher(renditionId = "rv9", mediaPathSuffix = "vgps-orig")
+
+            assertEquals(UploadOutcome.Success, repository.uploadOne(queueId))
+
+            assertFalse(sentUpload().containsKey("place"))
+            assertNull(sentExifBlob())
+            // And the copy that was uploaded has no location left for anything to read.
+            assertFalse(String(decryptOriginal("vgps-orig", "rv9"), Charsets.ISO_8859_1).contains("©xyz"))
+        }
+
+    @Test
+    fun `a video with no location sends neither`() =
+        runTest {
+            connectInstance()
+            val videoBytes = SyntheticMp4.file(SyntheticMp4.moovBox(SyntheticMp4.udtaBox()))
+            val queueId = queueVideoRow("content://media/vgps-3", "clip3.mp4", "hmac-sha256:vgps-3", videoBytes)
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertFalse(sentUpload().containsKey("place"))
+            assertNull(sentExifBlob())
+        }
+
+    @Test
+    fun `open sea sends the coordinates but no place`() =
+        runTest {
+            connectInstance()
+            val queueId = queueVideoRow("content://media/vgps-4", "clip4.mp4", "hmac-sha256:vgps-4", videoWithLocation("+30.0000-040.0000/"))
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertFalse(sentUpload().containsKey("place"))
+            assertEquals(ExifBlob(gpsLat = 30.0, gpsLon = -40.0), sentExifBlob())
+        }
+
+    @Test
+    fun `a locality with no region is sent as-is, town name included`() =
+        runTest {
+            connectInstance()
+            // Stanley, Falkland Islands: GeoNames has no admin1 region for it, and the server
+            // accepts a locality without a region (design.md "Location", "Validation").
+            val queueId = queueVideoRow("content://media/vgps-5", "clip5.mp4", "hmac-sha256:vgps-5", videoWithLocation("-51.69382-057.85701/"))
+            uploadResponseBody = """{"skipped":true}"""
+
+            repository.uploadOne(queueId)
+
+            assertEquals(
+                json.parseToJsonElement(
+                    """{"cc":"FK","locality":{"id":"3426691","name":"Stanley"},"src":"geonames-cities500@2026-11-13"}""",
+                ),
+                sentUpload()["place"],
+            )
+        }
+
+    private companion object {
+        /** The real bundled gazetteer, located by the system property `app/build.gradle.kts`
+         * sets for `ReverseGeocoderTest`. */
+        val geocoder by lazy {
+            ReverseGeocoder(FileGazetteerSource(File(requireNotNull(System.getProperty("archivist.gazetteer.bin")))))
+        }
+    }
 }
 
 private fun Map<String, JsonElement>.string(key: String): String = getValue(key).jsonPrimitive.content

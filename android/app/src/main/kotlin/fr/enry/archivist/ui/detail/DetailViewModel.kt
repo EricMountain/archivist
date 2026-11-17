@@ -7,6 +7,8 @@ import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.repo.DeleteMode
 import fr.enry.archivist.data.repo.DeleteOutcome
 import fr.enry.archivist.data.repo.DeleteRepository
+import fr.enry.archivist.data.repo.LocationUpdateOutcome
+import fr.enry.archivist.data.repo.LocationUpdateRepository
 import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.PhotoDetailRepository
 import fr.enry.archivist.data.repo.PhotoRepository
@@ -95,6 +97,24 @@ sealed interface RotateUiState {
     data class Error(val message: String) : RotateUiState
 }
 
+/** The "Update location" menu action's state (geolocation plan step 9), keyed by nothing,
+ * like [TakenAtUiState]: one update at a time. */
+sealed interface LocationUiState {
+    data object Idle : LocationUiState
+
+    data object InProgress : LocationUiState
+
+    data object Updated : LocationUiState
+
+    /** Coordinates found and saved, but no place within the geocoder's range (a photo
+     * taken at sea, say): the detail shows coordinates only. */
+    data object NoPlaceNearby : LocationUiState
+
+    data object NoLocation : LocationUiState
+
+    data class Error(val message: String) : LocationUiState
+}
+
 /** One photo's detail fetch/decrypt, keyed by photoId in [DetailViewModel.details] —
  * a page the pager has already scrolled past keeps whatever it last had rather than
  * reverting to [Loading] on every swipe back. */
@@ -154,6 +174,7 @@ class DetailViewModel
         private val repairRepository: RepairRepository,
         private val takenAtRepository: TakenAtRepository,
         private val rotateRepository: RotateRepository,
+        private val locationUpdateRepository: LocationUpdateRepository,
         instanceStore: InstanceStore,
         @ApplicationContext private val context: Context,
     ) : ViewModel() {
@@ -363,5 +384,42 @@ class DetailViewModel
 
         fun dismissRotate() {
             _rotateState.value = RotateUiState.Idle
+        }
+
+        private val _locationState = MutableStateFlow<LocationUiState>(LocationUiState.Idle)
+        val locationState: StateFlow<LocationUiState> = _locationState.asStateFlow()
+
+        /** Whether "Update location" is offered: false (hidden) until [refreshLocationAvailability]
+         * has read the owner's setting, and while `stripLocationOnUpload` is on (strip-on
+         * wins, design.md "Location"). */
+        private val _locationAvailable = MutableStateFlow(false)
+        val locationAvailable: StateFlow<Boolean> = _locationAvailable.asStateFlow()
+
+        fun refreshLocationAvailability() {
+            viewModelScope.launch { _locationAvailable.value = locationUpdateRepository.isAvailable() }
+        }
+
+        /** Runs [LocationUpdateRepository.updateLocation] and, on success, swaps in the
+         * refreshed detail it returns (same reason as [editTakenAt]'s refetch). */
+        fun updateLocation(detail: PhotoDetail) {
+            _locationState.value = LocationUiState.InProgress
+            viewModelScope.launch {
+                _locationState.value =
+                    when (val outcome = locationUpdateRepository.updateLocation(detail)) {
+                        is LocationUpdateOutcome.Updated -> {
+                            _details.update { it + (detail.photoId to PhotoDetailUiState.Loaded(outcome.detail)) }
+                            if (outcome.detail.place == null) LocationUiState.NoPlaceNearby else LocationUiState.Updated
+                        }
+                        is LocationUpdateOutcome.NoLocation -> {
+                            _details.update { it + (detail.photoId to PhotoDetailUiState.Loaded(outcome.detail)) }
+                            LocationUiState.NoLocation
+                        }
+                        is LocationUpdateOutcome.Error -> LocationUiState.Error(outcome.message)
+                    }
+            }
+        }
+
+        fun dismissLocation() {
+            _locationState.value = LocationUiState.Idle
         }
     }

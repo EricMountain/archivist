@@ -62,23 +62,34 @@ There is no third-party SDK in the app that transmits anything.
 
 ### Location — yes, and neither encryption nor self-hosting changes that
 
-Photos carry GPS coordinates in EXIF, and the app reads them: to derive the UTC offset
-when a camera records no `OffsetTimeOriginal`. That is collection of **precise
-location**, and it must be declared even though the user never grants a location
-permission and the app never reads the device's GPS.
+Photos carry GPS coordinates in EXIF (videos in their container), and the app reads
+them: to derive the UTC offset when a camera records no `OffsetTimeOriginal`, and to
+work out the approximate place a photo was taken. Both the coordinates and the place
+are uploaded. That is collection of **precise location**, and it must be declared even
+though the user never grants a location permission and the app never reads the device's
+GPS.
 
-The EXIF blob is encrypted client-side and goes only to the user's own server, so
-neither the developer nor the server can read those coordinates. **This still does not
-make the answer "no."** Collection is transmission off the device, regardless of who
-receives it or who can read it — the same reason photos are declared despite being
-ciphertext.
+The coordinates go into the EXIF blob, which is encrypted client-side and goes only to
+the user's own server. The server can read the approximate place (town, region,
+country) but not the exact coordinates, which stay encrypted. Place names are computed
+on the device from a bundled GeoNames dataset, with no network call: no location is
+sent to any geocoding or mapping service. **This still does not make the answer "no."**
+Collection is transmission off the device, regardless of who receives it or who can
+read it — the same reason photos are declared despite being ciphertext.
 
-Approximate location is declared alongside precise, since a coordinate trivially yields
-one.
+Approximate location is declared alongside precise. It always was, since a coordinate
+trivially yields one; now the app also uploads it explicitly, as the readable place.
+
+Tapping a location on the photo detail screen opens a maps app the user picks, at the
+photo's coordinates. That is a user-initiated hand-off to another app on the device
+(an Android `geo:` intent), not a transmission by Archivist, so it isn't "sharing" in
+the form's sense; with no maps app installed, the app copies the coordinates rather
+than falling back to a web map.
 
 This is gated by `ACCESS_MEDIA_LOCATION`, a runtime permission a user can deny per
 device (see `docs/design/android.md`'s "Runtime permissions") — denying it means this
-particular device never reads real GPS at all, so nothing to collect from it. That's a
+particular device never reads real GPS at all, so it has no coordinates or place to
+upload. That's a
 per-user, per-device fact the Data Safety form has no field for; it doesn't change the
 app-level "Yes" answer above, which describes what the app does when a user does allow
 it.

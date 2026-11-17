@@ -286,7 +286,8 @@ exifEnc      <b64>                       # the EXIF blob, encrypted with this as
 exifIv       <b64>                       # DEK. Contains GPS — see "Encrypted EXIF"
 place        { cc, region: {id, name},   # approximate location, plaintext. Absent if no
                locality: {id, name},     # GPS, location stripped, or nowhere near a
-               src }                     # named place. See "Location"
+               src }                     # named place. region and locality optional;
+                                         # a locality can lack a region. See "Location"
 groupSrc     stem | manual               # how the renditions came to be grouped
 status       ready | processing | failed # orthogonal to deletion
 deletedAt    (absent unless trashed)     # UTC; presence is the trash flag
@@ -573,6 +574,12 @@ in, plus a `#META` item:
 | `R#<admin1 key>` | `name`, `cc`, `n` | A region |
 | `L#<geonameid>` | `name`, `regionName`, `cc`, `n` | A town |
 
+`regionName` is absent (not an empty string) for a town with no GeoNames admin1 region,
+such as Stanley in the Falklands — see "Location", "Validation". Such a town also has no
+`R#` row; the photo counts towards `C#` and `L#` only. The display attributes on a
+shared `R#`/`L#` row are the last counted-in writer's, so a town re-geocoded without a
+region has its `regionName` removed, not left stale.
+
 **Why it exists.** Place search has to match *part of a name*, case- and
 accent-insensitively ("kyo", "quebec" for Québec). DynamoDB can't do that against an
 index key, and a filtered scan of the timeline reads the whole library per search. An
@@ -588,7 +595,29 @@ photos and is updated inside the transactions that already maintain `O#<ownerId>
 `PUT /photos/{photoId}/location`, which moves a photo from its old place's counters to
 the new one. A place whose `n` reaches 0 keeps a zero-valued item and is filtered out on
 read. Account deletion removes the partition. `tools/backfill-places.mjs` rebuilds it
-from `facet_gsi`, overwriting rather than adding, as `backfill-histogram` does.
+from the live assets' own `#META.place` (enumerated via `timeline_gsi`; `facet_gsi`
+carries only ids, not the names the rows need), overwriting rather than adding, as
+`backfill-histogram` does. Its dry run prints the per-row difference against what is
+stored, so "0 differences" is the no-drift check.
+
+The transactions that move these counts also condition the `#META` update on `place`
+being what was read (trash, restore, `PUT …/location`) or still absent (an attach
+filling it), so a concurrent location change aborts with a 409 instead of moving the
+wrong place's counters.
+
+**Counter rows are contended items.** Every create (and attach with a place), trash,
+restore, `takenAt` correction and location change writes the same `HIST` `#META` row and,
+for a located photo, the same `PLACES` `#META`/`C#`/`R#`/`L#` rows. DynamoDB cancels a
+transaction that touches an item another transaction is writing at that moment
+(`TransactionConflict`), so a client uploading several files at once sees occasional
+cancellations even though nothing is wrong. These are told apart from genuine
+conflicts: the server returns `409` with `code: "TRANSACTION_CONFLICT"` when every
+cancellation reason is `TransactionConflict` (`cancelledWriteError` in
+`src/core/errors.ts`), and the client resends the same request with capped, jittered
+exponential backoff (api.md "Errors"). A `POST /uploads` whose create transaction is
+cancelled this way does not fall through to the "stem already claimed, attach instead"
+path. Sharding the counters would remove the contention rather than retry through it;
+it isn't needed at one owner's upload rate.
 
 ## facet_gsi (queries 4, 5)
 
@@ -925,12 +954,19 @@ that is a separate, additive decision.
 **Geocoding happens on the device, at upload.** The platform `android.location.Geocoder`
 is ruled out: on most devices it is backed by a network service, which would send every
 photo's coordinates to a third party. Instead, the app bundles a gazetteer built from
-GeoNames (`cities500`: about 185k populated places with population over 500, or
+GeoNames (`cities500`: about 237k places — population over 500, or
 administrative seats down to PPLA4; plus `admin1CodesASCII` and `countryInfo`; CC BY 4.0,
-credited on the About screen). The lookup is nearest populated place by haversine
+credited on the About screen). Every row is kept, including GeoNames' ~10.8k "section of
+a populated place" rows (`PPLX`). In big cities this labels a photo with its district
+("Paris 04 Hôtel-de-Ville") rather than the city, and a city's photos split across
+several places. The user chose this on 2026-11-13 for the finer labels, over dropping
+`PPLX` to get one place per city. Substring search still finds all of a city's districts
+under its name. The lookup is nearest populated place by haversine
 distance over a 1°×1° cell grid, with longitude wrapped at ±180°:
 
-* **Nearest place ≤ 25 km:** the full `place` (country, region, town).
+* **Nearest place ≤ 25 km:** the full `place` (country, region, town). The region is
+  missing when GeoNames has no admin1 for that place (458 places in 66 countries and
+  territories); the result is then `{cc, locality}`.
 * **≤ 100 km:** `cc` and `region` only; naming a town that far off would mislead.
 * **Further, e.g. open sea:** no `place`. The detail screen shows the coordinates.
 
@@ -956,12 +992,29 @@ rest of the extracted metadata. `POST /uploads` and `PUT /photos/{photoId}/locat
 that:
 
 * `cc` matches `^[A-Z]{2}$`;
-* the region id matches `^[A-Z]{2}\.[0-9A-Z]{1,20}$` and its prefix equals `cc`;
+* the region id, when there is a region, matches `^[A-Z]{2}\.[0-9A-Z]{1,20}$` and its
+  prefix equals `cc`;
 * the locality id matches `^[0-9]{1,12}$`;
 * names are 1–200 characters with no control characters;
 * `src` is at most 64 characters.
 
 The server can't check `place` against the coordinates, which it never sees.
+
+A `locality` may come without a `region`. 458 `cities500` places in 66 countries and
+territories (Stanley in the Falklands, most of Lesotho) have no GeoNames admin1, so the
+conforming lookup returns `{cc, locality}` for them. Requiring a region would force
+clients to drop the town, or the gazetteer to invent a region. Such a place writes
+`F#COUNTRY#` and `F#PLACE#` facets and no `F#REGION#`, and its `L#` vocabulary row has no
+`regionName`. Decided by the user on 2026-11-13 (open question 6(d)).
+
+**Coordinates.** Stills: EXIF `GPSLatitude`/`GPSLongitude` with their refs (all four,
+or none), and `GPSAltitude` only with `GPSAltitudeRef`. Video: the container's ISO 6709
+string (`MediaMetadataRetriever.METADATA_KEY_LOCATION` on Android; the keys+ilst entry,
+`©xyz` or `loci` in the importer), decimal-degree form only. A non-finite or out-of-range
+value is no location, and so is exactly (0, 0): that is what a placeholder or a redacted
+GPS block (a read without `ACCESS_MEDIA_LOCATION`) decodes to, never a real fix in
+practice. With `stripLocationOnUpload` on, a client discards any coordinates outright,
+which also covers a file type it has no stripper for.
 
 **Ingest precedence.** `place` is set when an asset is created. A later-attaching rendition
 fills it only if the asset has none ("improve, never replace", as with `takenAt`). For a
@@ -979,7 +1032,10 @@ laptop):
    carries a re-encrypted `exifEnc` with the coordinates added, so the original is never
    needed again.
 
-No coordinates anywhere means `place: null`, which clears a stale place. The whole-library
+No coordinates anywhere means `place: null`, which clears a stale place. An original the
+tool can't read is an error, not "no coordinates", so it never clears anything: the
+laptop script reads JPEG, HEIC/HEIF and MP4/MOV originals but not RAW, so a RAW-primary
+asset with nothing in `exifEnc` is reported as an error. The whole-library
 run is a laptop script rather than an in-app worker because it can reach every asset's
 original, not only the ones still on the phone. It runs on mains power and a fast network,
 and it reuses `tools/import-from-local`'s existing authenticated, key-holding client.
@@ -1080,7 +1136,8 @@ produces them.
 **Settings copy.** The toggle's own description must say plainly that the *original on
 this device is never touched* — only the uploaded copy has its location removed —
 since "strip location" read the other way sounds like it edits the photo in the
-gallery app. Get this wrong and either an owner is needlessly afraid to turn it on, or
+gallery app. It must also say that the switch affects future uploads only, so places
+already stored for earlier photos stay (see "Location", "Strip-on wins"). Get this wrong and either an owner is needlessly afraid to turn it on, or
 one who wanted their on-device copy scrubbed too is misled into thinking this setting
 did that.
 
@@ -2088,3 +2145,14 @@ see "Manually correcting `takenAt`" above, which is exactly this.
      `tzSrc` value and a place in the ladder.
    * (c) **Removing stored locations** in bulk, for an owner who turns
      `stripLocationOnUpload` on after places were already stored.
+   * (d) **A town with no region (found 2026-11-13, plan step 5). Resolved
+     2026-11-13 by the user's decision: the server accepts a `locality` without a
+     `region`**, the `L#` row carries no `regionName`, and both clients send the lookup
+     result as-is. See "Location", "Validation". The original problem: `POST /uploads`
+     rejected a `locality` without a `region`, but 458 `cities500` places (66 countries
+     and territories, e.g. Stanley in the Falklands, most of Lesotho) have no GeoNames
+     admin1, so the conforming lookup gives them `{cc, locality}`. Both clients
+     sent such a place as `{cc}` only, so the upload succeeded but the town was
+     lost. Options were: let the server accept a locality without a region (the `L#`
+     vocabulary row would carry no `regionName`), or have the gazetteer give such
+     places a synthetic per-country region. Either changes the vectors or the API.

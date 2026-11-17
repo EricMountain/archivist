@@ -113,6 +113,9 @@ class DeleteRepositoryTest {
             encDek = "dek",
             encKeyId = "mk-1",
             preview = null,
+            placeCc = null,
+            placeName = null,
+            placeKey = null,
         )
     }
 
@@ -225,6 +228,36 @@ class DeleteRepositoryTest {
 
             assertEquals(DeleteOutcome.Done, outcome)
             assertNull(db.photoDao().getByPhotoId(photoId))
+        }
+
+    @Test
+    fun `a 409 TRANSACTION_CONFLICT on the trash call is resent and the delete completes`() =
+        runTest {
+            connectInstance()
+            seedPhoto()
+            server.enqueue(
+                MockResponse().setResponseCode(409).setBody("""{"error":"busy","code":"TRANSACTION_CONFLICT"}"""),
+            )
+            server.enqueue(MockResponse().setResponseCode(204))
+
+            val outcome = repository.delete(photoId, DeleteMode.ARCHIVE_ONLY)
+
+            assertEquals(DeleteOutcome.Done, outcome)
+            assertEquals(2, server.requestCount)
+            assertNull(db.photoDao().getByPhotoId(photoId))
+        }
+
+    @Test
+    fun `a plain 409 on the trash call is an error, not retried`() =
+        runTest {
+            connectInstance()
+            seedPhoto()
+            server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"asset is already trashed"}"""))
+
+            val outcome = repository.delete(photoId, DeleteMode.ARCHIVE_ONLY)
+
+            assertTrue(outcome is DeleteOutcome.Error)
+            assertEquals(1, server.requestCount)
         }
 
     @Test

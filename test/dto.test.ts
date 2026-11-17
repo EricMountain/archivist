@@ -93,3 +93,27 @@ describe("facetEntryDto", () => {
     expect(dto.takenAt).toBe(TAKEN_AT);
   });
 });
+
+describe("timelineEntryDto place", () => {
+  const base: TimelineEntry = {
+    ...projection,
+    pk: `O#${OWNER}#M#${PHOTO_ID}`,
+    sk: "#META",
+    timelinePk: `O#${OWNER}`,
+    timelineSk: `${TAKEN_AT}#${PHOTO_ID}`,
+  };
+
+  it("passes the projected place through", () => {
+    const place = {
+      cc: "JP",
+      region: { id: "JP.22", name: "Kyoto" },
+      locality: { id: "1857910", name: "Kyoto" },
+      src: "geonames-cities500@2026-10-20",
+    };
+    expect(timelineEntryDto({ ...base, place }).place).toEqual(place);
+  });
+
+  it("omits place entirely when the asset has none", () => {
+    expect("place" in timelineEntryDto(base)).toBe(false);
+  });
+});

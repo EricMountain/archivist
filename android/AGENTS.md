@@ -272,6 +272,31 @@ so `connectedDebugAndroidTest` was safe there). Installing an APK over it with
 `adb install -r -t` is allowed while locked and preserves data, but nothing that needs
 the app's storage can run until it's unlocked.
 
+**Room migrations are tested on the JVM, from the exported schema JSON.** See
+`AppDatabaseMigrationTest`: it builds the old version's tables from
+`app/schemas/.../<n>.json` (the path comes from the `archivist.room.schemas` system
+property set in `app/build.gradle.kts`), then opens `AppDatabase` on that file with a mocked
+`Context` whose `getDatabasePath` returns it, the bundled driver, only the migration under
+test, and no destructive fallback, so Room's own schema validation does the checking. Write a
+new migration as `override fun migrate(connection: SQLiteConnection)` with
+`connection.execSQL`. The older `migrate(SupportSQLiteDatabase)` form throws
+`NotImplementedError` under the bundled driver. The connection form also works in the app,
+where Room wraps the framework database in a connection.
+
+**The AVDs have no `sqlite3` binary (`run-as ... sqlite3` gives `exec failed`).** Pull the
+database instead and query it on the host: `adb -s <serial> exec-out run-as
+fr.enry.archivist.debug cat databases/archivist.db > x.db`, and the same for `-wal` and
+`-shm`. The debug package is `fr.enry.archivist.debug`, not `fr.enry.archivist`.
+
+**An AVD left idle for weeks opens on "Sign in", and that is an expired session, not a broken
+install.** Found 2026-11-13 on `Pixel_8a`: the package, `auth_tokens.xml` and the thumbnail
+cache were all intact, but the dev session had lapsed, so the app asked for a new sign-in.
+That needs the user's email flow, so an agent can't get past it. Ask the user to sign in
+again before planning any upload or timeline check on that AVD. The same AVD also rebooted
+by itself about a minute after an in-place install. The package survived, since it was not
+an `emu kill`. After any reboot, unlock again: the first PIN entry after boot can be lost
+while the keyguard is still starting, and the secure keyguard screenshots solid black.
+
 **Changing `testdata/vectors/` alone doesn't re-run `:core:crypto:test`.** The vectors
 live outside the module, so Gradle doesn't treat them as an input and reports the task
 `UP-TO-DATE` after you add a case. Use `./gradlew :core:crypto:testDebugUnitTest

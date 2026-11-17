@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 import crypto_format as cf
 import filename_time
+import gazetteer as gz
 import media_probe
 import mp4box
 import recovery_code
@@ -150,6 +151,8 @@ class Stats:
     video_without_thumbnail: int = 0
     location_stripped: int = 0
     raw_uploaded_without_location_strip: int = 0
+    with_coordinates: int = 0
+    geocoded: int = 0
 
     def total_ok(self) -> int:
         return self.created + self.attached + self.duplicate + self.resumed + self.restored
@@ -178,9 +181,13 @@ class Importer:
         dry_run: bool = False,
         restore_trashed: bool = False,
         upload_offset: ladder.UploadOffsetHint | None = None,
+        gazetteer: gz.Gazetteer | None = None,
         progress=lambda msg: print(msg, file=sys.stderr),
     ):
         self.enrollment = enrollment
+        # Every upload is geocoded (docs/plans/geolocation.md step 5); None means the
+        # bundled default, gazetteer.py's `resolve_path`.
+        self.gazetteer = gazetteer if gazetteer is not None else gz.load()
         self.source_root = os.path.abspath(source_root)
         self.dry_run = dry_run
         self.restore_trashed = restore_trashed
@@ -288,11 +295,19 @@ class Importer:
             width, height = self._dimensions(exif, video)
             device_key = device_key_of(exif) if exif else None
 
+            coords = self._coordinates(working_path, ext, exif)
+            place = None
+            if coords is not None:
+                self.stats.with_coordinates += 1
+                place = self.gazetteer.lookup(coords[0], coords[1])
+                if place is not None:
+                    self.stats.geocoded += 1
+
             chunk_size = cf.choose_chunk_size(plain_bytes)
             candidate_photo_id = ulid_gen.new_ulid()
             candidate_dek = os.urandom(32)
 
-            exif_enc = self._encrypt_exif_blob(exif, candidate_dek, candidate_photo_id)
+            exif_enc = self._encrypt_exif_blob(exif, coords, candidate_dek, candidate_photo_id)
 
             thumb_list = self._generate_thumbnails(working_path, ext, video)
             encrypted_thumbs = {
@@ -338,6 +353,8 @@ class Importer:
                     str(size): {"bytes": len(enc.ciphertext), "iv": b64(enc.iv)}
                     for size, (_t, enc) in encrypted_thumbs.items()
                 }
+            if place is not None:
+                body["place"] = place
             if group_with:
                 body["groupWith"] = group_with
             if self.restore_trashed:
@@ -347,6 +364,7 @@ class Importer:
                 self.progress(
                     f"  DRY RUN: would upload {rel_path} "
                     f"(takenAt={body['takenAt']} src={taken_at_src}/{tz_src}"
+                    f"{' place=' + _describe_place(place) if place else ''}"
                     f"{' groupWith=' + group_with if group_with else ''})"
                 )
                 return None
@@ -404,23 +422,24 @@ class Importer:
             return video.width, video.height
         return 1, 1
 
-    def _encrypt_exif_blob(self, exif, candidate_dek, candidate_photo_id):
-        if exif is None:
+    def _coordinates(self, working_path, ext, exif) -> tuple[float, float, float | None] | None:
+        """(lat, lon, alt_m or None) read off the file actually being uploaded, so a
+        stripped copy has none by construction. `stripLocationOnUpload` also short-
+        circuits it outright, which covers a file this tool can't strip (RAW, a video
+        whose location sits somewhere mp4box.py doesn't know): its location still
+        reaches the server inside the original, as before, but never as a `place` or
+        as coordinates in the ExifBlob."""
+        if self.enrollment.strip_location:
             return None
-        blob = {
-            k: v
-            for k, v in {
-                "cameraMake": exif.camera_make,
-                "cameraModel": exif.camera_model,
-                "cameraSerial": exif.camera_serial,
-                "lens": exif.lens,
-                "dateTimeOriginal": exif.date_time_original,
-                "offsetTimeOriginal": exif.offset_time_original,
-                "gpsDateTimeUtc": exif.gps_date_time_utc.isoformat() if exif.gps_date_time_utc else None,
-            }.items()
-            if v is not None
-        }
-        if not blob:
+        if exif is not None and exif.gps_lat is not None and exif.gps_lon is not None:
+            return exif.gps_lat, exif.gps_lon, exif.gps_alt_m
+        if media_probe.is_video(ext):
+            return media_probe.probe_video_location(working_path)
+        return None
+
+    def _encrypt_exif_blob(self, exif, coords, candidate_dek, candidate_photo_id):
+        blob = exif_blob(exif, coords)
+        if blob is None:
             return None
         plaintext = json.dumps(blob, separators=(",", ":")).encode("utf-8")
         return cf.encrypt_object(candidate_dek, cf.aad(candidate_photo_id, cf.object_ref_exif()), plaintext, 0)
@@ -498,6 +517,32 @@ class Importer:
                 put_bytes(url, "image/webp", payload)
 
         return photo_id
+
+
+def exif_blob(exif: media_probe.ExifData | None, coords) -> dict | None:
+    """The plaintext of `exifEnc`: the same JSON field names as Android's `ExifBlob`
+    (domain/ExifExtractor.kt), absent values omitted, or None when there's nothing to
+    encrypt. `coords` is (lat, lon, alt_m or None) in decimal degrees / metres, or None."""
+    fields = {}
+    if exif is not None:
+        fields.update({
+            "cameraMake": exif.camera_make,
+            "cameraModel": exif.camera_model,
+            "cameraSerial": exif.camera_serial,
+            "lens": exif.lens,
+            "dateTimeOriginal": exif.date_time_original,
+            "offsetTimeOriginal": exif.offset_time_original,
+            "gpsDateTimeUtc": exif.gps_date_time_utc.isoformat() if exif.gps_date_time_utc else None,
+        })
+    if coords is not None:
+        fields.update({"gpsLat": coords[0], "gpsLon": coords[1], "gpsAltM": coords[2]})
+    blob = {k: v for k, v in fields.items() if v is not None}
+    return blob or None
+
+
+def _describe_place(place: dict) -> str:
+    parts = [p["name"] for p in (place.get("locality"), place.get("region")) if p]
+    return ", ".join(parts + [place["cc"]])
 
 
 def mp4box_strip(src: str, dst: str) -> bool:

@@ -13,7 +13,16 @@ export type FacetType =
   | "YEAR"
   | "ALBUM"
   | "FAVOURITE"
-  | "PERSON";
+  | "PERSON"
+  | "COUNTRY"
+  | "REGION"
+  | "PLACE";
+
+/** The three facet types written from `#META.place` — see "Location" in design.md.
+ * Their values are identifiers (ISO-3166 alpha-2, GeoNames admin1 key, GeoNames
+ * geonameid), never names. */
+export const LOCATION_FACET_TYPES = ["COUNTRY", "REGION", "PLACE"] as const;
+export type LocationFacetType = (typeof LOCATION_FACET_TYPES)[number];
 
 export type RenditionRole = "display" | "raw" | "motion" | "sidecar";
 
@@ -55,6 +64,25 @@ export type ThumbMap = Record<number, ThumbEntry>;
  * as a still rung or gate an asset's readiness. Same fields as a [ThumbEntry]. */
 export type PreviewEntry = ThumbEntry;
 
+/** One named level of a [Place]: a GeoNames id plus its primary-spelling name. */
+export interface PlaceRef {
+  id: string;
+  name: string;
+}
+
+/** `#META.place` — the approximate, client-geocoded location, plaintext. Every level
+ * but `cc` is optional; a `locality` usually comes with a `region`, but not always —
+ * some towns have no GeoNames admin1 region (Stanley, FK). Country names
+ * are never stored: clients render `cc` in the viewer's locale. See "Location" in
+ * design.md. */
+export interface Place {
+  cc: string;
+  region?: PlaceRef;
+  locality?: PlaceRef;
+  /** Dataset and snapshot that produced it, e.g. `geonames-cities500@2026-10-20`. */
+  src: string;
+}
+
 // ---------------------------------------------------------------------------
 // Media partition items
 // ---------------------------------------------------------------------------
@@ -84,6 +112,9 @@ export interface MetaItem {
   preview?: PreviewEntry;
   exifEnc?: string;
   exifIv?: string;
+  /** Absent when the asset has no GPS, location was stripped, or it is nowhere near a
+   * named place. */
+  place?: Place;
   groupSrc: GroupSrc;
   status: AssetStatus;
   deletedAt?: string;
@@ -161,6 +192,8 @@ export interface TimelineEntry extends GridProjectionFields {
   /** Projected by timeline_gsi only (`local.timeline_projection`) — facet items carry
    * no preview. */
   preview?: PreviewEntry;
+  /** Projected by timeline_gsi only, for the timeline's date bubbles. */
+  place?: Place;
   pk: string;
   sk: "#META";
   timelinePk: string;

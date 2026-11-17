@@ -91,6 +91,14 @@ android {
         }
     }
 
+    // gazetteer.bin is memory-mapped through AssetManager.openFd (ReverseGeocoder,
+    // AssetGazetteerSource), which only works for an asset stored uncompressed. Play
+    // compresses the download anyway; on the device this costs the raw ~5 MB once,
+    // rather than a compressed copy in the APK plus an extracted copy on disk.
+    androidResources {
+        noCompress += "bin"
+    }
+
     packaging {
         resources {
             // BouncyCastle (via :core:crypto) and jspecify both ship this OSGi manifest.
@@ -227,4 +235,21 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+
+    // ReverseGeocoderTest reads the real gazetteer and the shared conformance vectors
+    // straight from the repo, so a regenerated vectors.json needs no Kotlin change.
+    // Declared as inputs too: otherwise Gradle calls the task UP-TO-DATE after the files
+    // change (the same trap as :core:crypto's vectors, see android/AGENTS.md).
+    val gazetteerBin = file("src/main/assets/gazetteer.bin")
+    val gazetteerVectors = rootProject.file("../tools/gazetteer/vectors.json")
+    inputs.file(gazetteerBin).withPropertyName("gazetteerBin").withPathSensitivity(PathSensitivity.NONE)
+    inputs.file(gazetteerVectors).withPropertyName("gazetteerVectors").withPathSensitivity(PathSensitivity.NONE)
+    systemProperty("archivist.gazetteer.bin", gazetteerBin.absolutePath)
+    systemProperty("archivist.gazetteer.vectors", gazetteerVectors.absolutePath)
+
+    // AppDatabaseMigrationTest builds the old version's tables from Room's exported
+    // schema JSON, so a migration is tested against the schema that actually shipped.
+    val roomSchemas = file("schemas/fr.enry.archivist.data.local.db.AppDatabase")
+    inputs.dir(roomSchemas).withPropertyName("roomSchemas").withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("archivist.room.schemas", roomSchemas.absolutePath)
 }

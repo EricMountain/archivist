@@ -89,12 +89,17 @@ import java.util.Locale
  * [fr.enry.archivist.ui.timeline.TimelineScreen]. Swiping is over
  * [DetailViewModel.photos] (Room's plain timeline order), not the grid's own `Paging`
  * flow — see that field's doc.
+ *
+ * [swipeOrder], when given, replaces that timeline order: place search (geolocation plan
+ * step 8) opens a result here and swipes over the results it has loaded, not the
+ * timeline. Its photos need not be in Room at all.
  */
 @Composable
 fun DetailScreen(
     initialPhoto: PhotoEntity,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    swipeOrder: List<PhotoEntity>? = null,
     viewModel: DetailViewModel = hiltViewModel(),
 ) {
     // The system back gesture/button has nothing else to consume here (see
@@ -105,7 +110,8 @@ fun DetailScreen(
     // interfere with dismissing that.
     BackHandler(onBack = onBack)
 
-    val photos by viewModel.photos.collectAsStateWithLifecycle()
+    val timelinePhotos by viewModel.photos.collectAsStateWithLifecycle()
+    val photos = swipeOrder ?: timelinePhotos
     val details by viewModel.details.collectAsStateWithLifecycle()
     val originals by viewModel.originals.collectAsStateWithLifecycle()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
@@ -113,6 +119,8 @@ fun DetailScreen(
     val repairState by viewModel.repairState.collectAsStateWithLifecycle()
     val takenAtState by viewModel.takenAtState.collectAsStateWithLifecycle()
     val rotateState by viewModel.rotateState.collectAsStateWithLifecycle()
+    val locationState by viewModel.locationState.collectAsStateWithLifecycle()
+    val locationAvailable by viewModel.locationAvailable.collectAsStateWithLifecycle()
 
     // DetailViewModel is retained across opens (hiltViewModel() resolves to the
     // Activity's own ViewModelStore — see the deleteState reset below for the same
@@ -126,6 +134,10 @@ fun DetailScreen(
     // navigate away the way a delete does).
     LaunchedEffect(Unit) { viewModel.dismissTakenAt() }
     LaunchedEffect(Unit) { viewModel.dismissRotate() }
+    LaunchedEffect(Unit) { viewModel.dismissLocation() }
+    // "Update location" is hidden while the owner's stripLocationOnUpload is on; re-read
+    // on every open, since the setting can change between visits.
+    LaunchedEffect(Unit) { viewModel.refreshLocationAvailability() }
 
     // Latched once the list has caught up so a later removal of this photo (a delete
     // finishing, before the screen closes) doesn't swap the pager back to the placeholder.
@@ -176,7 +188,7 @@ fun DetailScreen(
         pagerPhotos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
     }
 
-    // The repair / date / rotate status lines describe the photo they ran on; once the
+    // The repair / date / rotate / location status lines describe the photo they ran on; once the
     // pager lands on a different one they'd read as if they applied to it. Keyed on the
     // photo id (not the page index) so a list re-emission after a repair or rotate,
     // which keeps the id, doesn't wipe the message that just appeared. The first
@@ -189,6 +201,7 @@ fun DetailScreen(
             viewModel.dismissRepair()
             viewModel.dismissTakenAt()
             viewModel.dismissRotate()
+            viewModel.dismissLocation()
         }
     }
 
@@ -305,6 +318,16 @@ fun DetailScreen(
                                 showEditTakenAtDialog = true
                             },
                         )
+                        if (locationAvailable) {
+                            DropdownMenuItem(
+                                text = { Text("Update location") },
+                                enabled = locationState !is LocationUiState.InProgress && currentDetail != null,
+                                onClick = {
+                                    showMenu = false
+                                    currentDetail?.let { viewModel.updateLocation(it) }
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Delete") },
                             enabled = deleteState !is DeleteUiState.InProgress,
@@ -401,6 +424,25 @@ fun DetailScreen(
             RotateUiState.InProgress ->
                 Text("Rotating…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
             RotateUiState.Idle -> {}
+        }
+
+        when (locationState) {
+            is LocationUiState.Error ->
+                Text(
+                    "Couldn't update the location: ${(locationState as LocationUiState.Error).message}",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            LocationUiState.Updated ->
+                Text("Location updated.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            LocationUiState.NoPlaceNearby ->
+                Text("Coordinates saved. No place nearby.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            LocationUiState.NoLocation ->
+                Text("No location in this photo.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            LocationUiState.InProgress ->
+                Text("Locating…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+            LocationUiState.Idle -> {}
         }
 
         if (isLandscape) {
@@ -625,6 +667,7 @@ private fun MetadataPanel(
                     ),
                     style = MaterialTheme.typography.titleSmall,
                 )
+                locationRow(detail.place, detail.exif)?.let { LocationRow(it) }
                 val camera = listOfNotNull(detail.cameraMake, detail.cameraModel).joinToString(" ")
                 if (camera.isNotBlank()) Text(camera, style = MaterialTheme.typography.bodySmall)
                 Text("${detail.width} × ${detail.height}", style = MaterialTheme.typography.bodySmall)

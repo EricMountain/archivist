@@ -9,14 +9,23 @@ via `groupWith` rather than landing as their own, disconnected timeline entries.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import pillow_heif
 from PIL import Image
 
 import mp4box
+
+# HEIC/HEIF: Pillow has no decoder of its own; pillow-heif plugs one into
+# `Image.open`/`Image.save` for every module in this tool (thumbnails.py imports
+# this module for exactly this). It applies the container's own rotation/mirror
+# (`irot`/`imir`) on decode and resets the EXIF Orientation it reports to match,
+# so `ImageOps.exif_transpose` never rotates a HEIC twice.
+pillow_heif.register_heif_opener()
 
 # --- Extension classification, mirroring src/core/paths.ts ----------------------
 # Kept in sync by hand -- these are small, closed, rarely-changing sets on the
@@ -63,7 +72,8 @@ def is_raw(ext: str) -> bool:
 
 
 def is_image(ext: str) -> bool:
-    """A format Pillow can actually decode -- excludes RAW (Pillow has no CR2/CR3/
+    """A format Pillow can actually decode (HEIC/HEIF via pillow-heif, registered
+    above) -- excludes RAW (Pillow has no CR2/CR3/
     NEF/ARW/DNG/RAF/ORF/RW2 decoder; `Image.open` on one of these raises, same gap
     design.md already names for the Android client: "the phone will not handle
     RAW"). A RAW file still uploads correctly as its own rendition -- see
@@ -84,6 +94,7 @@ _EXIF_IFD_TAG = 0x8769
 _GPS_IFD_TAG = 0x8825
 _GPS_LATITUDE_REF, _GPS_LATITUDE = 1, 2
 _GPS_LONGITUDE_REF, _GPS_LONGITUDE = 3, 4
+_GPS_ALTITUDE_REF, _GPS_ALTITUDE = 5, 6
 _GPS_DATE_STAMP = 29
 _GPS_TIME_STAMP = 7
 
@@ -100,6 +111,10 @@ class ExifData:
     offset_time_original: str | None = None  # raw "+02:00" etc.
     gps_date_time_utc: datetime | None = None
     has_gps: bool = False
+    # Decimal degrees (WGS84) and metres; the ExifBlob's gpsLat/gpsLon/gpsAltM.
+    gps_lat: float | None = None
+    gps_lon: float | None = None
+    gps_alt_m: float | None = None
 
 
 def _clean(v) -> str | None:
@@ -130,7 +145,56 @@ def extract_exif(path: str) -> ExifData:
         time_stamp = gps.get(_GPS_TIME_STAMP)
         if date_stamp and time_stamp:
             data.gps_date_time_utc = _combine_gps(date_stamp, time_stamp)
+        coords = _gps_lat_lon(gps)
+        if coords is not None:
+            data.gps_lat, data.gps_lon = coords
+            data.gps_alt_m = _gps_altitude(gps)
     return data
+
+
+def _gps_lat_lon(gps) -> tuple[float, float] | None:
+    """Same rule as androidx `ExifInterface.getLatLong()`, which the app uses: all four
+    of latitude, its ref, longitude and its ref must be present, the ref must be N/S
+    (E/W), and the value is degrees + minutes/60 + seconds/3600, negated for S (W).
+    Anything unparseable, out of range, or exactly (0, 0) gives None (see
+    `mp4box.plausible_coordinates`)."""
+    try:
+        lat = _dms(gps.get(_GPS_LATITUDE), gps.get(_GPS_LATITUDE_REF), "N", "S")
+        lon = _dms(gps.get(_GPS_LONGITUDE), gps.get(_GPS_LONGITUDE_REF), "E", "W")
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if lat is None or lon is None:
+        return None
+    if not mp4box.plausible_coordinates(lat, lon):
+        return None
+    return lat, lon
+
+
+def _dms(value, ref, positive: str, negative: str) -> float | None:
+    if value is None or ref is None:
+        return None
+    ref = str(ref).strip().upper()
+    if ref not in (positive, negative):
+        return None
+    d, m, s = (float(v) for v in value)
+    degrees = d + m / 60.0 + s / 3600.0
+    return -degrees if ref == negative else degrees
+
+
+def _gps_altitude(gps) -> float | None:
+    """`ExifInterface.getAltitude()`'s rule: both GPSAltitude and GPSAltitudeRef must be
+    present; ref 1 means below sea level."""
+    alt, ref = gps.get(_GPS_ALTITUDE), gps.get(_GPS_ALTITUDE_REF)
+    if alt is None or ref is None:
+        return None
+    try:
+        value = float(alt)
+        ref_int = ref[0] if isinstance(ref, (bytes, bytearray)) else int(ref)
+    except (TypeError, ValueError, ZeroDivisionError, IndexError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return -value if ref_int == 1 else value
 
 
 def _combine_gps(date_stamp: str, time_stamp) -> datetime | None:
@@ -151,6 +215,9 @@ def _hms_delta(h: float, m: float, s: float):
     return timedelta(hours=h, minutes=m, seconds=s)
 
 
+HEIF_STRIP_QUALITY = 90
+
+
 def strip_gps_from_image(src_path: str, dst_path: str) -> None:
     """design.md "Stripping location on upload", images: a copy with the GPS IFD
     removed, decoded and re-saved rather than a byte-level patch -- unlike video's
@@ -164,7 +231,12 @@ def strip_gps_from_image(src_path: str, dst_path: str) -> None:
     segment. `quality="keep"` instead asks libjpeg to re-use the source's own
     DCT coefficients unchanged -- confirmed against a real GPS-bearing photo from
     this tool's own corpus: output differs from the input by only the bytes the
-    dropped GPS IFD itself accounted for."""
+    dropped GPS IFD itself accounted for.
+
+    HEIC/HEIF has no such shortcut: pillow-heif re-encodes the primary image (at a
+    high quality, rather than libheif's much lower default) and keeps its EXIF,
+    but not auxiliary images such as depth maps or an HDR gain map. A real cost,
+    paid only when `stripLocationOnUpload` is on and the file actually has GPS."""
     with Image.open(src_path) as im:
         exif = im.getexif()
         if _GPS_IFD_TAG in exif:
@@ -172,6 +244,8 @@ def strip_gps_from_image(src_path: str, dst_path: str) -> None:
         save_kwargs = {"exif": exif}
         if (im.format or "").upper() == "JPEG":
             save_kwargs["quality"] = "keep"
+        elif (im.format or "").upper() == "HEIF":
+            save_kwargs["quality"] = HEIF_STRIP_QUALITY
         im.save(dst_path, **save_kwargs)
 
 
@@ -225,3 +299,30 @@ class VideoProbeResult:
 def probe_video(path: str) -> VideoProbeResult:
     p = mp4box.probe_video(path)
     return VideoProbeResult(p.creation_time, p.width, p.height)
+
+
+def coordinates_readable(ext: str) -> bool:
+    """Whether `read_coordinates` can read this kind of file at all -- a video, or an
+    image Pillow decodes (HEIC/HEIF included, via pillow-heif). RAW is not."""
+    return is_video(ext) or is_image(ext)
+
+
+def read_coordinates(path: str, ext: str) -> tuple[float, float, float | None] | None:
+    """(lat, lon, alt_m or None) from a file's own metadata, by the importer's rules:
+    EXIF for stills, the container's location for video; (0, 0) and out-of-range
+    values are none. A JPEG truncated after its EXIF segment still works: only the
+    header is parsed."""
+    if is_video(ext):
+        return probe_video_location(path)
+    exif = extract_exif(path)
+    if exif.gps_lat is None or exif.gps_lon is None:
+        return None
+    return exif.gps_lat, exif.gps_lon, exif.gps_alt_m
+
+
+def probe_video_location(path: str) -> tuple[float, float, float | None] | None:
+    """(lat, lon, alt_m or None) from the container's location metadata, or None.
+    Call it on the file actually being uploaded (the stripped copy when
+    `stripLocationOnUpload` is on), so a stripped video has no location by
+    construction."""
+    return mp4box.probe_location(path)

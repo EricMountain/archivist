@@ -374,6 +374,21 @@ class ArchivistApi:
         overwrite this."""
         self._request("PATCH", f"/photos/{photo_id}", {"takenAt": taken_at, "tzOffsetMin": tz_offset_min})
 
+    def put_photo_location(
+        self, photo_id: str, place: dict | None, exif_enc: str | None = None, exif_iv: str | None = None
+    ) -> dict | None:
+        """Replaces (or, with `place=None`, clears) one photo's place (api.md `PUT
+        /photos/{photoId}/location`, design.md "Location" / "Manual update"),
+        optionally swapping in a re-encrypted `exifEnc`/`exifIv` -- the two go
+        together or not at all. Returns `{place}`, the stored place; None on 404.
+        Raises ApiError 409 when the photo's place or trash state changed between
+        the caller's read and this write -- re-read and retry."""
+        body: dict = {"place": place}
+        if exif_enc is not None:
+            body["exifEnc"] = exif_enc
+            body["exifIv"] = exif_iv
+        return self._request("PUT", f"/photos/{photo_id}/location", body)
+
     def delete_photo(self, photo_id: str, deleted_by: str | None = None) -> None:
         """Trashes the whole asset -- every rendition, not just one -- via the same
         soft-delete `DELETE /photos/{photoId}` route the app's own delete button
@@ -400,3 +415,31 @@ def put_bytes(url: str, content_type: str, data: bytes) -> None:
             pass
     except urllib.error.HTTPError as e:
         raise ApiError(e.code, e.read().decode("utf-8", errors="replace")) from None
+
+
+def download_media(host: str, s3_key: str, dest_path: str, byte_range: tuple[int, int] | None = None) -> int:
+    """GETs one stored ciphertext object through CloudFront's `/media/*` behavior
+    (api.md: unauthenticated at the CDN layer -- the bytes are useless without the
+    master key), the same URL the Android app's "View original" fetches. Streams to
+    `dest_path` rather than buffering, since a video original can run to hundreds
+    of MB. `byte_range` is an inclusive (first, last) pair sent as a `Range`
+    header (crypto-format.md "Byte-range mapping"). Returns the bytes written."""
+    headers = {}
+    if byte_range is not None:
+        headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
+    req = urllib.request.Request(f"https://{host}/media/{s3_key}", headers=headers, method="GET")
+    written = 0
+    try:
+        # Same long inactivity window as put_bytes, for the same reason.
+        with _urlopen_with_retry(req, 300) as resp, open(dest_path, "wb") as out:
+            if byte_range is not None and resp.status != 206:
+                raise ApiError(resp.status, "expected 206 Partial Content for a ranged GET")
+            while True:
+                block = resp.read(1024 * 1024)
+                if not block:
+                    break
+                out.write(block)
+                written += len(block)
+    except urllib.error.HTTPError as e:
+        raise ApiError(e.code, e.read().decode("utf-8", errors="replace")) from None
+    return written

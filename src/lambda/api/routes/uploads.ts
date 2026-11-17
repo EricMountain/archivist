@@ -19,6 +19,8 @@ import {
 } from "@archivist/core/s3";
 import { attachRendition, createAsset } from "@archivist/core/repo/ingest";
 import { upsertDeviceSighting } from "@archivist/core/repo/devices";
+import { syncFacetDenorm } from "@archivist/core/repo/facets";
+import { parsePlace } from "@archivist/core/repo/places";
 import { getMetaItem, getRenditionItems } from "@archivist/core/repo/media";
 import {
   getHashPointer,
@@ -31,6 +33,7 @@ import { epochSecondsAfterDays } from "@archivist/core/time";
 import { isPurgedPointer } from "@archivist/core/items";
 import type {
   MetaItem,
+  Place,
   PreviewEntry,
   RenditionItem,
   TakenAtSrc,
@@ -90,6 +93,9 @@ interface UploadBody {
    * exactly like `thumbs` (persisted on create, on an attach that becomes primary, and
    * on resume), except it never gates readiness. */
   preview?: PreviewDescriptor;
+  /** Client-geocoded approximate location — design.md "Location". Validated by
+   * `parsePlace`; set on create, and on attach only when the asset has none. */
+  place?: unknown;
   reAddDeleted?: boolean;
   groupWith?: string;
   noGroup?: boolean;
@@ -109,7 +115,7 @@ interface UploadBody {
 
 const MIN_TAKEN_AT = Date.UTC(1990, 0, 1);
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
-const MAX_EXIF_BLOB_CHARS = 300_000;
+export const MAX_EXIF_BLOB_CHARS = 300_000;
 const MAX_DIMENSION = 20_000;
 
 function clamp(n: number, min: number, max: number): number {
@@ -247,6 +253,7 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
   const ownerId = req.auth!.ownerId;
   const body = parseJsonBody<UploadBody>(req);
   validate(body);
+  const place = body.place === undefined || body.place === null ? undefined : parsePlace(body.place);
 
   const width = clamp(body.width, 1, MAX_DIMENSION);
   const height = clamp(body.height, 1, MAX_DIMENSION);
@@ -332,6 +339,7 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
       takenAt,
       uploadedAt,
       isTombstone,
+      place,
       newGroupSrc: "manual",
     });
   }
@@ -371,6 +379,7 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
         ...(body.deviceKey ? { deviceKey: body.deviceKey } : {}),
         ...(body.exifEnc ? { exifEnc: body.exifEnc } : {}),
         ...(body.exifIv ? { exifIv: body.exifIv } : {}),
+        ...(place ? { place } : {}),
       },
       rendition: buildRendition({
         renditionId,
@@ -424,7 +433,10 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
       ...(previewResult.upload ? { previewUpload: previewResult.upload } : {}),
     });
   } catch (err) {
-    if (!(err instanceof ApiError && err.code === "CONFLICT") || body.noGroup) throw err;
+    // A TRANSACTION_CONFLICT (a concurrent write held a counter row) isn't "the stem
+    // is taken": nothing was written, and falling through would look for a stem
+    // pointer that doesn't exist. Surface it as-is so the client retries.
+    if (!(err instanceof ApiError && err.code === "CONFLICT") || err.reason || body.noGroup) throw err;
     // Fell through: another asset already owns this stem — attach instead.
   }
 
@@ -448,6 +460,7 @@ export const postUpload: RouteHandler = async (req: ApiRequest) => {
     takenAt,
     uploadedAt,
     isTombstone,
+    place,
   });
 };
 
@@ -462,6 +475,8 @@ interface AttachAndRespondArgs {
   takenAt: string;
   uploadedAt: string;
   isTombstone: boolean;
+  /** Already validated. Fills `#META.place` only when the asset has none. */
+  place?: Place;
   newGroupSrc?: "manual";
 }
 
@@ -514,6 +529,8 @@ async function attachAndRespond(args: AttachAndRespondArgs): Promise<ApiResponse
         }
       : {}),
     ...(args.newGroupSrc ? { newGroupSrc: args.newGroupSrc } : {}),
+    // "Improve, never replace": a later rendition only fills an absent place.
+    ...(args.place && !existing.place ? { fillPlace: args.place } : {}),
   });
 
   const { thumbs, uploads } = await presignedThumbs(ownerId, existing.photoId, body.thumbs);
@@ -625,6 +642,9 @@ export async function setThumbs(
       ExpressionAttributeValues: { ":thumbs": thumbs },
     }),
   );
+  // Facet items denormalise thumbs; without this a facet_gsi page (place search)
+  // would get the empty map the create transaction wrote.
+  await syncFacetDenorm(ownerId, photoId);
 }
 
 /** Persists the video preview's descriptor on `#META`, the counterpart of

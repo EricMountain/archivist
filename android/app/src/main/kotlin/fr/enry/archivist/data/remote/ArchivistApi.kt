@@ -1,5 +1,6 @@
 package fr.enry.archivist.data.remote
 
+import fr.enry.archivist.domain.Place
 import kotlinx.serialization.Serializable
 import okhttp3.ResponseBody
 import retrofit2.http.Body
@@ -173,6 +174,40 @@ interface ArchivistApi {
         @Url url: String,
         @Header("If-None-Match") ifNoneMatch: String?,
     ): Response<PhotosHistogramResponse>
+
+    /**
+     * `GET /places` in api.md, design.md pattern 16 — the owner's place vocabulary (every
+     * country, region and town with live photos, with counts), which place search
+     * matches against on the device. Conditional in exactly the way
+     * [getPhotosHistogram] is: the cached `ETag` (`"pl-<version>"`) goes back as
+     * [ifNoneMatch], and the usual answer is a bodiless 304.
+     */
+    @GET
+    suspend fun getPlaces(
+        @Url url: String,
+        @Header("If-None-Match") ifNoneMatch: String?,
+    ): Response<PlacesResponse>
+
+    /** `PUT /photos/{photoId}/location` in api.md (geolocation plan step 9): replaces the
+     * asset's place, or clears it with `place: null`, and optionally its `exifEnc`. A 409
+     * means the place or trash state changed between the server's read and write; retry
+     * from a fresh read. */
+    @PUT
+    suspend fun putPhotoLocation(
+        @Url url: String,
+        @Body body: PutLocationRequest,
+    ): Response<PutLocationResponse>
+
+    /** `GET /facets/{type}/{value}` in api.md — the photos carrying one facet value,
+     * newest first, [cursor]-paginated like [getPhotos]. Place search calls it with
+     * `COUNTRY`/`REGION`/`PLACE` and a `cc`/region id/geonameid (geolocation plan
+     * step 8); the value is already in [url]'s path. */
+    @GET
+    suspend fun getFacetPage(
+        @Url url: String,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): FacetPageResponse
 
     /** Plan step 2.12: single-asset detail — `GET /photos/{photoId}` in `api.md`. Unlike
      * [getPhotos], `routes/photos.ts`'s `getPhoto` returns the raw `#META`/`R#` items
@@ -391,7 +426,50 @@ data class PostUploadRequest(
     val groupWith: String? = null,
     val noGroup: Boolean? = null,
     val photoId: String? = null,
+    /** The on-device geocoded approximate location (design.md "Location"); left `null`,
+     * and so dropped from the JSON, when the file has no usable coordinates. */
+    val place: PlaceDto? = null,
 )
+
+/** `place`'s wire shape — `{cc, region?: {id, name}, locality?: {id, name}, src}` — as
+ * `POST /uploads` validates it (api.md; `src/core/repo/places.ts`'s `parsePlace`). */
+@Serializable
+data class PlaceDto(
+    val cc: String,
+    val region: PlaceRefDto? = null,
+    val locality: PlaceRefDto? = null,
+    val src: String,
+) {
+    companion object {
+        /** Sent as the lookup returned it. `{cc, locality}` with no `region` is a valid
+         * result (~460 GeoNames towns, e.g. Stanley, FK, have no admin1) and the server
+         * accepts it (design.md "Location", "Validation"). */
+        fun forUpload(place: Place): PlaceDto =
+            PlaceDto(
+                cc = place.cc,
+                region = place.region?.let { PlaceRefDto(it.id, it.name) },
+                locality = place.locality?.let { PlaceRefDto(it.id, it.name) },
+                src = place.src,
+            )
+    }
+}
+
+@Serializable
+data class PlaceRefDto(val id: String, val name: String)
+
+/** `PUT /photos/{photoId}/location`'s body. [place] has no default, so it is always sent,
+ * as JSON `null` to clear (the server requires the key). [exifEnc]/[exifIv] are both set
+ * or both left out (then omitted from the JSON). */
+@Serializable
+data class PutLocationRequest(
+    val place: PlaceDto?,
+    val exifEnc: String? = null,
+    val exifIv: String? = null,
+)
+
+/** `PUT /photos/{photoId}/location`'s answer: the place as stored, or null. */
+@Serializable
+data class PutLocationResponse(val place: PlaceDto? = null)
 
 /** One `timelineEntryDto` entry (`dto.ts`), for `GET /photos`. Reuses
  * [fr.enry.archivist.data.local.db.ThumbEntry] directly rather than a parallel DTO
@@ -415,6 +493,8 @@ data class TimelineEntryDto(
     val mime: String,
     val tzOffsetMin: Int,
     val status: String,
+    /** `#META.place` (design.md "Location"); absent for photos with no location. */
+    val place: PlaceDto? = null,
 )
 
 @Serializable
@@ -433,6 +513,66 @@ data class PhotosHistogramResponse(
     val total: Int = 0,
     val version: Long = 0,
 )
+
+/** One country in `GET /places`. Its name is never sent: the client renders it from
+ * [cc] in the viewer's own locale (design.md "Place vocabulary (query 16)"). */
+@Serializable
+data class PlaceCountryDto(val cc: String, val n: Int)
+
+/** One region (`R#<admin1 key>`) in `GET /places`; [id] is the admin1 key, e.g. `JP.22`. */
+@Serializable
+data class PlaceRegionDto(val id: String, val name: String, val cc: String, val n: Int)
+
+/** One town (`L#<geonameid>`) in `GET /places`. [regionName] is absent for a town with
+ * no GeoNames admin1 region (e.g. Stanley, FK). */
+@Serializable
+data class PlaceLocalityDto(
+    val id: String,
+    val name: String,
+    val regionName: String? = null,
+    val cc: String,
+    val n: Int,
+)
+
+/** `GET /places`' body (`routes/places.ts`), zero-count rows already filtered out. */
+@Serializable
+data class PlacesResponse(
+    val countries: List<PlaceCountryDto> = emptyList(),
+    val regions: List<PlaceRegionDto> = emptyList(),
+    val localities: List<PlaceLocalityDto> = emptyList(),
+    val total: Int = 0,
+    val version: Long = 0,
+)
+
+/** One `facetEntryDto` entry (`dto.ts`): the same grid projection as
+ * [TimelineEntryDto], minus `preview`/`place` (facet items carry neither), plus the
+ * facet's own type and value. `thumbs` defaults empty for safety: a facet item written
+ * before its asset's thumbnails were synced onto it has `{}`.
+ *
+ * `mime` and `status` default too, because the server doesn't send them: facet items
+ * denormalise only what design.md's "`F#` facet items" lists (`places.ts`
+ * `facetDenormOf`), so `dto.ts` passes through `undefined` and the JSON omits both.
+ * Requiring them crashed the app on the first place search against dev (2026-11-14).
+ * Nothing in the result grid reads `mime`; the detail screen takes it from
+ * `GET /photos/{id}`. */
+@Serializable
+data class FacetEntryDto(
+    val photoId: String,
+    val facetType: String,
+    val facetValue: String,
+    val takenAt: String,
+    val thumbs: Map<String, fr.enry.archivist.data.local.db.ThumbEntry> = emptyMap(),
+    val encDek: String,
+    val encKeyId: String,
+    val width: Int = 0,
+    val height: Int = 0,
+    val mime: String = "",
+    val tzOffsetMin: Int = 0,
+    val status: String = "ready",
+)
+
+@Serializable
+data class FacetPageResponse(val items: List<FacetEntryDto>, val cursor: String? = null)
 
 /** The subset of `MetaItem` (`src/core/items.ts`) plan step 2.12 needs, plus (`stem`
  * through `deletedBy`) the rest of what the "Details" menu action shows — see
@@ -465,6 +605,8 @@ data class PhotoMetaDto(
     val deletedBy: String? = null,
     val exifEnc: String? = null,
     val exifIv: String? = null,
+    /** `#META.place` (design.md "Location"); absent for photos with no location. */
+    val place: PlaceDto? = null,
 )
 
 /** The subset of `RenditionItem` (`src/core/items.ts`) plan step 2.12 needs, plus

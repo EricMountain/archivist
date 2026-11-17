@@ -16,30 +16,37 @@ import api_client
 DEFAULT_CONCURRENCY = 8
 
 
-def list_live_photo_ids(api: api_client.ArchivistApi, progress) -> list[str]:
-    photo_ids: list[str] = []
+def _list_items(get_page, label: str, progress) -> list[dict]:
+    items: list[dict] = []
     cursor = None
     while True:
-        page = api.get_photos_page(cursor=cursor)
-        photo_ids.extend(item["photoId"] for item in page["items"])
+        page = get_page(cursor=cursor)
+        items.extend(page["items"])
         cursor = page.get("cursor")
-        progress(f"  listed {len(photo_ids)} live photo(s) so far...")
+        progress(f"  listed {len(items)} {label} photo(s) so far...")
         if not cursor:
             break
-    return photo_ids
+    return items
+
+
+def list_live_items(api: api_client.ArchivistApi, progress) -> list[dict]:
+    """Every lean `GET /photos` item -- `photoId`, plus what the timeline projects,
+    `place` included (modify_media.py location's skip rule reads it from here, so a
+    re-run skips without a per-asset detail fetch)."""
+    return _list_items(api.get_photos_page, "live", progress)
+
+
+def list_trashed_items(api: api_client.ArchivistApi, progress) -> list[dict]:
+    """Every lean `GET /trash` item, same shape as `list_live_items`."""
+    return _list_items(api.get_trash_page, "trashed", progress)
+
+
+def list_live_photo_ids(api: api_client.ArchivistApi, progress) -> list[str]:
+    return [item["photoId"] for item in list_live_items(api, progress)]
 
 
 def list_trashed_photo_ids(api: api_client.ArchivistApi, progress) -> list[str]:
-    photo_ids: list[str] = []
-    cursor = None
-    while True:
-        page = api.get_trash_page(cursor=cursor)
-        photo_ids.extend(item["photoId"] for item in page["items"])
-        cursor = page.get("cursor")
-        progress(f"  listed {len(photo_ids)} trashed photo(s) so far...")
-        if not cursor:
-            break
-    return photo_ids
+    return [item["photoId"] for item in list_trashed_items(api, progress)]
 
 
 def fetch_details(
