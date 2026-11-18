@@ -8,11 +8,15 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.TimelineKey
+import fr.enry.archivist.data.repo.FacetStreamSpec
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PhotoRepository
+import fr.enry.archivist.data.repo.PlaceFilterRepository
 import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.data.repo.UploadEvents
+import fr.enry.archivist.ui.search.PlaceFilter
+import fr.enry.archivist.ui.search.SelectionState
 import java.io.IOException
 import java.time.Instant
 import java.time.LocalDate
@@ -27,7 +31,12 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
@@ -46,14 +55,36 @@ import retrofit2.HttpException
  * `TimelineViewModel.startupSettled`. */
 private const val STARTUP_RESEED_WAIT_MS = 4000L
 
+/** How long the overlay's selection has to stay unchanged before it becomes the active
+ * filter (timeline place filter F6). A proposal, to be tuned on the device in step 4. */
+internal const val FILTER_DEBOUNCE_MS = 350L
+
+/** Which grid a jump belongs to: the unfiltered timeline, or the place filter's. */
+internal enum class TimelineMode { UNFILTERED, FILTERED }
+
 /** A jump that has landed: [landing] is the key the grid should hold on, [position] the
  * rail position that asked for it (so the grid can land partway through the day, not on
  * its first photo), and [scrub] whether it was a mid-drag scrub — whose placement
- * `TimelineScrollbar` handles itself — rather than a release or programmatic jump. */
+ * `TimelineScrollbar` handles itself — rather than a release or programmatic jump.
+ * [mode] says which grid it is for: a filtered landing must never move the unfiltered
+ * grid, which keeps its position for when the filter is cleared (F10). */
 internal data class JumpLanding(
     val landing: TimelineKey?,
     val position: RailPosition,
     val scrub: Boolean,
+    val mode: TimelineMode = TimelineMode.UNFILTERED,
+)
+
+/**
+ * The filtered rail's inputs (F2): [total] is N, the exact photo count of the selection
+ * from the vocabulary (or the loaded count once everything is loaded, or if the vocabulary
+ * undercounts), and [loaded] the photos loaded so far per local day. [complete]: every
+ * selected stream is done, so [loaded] is the whole selection.
+ */
+data class FilteredRail(
+    val total: Int,
+    val loaded: TimelineHistogram,
+    val complete: Boolean,
 )
 
 /**
@@ -76,6 +107,7 @@ class TimelineViewModel
     @Inject
     constructor(
         private val photoRepository: PhotoRepository,
+        private val placeFilterRepository: PlaceFilterRepository,
         masterKeyHolder: MasterKeyHolder,
         instanceStore: InstanceStore,
         uploadEvents: UploadEvents,
@@ -182,7 +214,14 @@ class TimelineViewModel
          * drag is paced by however long that actually takes. Free when the day is already
          * cached; one screenful-sized request when it isn't.
          */
-        suspend fun onScrubTo(day: LocalDate?) = applyJump(day, scrub = true)
+        suspend fun onScrubTo(day: LocalDate?) {
+            // The mode is the one the rail was drawn for: read now, not when the jump runs.
+            if (_activeFilter.value != null) {
+                applyFilteredJump(day, scrub = true, RailPosition(day))
+            } else {
+                applyJump(day, scrub = true)
+            }
+        }
 
         /**
          * The drag was released on [day] (null for the top of the rail, "back to the
@@ -190,7 +229,17 @@ class TimelineViewModel
          * repository answers from Room.
          */
         internal fun onJumpCommitted(position: RailPosition) {
-            viewModelScope.launch { applyJump(position.day, scrub = false, position) }
+            // Decided at the release, not when the launched jump runs: a filtered rail's
+            // release that runs after the filter was cleared must not move the unfiltered
+            // grid (applyFilteredJump then finds no filter and does nothing).
+            val filtered = _activeFilter.value != null
+            viewModelScope.launch {
+                if (filtered) {
+                    applyFilteredJump(position.day, scrub = false, position)
+                } else {
+                    applyJump(position.day, scrub = false, position)
+                }
+            }
         }
 
         /** Failures are swallowed the same way every other network path on this screen
@@ -228,7 +277,149 @@ class TimelineViewModel
                 livePagerKey = outcome.landing
                 pagerGeneration.update { PagerSeed(it.generation + 1, outcome.landing) }
             }
-            _jumpCompleted.emit(JumpLanding(outcome.landing, position, scrub))
+            _jumpCompleted.emit(JumpLanding(outcome.landing, position, scrub, TimelineMode.UNFILTERED))
+        }
+
+        // ---- Place filter mode (timeline place filter step 3) ----
+        //
+        // The overlay reports its whole selection on every keystroke and tick
+        // (onSelectionChanged). After FILTER_DEBOUNCE_MS of no change, and if the state is
+        // liveApplicable (F6), it becomes the active filter, which rebuilds the filtered
+        // pager through flatMapLatest; the superseded one is cancelled, and with it the
+        // fetches for streams the new selection dropped (PlaceFilterRepository.retain).
+        // Nothing here touches pagerGeneration, the unfiltered pager or `photos` (F10):
+        // clearing the filter shows the unfiltered grid exactly where it was.
+
+        /** The overlay's latest selection, before the debounce. */
+        private val selection = MutableStateFlow<SelectionState?>(null)
+
+        private val _activeFilter = MutableStateFlow<PlaceFilter?>(null)
+
+        /**
+         * The applied filter, or null for the unfiltered timeline. A filter with no places
+         * ([PlaceFilter.isEmptySelection]: the query matched nothing, or everything was
+         * unticked) is still a filter: the filtered grid is empty (coordinator amendment,
+         * 2026-11-17), never a fallback to everything.
+         */
+        val activeFilter: StateFlow<PlaceFilter?> = _activeFilter.asStateFlow()
+
+        /** One build of the filtered pager: its streams, where it starts (a filtered jump's
+         * landing, else the newest photo) and a generation so the same key can rebuild. */
+        private data class FilteredSeed(
+            val streams: List<FacetStreamSpec>,
+            val initialKey: TimelineKey?,
+            val generation: Int,
+        )
+
+        private val filteredSeed = MutableStateFlow<FilteredSeed?>(null)
+
+        /** Never reset, not even by a clear: a filter re-applied right after a clear must
+         * be a new seed. Restarting at 1 made it *equal* to the seed before the clear, so
+         * the StateFlow conflated the null away and the old pager (whose fetch the clear
+         * had cancelled) stayed up, in its error state. */
+        private var filteredGenerations = 0
+
+        /**
+         * The filtered grid's pages (empty when there's no filter or the filter has no
+         * places). Rebuilt when the selection's streams change (F10: at the newest photo)
+         * or on a filtered jump (at its landing); a change of query alone that selects the
+         * same streams keeps the pager and its position.
+         */
+        @OptIn(ExperimentalCoroutinesApi::class)
+        val filteredTimeline: Flow<PagingData<PhotoEntity>> =
+            filteredSeed
+                .flatMapLatest { seed ->
+                    if (seed == null || seed.streams.isEmpty()) {
+                        flowOf(PagingData.empty())
+                    } else {
+                        placeFilterRepository.pager(seed.streams, seed.initialKey)
+                    }
+                }.cachedIn(viewModelScope)
+
+        /** The partial rail's inputs (F2), or null with no filter. */
+        @OptIn(ExperimentalCoroutinesApi::class)
+        val filteredRail: StateFlow<FilteredRail?> =
+            filteredSeed
+                .map { it?.streams }
+                .distinctUntilChanged()
+                .flatMapLatest { streams ->
+                    when {
+                        streams == null -> flowOf(null)
+                        streams.isEmpty() -> flowOf(FilteredRail(0, TimelineHistogram(emptyMap(), 0), complete = true))
+                        else ->
+                            combine(placeFilterRepository.loaded(streams), _activeFilter) { loaded, filter ->
+                                val n = filter?.photoCount ?: 0
+                                FilteredRail(
+                                    total = if (loaded.complete) loaded.histogram.total else maxOf(n, loaded.histogram.total),
+                                    loaded = loaded.histogram,
+                                    complete = loaded.complete,
+                                )
+                            }
+                    }
+                }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+        /** The overlay's selection changed (a keystroke, a tick, All/None). Applies after
+         * [FILTER_DEBOUNCE_MS] of quiet, if [SelectionState.liveApplicable]; below the
+         * 2-character floor the previous filter stands. */
+        fun onSelectionChanged(state: SelectionState) {
+            selection.value = state
+        }
+
+        /** The IME Search action: applies the current selection at once, whatever its
+         * length (F6). */
+        fun applyNow() {
+            selection.value?.let { setActiveFilter(it.toFilter()) }
+        }
+
+        /** ✕ on the chip, or Back on a filtered timeline (F8, F11): no filter, and the
+         * session's stream cache is emptied (F13). The unfiltered grid is untouched, so it
+         * reappears exactly where it was (F10). */
+        fun clearFilter() {
+            selection.value = null
+            setActiveFilter(null)
+            // Synchronous on purpose: the cancel happens now, and a filter applied right
+            // after this waits for the wipe (PlaceFilterRepository.beginClear).
+            placeFilterRepository.beginClear()
+        }
+
+        private fun setActiveFilter(filter: PlaceFilter?) {
+            _activeFilter.value = filter
+            if (filter == null) {
+                filteredSeed.value = null
+                return
+            }
+            val current = filteredSeed.value
+            if (current == null || current.streams.map { it.key }.toSet() != filter.streamKeys) {
+                filteredSeed.value = FilteredSeed(filter.streams, initialKey = null, generation = ++filteredGenerations)
+            }
+        }
+
+        /** The partial rail is held in its unloaded segment (F2): load one more page of
+         * the filter. True if anything loaded. */
+        suspend fun loadOlderFiltered(): Boolean {
+            val seed = filteredSeed.value ?: return false
+            if (seed.streams.isEmpty()) return false
+            return placeFilterRepository.loadOlder(seed.streams)
+        }
+
+        /** A rail jump in filter mode (F2, F10): answered in Room by
+         * [PlaceFilterRepository.localLanding], never by [PhotoRepository.jumpTo], so the
+         * unfiltered cache and pager stay as they were. */
+        private suspend fun applyFilteredJump(
+            day: LocalDate?,
+            scrub: Boolean,
+            position: RailPosition,
+        ) = jumpLock.withLock {
+            val seed = filteredSeed.value ?: return@withLock
+            if (seed.streams.isEmpty()) return@withLock
+            val landing = placeFilterRepository.localLanding(seed.streams, day)
+            if (day != null && landing == null) return@withLock
+            if (landing != seed.initialKey) {
+                // Lost to a change of filter meanwhile: that rebuild wins, and this jump is moot.
+                if (!filteredSeed.compareAndSet(seed, seed.copy(initialKey = landing, generation = filteredGenerations + 1))) return@withLock
+                filteredGenerations++
+            }
+            _jumpCompleted.emit(JumpLanding(landing, position, scrub, TimelineMode.FILTERED))
         }
 
         private fun refreshBounds() {
@@ -253,6 +444,11 @@ class TimelineViewModel
         }
 
         init {
+            @OptIn(FlowPreview::class)
+            selection
+                .debounce(FILTER_DEBOUNCE_MS)
+                .onEach { state -> if (state != null && state.liveApplicable) setActiveFilter(state.toFilter()) }
+                .launchIn(viewModelScope)
             refreshBounds()
             // A fresh start begins at the present. Room outlives the process, so the cache
             // still holds whatever window the last session ended in (often a fast-scroll

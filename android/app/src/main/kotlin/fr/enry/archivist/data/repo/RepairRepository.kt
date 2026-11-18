@@ -10,7 +10,6 @@ import fr.enry.archivist.crypto.ObjectRef
 import fr.enry.archivist.crypto.WholeObjectCipher
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoDao
-import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.UploadQueueDao
 import fr.enry.archivist.data.local.db.UploadState
 import fr.enry.archivist.data.remote.ArchivistApiFactory
@@ -96,6 +95,7 @@ class RepairRepository
         private val masterKeyHolder: MasterKeyHolder,
         private val photoDetailRepository: PhotoDetailRepository,
         private val jumpCoordinator: TimelineJumpCoordinator,
+        private val placeFilterRepository: PlaceFilterRepository,
         private val okHttpClient: OkHttpClient,
         @ApplicationContext private val context: Context,
     ) {
@@ -191,8 +191,8 @@ class RepairRepository
                 // is a plain refresh key, not a jump landing -- a jump landing would (and
                 // did, until this was found live) visibly reposition the repaired photo
                 // to the top of the grid instead of leaving the timeline untouched.
-                jumpCoordinator.stageExternalRefreshKey(TimelineKey(refreshed.meta.takenAt, refreshed.meta.photoId))
-                photoDao.upsertAll(listOf(refreshed.meta.toEntity()))
+                // writeEditedPhoto also patches the place filter's cached rows (step 7).
+                writeEditedPhoto(refreshed.meta.toEntity(), photoDao, jumpCoordinator, placeFilterRepository)
 
                 val warnings =
                     buildList {

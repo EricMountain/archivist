@@ -65,6 +65,7 @@ class DeleteRepository
         private val uploadQueueDao: UploadQueueDao,
         private val localTombstoneDao: LocalTombstoneDao,
         private val mediaStoreSource: MediaStoreSource,
+        private val placeFilterRepository: PlaceFilterRepository,
     ) {
         suspend fun delete(
             photoId: String,
@@ -86,6 +87,9 @@ class DeleteRepository
             if (!response.isSuccessful) return DeleteOutcome.Error("HTTP ${response.code()}")
 
             photoDao.deleteByPhotoId(photoId)
+            // And from the place filter's cached rows, so the filtered grid and its detail
+            // swipe lose it too (step 7, F13).
+            placeFilterRepository.removePhoto(photoId)
             tombstoneLocalFiles(photoId)
 
             if (mode == DeleteMode.ARCHIVE_ONLY) return DeleteOutcome.Done

@@ -144,6 +144,12 @@ Room is the source of truth the UI reads, never the network directly. The timeli
 render offline, and `RemoteMediator` is built on exactly that assumption: the network
 fills Room, and Room feeds the pager.
 
+The place filter's tables (`facet_streams`, `facet_stream_rows`) are the exception to
+"Room mirrors server items": they are a **client-only session cache** of the facet pages
+this session has fetched, emptied when the filter is cleared and on a cold start. No
+server item corresponds to a row, and nothing there survives the process (see "Search
+(places)" below).
+
 ## The hard parts
 
 ### Encrypting on device
@@ -418,6 +424,32 @@ battery, so "only while charging" should be genuinely offered rather than buried
   starts a new bubble. The bubble reads `14 Jul 2026 · Kyoto`, and only the place half
   ellipsizes. The menu is a floating `⋮` button at top-end; the fast-scroll rail
   starts below it.
+  **Filtered by place** (see "Search (places)"), the same screen shows only the photos
+  taken in the selected places: the same grid, bubbles and rail, over the filter's own
+  pager, `LazyGridState` and lead, while the unfiltered pager, grid state and `photos`
+  cache are left exactly as they were, so clearing the filter returns to the exact
+  unfiltered position. A **filter chip** sits in the top band between the start margin
+  and `⋮` ("Kyoto · 4", "paris · 21 places · 1,912": the query, the number of selected
+  places, their photo count; "zzz · no places" for an empty selection). Its ✕ clears the
+  filter; its body reopens the search with that query and those ticks. The chip **hides
+  while the grid moves**, by swipe or by the rail, while the rail is held, and while the
+  date bubbles linger afterwards (one shared scroll-activity state, so the chip and the
+  sticky bubble cross-fade: in 150 ms, out 300 ms); `⋮` never hides. Back on the filtered
+  timeline clears the filter. In filter mode the bubble's place comes from the most
+  specific selected place that returned the photo (a town's name, a region's name, or
+  nothing for a country, which shows the date alone), and the grid plays **no video
+  previews** (facet items carry no `preview`; detail still plays the video). The bars stay
+  hidden throughout filter mode, including its loading and empty states.
+  The **rail is partial** in filter mode: the top `L/N` of the track (L photos loaded, N
+  the exact total from the vocabulary's counts) is a density rail over the loaded rows,
+  with month ticks, day labels and jumps answered from Room; the rest is a plain,
+  unlabelled segment. Holding the thumb there keeps the grid at the oldest loaded photo,
+  the pill reads "Loading older…", and pages load one at a time while the finger stays.
+  What it can't do: jump straight to a date that isn't loaded yet, or show month labels or
+  density for the unloaded part, since facets have no ascending order and no per-month
+  counts, and fetching them would be a bulk download. Reaching the oldest photos of a big
+  selection means paging through everything newer. The rail is hidden until the first
+  pages are in.
 * **Photo detail** — 2048 thumbnail, pinch-zoom, original on demand, rendition list
   ("JPEG · RAW") with per-rendition delete. A **location row** under the date: the label
   from `#META.place` (locality, then region unless absent or equal to the locality, then
@@ -443,23 +475,88 @@ battery, so "only while charging" should be genuinely offered rather than buried
   backoff (see the upload pipeline), since nothing about the photo changed. The status line shows "Locating…", then "Location updated." /
   "Coordinates saved. No place nearby." (coordinates found, nothing within range) / "No location in this photo." / the error. On success the detail is refetched, the Room
   row's place columns are updated (so the date bubble follows) and the cached place
-  vocabulary's `ETag` is dropped, so search refetches it on next open.
-* **Search (places)** — "Search" in the timeline's `⋮` menu (`ui/search/`). Matches
-  against the owner's place vocabulary (`GET /places`, cached in Room with its `ETag` and
+  vocabulary's `ETag` is dropped, so search refetches it on next open. The filter's
+  cached rows of the photo follow too: one whose place is still the filtered place keeps
+  that place's name, and one that has left it **stays in the filter for the rest of the
+  session**, showing its real place, so the photo doesn't vanish from under the detail
+  pager; setting the filter again drops it.
+  **Swipe scope:** opened from the timeline, the pager swipes over the cached timeline
+  (all of `photos`). Opened from the filtered timeline, it swipes over the filter's
+  loaded photos only, live from the stream cache, and reaching the last loaded photo
+  loads the filter's next page, as scrolling the grid would. Back returns to the filtered
+  grid at the same position. Edits made in the detail (date, rotate, repair, location,
+  delete) patch, or for a delete remove, the filter's cached rows as well as `photos`; an
+  edit made from the filtered detail updates a `photos` row only if the timeline window
+  already holds that photo, and doesn't re-anchor the hidden unfiltered timeline.
+* **Search (places)** — the timeline's `⋮` menu and the place filter (`ui/search/`,
+  `ui/timeline/MenuPanel.kt`). Tapping `⋮` grows it into a card (about
+  `min(width − 16dp, 360dp)` wide, from the button's corner) holding a "Search places"
+  field and the menu entries (Settings). Tapping the field focuses it and opens the
+  keyboard; the menu entries fade out (150 ms), the card widens to the top band, and a
+  suggestion panel opens below it, at most 45 % of the height above the keyboard. There's
+  no scrim: the live-filtered grid stays visible below the panel. States, Back and
+  dismissing are one pure reducer (`PlaceSearchState.kt`): in the card, Back or an outside
+  tap collapses it (the touch is consumed); while searching with the keyboard open, Back
+  closes the keyboard and the IME Search action applies at once and dismisses; with it
+  closed, Back or a tap on the grid below dismisses (that tap doesn't open a photo),
+  **keeping** the filter. There is nothing to apply or discard: every change is live, and
+  ✕ on the chip or editing the query is the undo.
+
+  Matching runs against the owner's place vocabulary (`GET /places`, cached in Room with its `ETag` and
   revalidated with `If-None-Match` exactly like the histogram, so it is usually a 304 and
   works offline from the cache). Matching runs on the device: the query and every name
   are folded (`PlaceFold`: case, accents, whitespace) and the query must be a substring of
   a town's name, a region's name, or a country's name in the device locale *or* English
   ("allemagne" and "germany" both find `DE` on a French phone). A town matches on its own
   name only. Ranking: matches at the start of the name or of any word first, then by
-  photo count, then by name; at most 50. An empty query lists the top places by count.
-  Rows read "Kyoto · Japan · 2" (a town: its region unless absent or equal to its name,
-  then the country), "Stanley · Falkland Islands · 1", "Kyoto (region) · Japan · 2",
-  "Japan · 3". Picking one shows a grid over `GET /facets/{COUNTRY|REGION|PLACE}/{id}`,
-  newest first, through a plain Paging 3 `PagingSource` (no Room cache), drawn with the
-  timeline's own cell and thumbnail fetcher; a tap opens the photo detail screen, which
-  then swipes over the loaded results. Other facets (labels, cameras, years) and "all
-  matches for a query" merged across places are not built.
+  photo count, then by name; at most **200** shown, with a footer ("Showing 200 of 340 —
+  type more to narrow") when there are more, and those beyond are not in the filter.
+  Matches are **grouped** country → region → town (a town is linked to its region by
+  `(cc, regionName)`; an ambiguous or missing match groups it under its country only). A
+  matched ancestor is a row with a checkbox; an unmatched one is a plain header with
+  "All · None". Every visible match arrives **ticked**; unticks are remembered while the
+  query changes, so matches that appear as you type on arrive ticked. A ticked region
+  implies its matched towns, and a ticked country its regions and towns: those show
+  ticked, disabled and captioned "included", and only the maximal ticked entries become
+  filter streams, so the total is an exact sum. A status line reads "1,912 photos in 21
+  places", with a progress dot during the first load. An **empty query** lists the top
+  places unticked, as quick picks; an empty query with nothing ticked is no filter. A
+  query that matches nothing, or whose matches are all unticked, is an **active filter
+  with no places**: the grid shows "No places selected." and Clear filter, never the
+  unfiltered timeline. Other states: the vocabulary loading; "Couldn't load your places"
+  with Retry (only with nothing cached); "No located photos yet."; "No places match.".
+
+  **Live apply:** every keystroke and tick re-derives the selection; after **350 ms** with
+  no change it becomes the active filter, provided the query has at least **2** folded
+  characters, or the last change was a tick, or the query is empty (clearing the field
+  applies). Below that the suggestions update but the previous filter stands; IME Search
+  applies at once whatever the length. A filter whose places are the same as before
+  keeps the filtered grid and its position; any other change starts it at the newest
+  photo.
+
+  **Data:** one facet stream per selected place, `GET /facets/{COUNTRY|REGION|PLACE}/{id}`
+  (newest first, pages of 60), cached in the session cache (`facet_streams`,
+  `facet_stream_rows`; see "Architecture"). The grid pages over a merged, deduplicated
+  query of the selected streams, cut at a **watermark** (the newest "oldest row fetched"
+  among the unfinished streams), so nothing shows until every selected stream has its
+  first page, and rows never appear above ones already shown. A `RemoteMediator` fetches
+  the next page of whichever stream holds the watermark only when the grid (or the
+  detail pager, or the held rail) reaches the end: **load as you scroll, never in bulk**.
+  At most 6 facet requests are in flight; a new selection cancels the in-flight and
+  queued fetches of the streams it dropped and lets those it kept finish into the shared
+  cache, so narrowing a query costs nothing and widening it pays only for the new places.
+  The filter **does not survive the process**: the app always opens unfiltered at the
+  present. While a filter is set, uploads and changes made elsewhere aren't seen until it
+  is cleared and set again; this device's own edits patch the cached rows (see "Photo
+  detail"). Filtered states: a spinner for the first load; "Couldn't load photos for these
+  places." with Retry and Clear filter; "No photos in these places any more." (every
+  stream came back empty: a stale vocabulary) with Clear filter; a Retry cell at the end
+  when a later page fails. **Offline**, suggestions still work from the cached vocabulary
+  and streams already cached this session show what they have; a new place is the error
+  state. There's no fallback to `photos`, which is a window and can't answer a region.
+
+  Other facets (labels, cameras, years), excluding a sub-place, and saved or persistent
+  filters are not built.
 * **Upload queue** — visible and cancellable. A silent queue that has stalled on a
   constraint is a support nightmare of one's own making.
 * **Settings** — devices and their timezone defaults, home timezone, sync policy,

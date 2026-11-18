@@ -9,6 +9,8 @@ import fr.enry.archivist.crypto.WholeObjectCipher
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.local.db.AppDatabase
+import fr.enry.archivist.data.local.db.AssetStatus
+import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.ThumbEntry
 import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.UploadQueueEntity
@@ -40,6 +42,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -66,6 +69,7 @@ class RepairRepositoryTest {
     private lateinit var thumbnailer: Thumbnailer
     private val previewGenerator = fr.enry.archivist.testutil.FakePreviewGenerator()
     private lateinit var jumpCoordinator: TimelineJumpCoordinator
+    private lateinit var placeFilter: PlaceFilterRepository
 
     private val json = Json { ignoreUnknownKeys = true }
     private val masterKey = MasterKey.of(ByteArray(32) { it.toByte() })
@@ -102,6 +106,7 @@ class RepairRepositoryTest {
             masterKeyHolder = masterKeyHolder,
             photoDetailRepository = photoDetailRepository,
             jumpCoordinator = jumpCoordinator,
+            placeFilterRepository = placeFilter,
             okHttpClient = fastTimeoutClient(),
             context = mock<Context>().also { whenever(it.cacheDir).thenReturn(tempDir) },
         )
@@ -129,6 +134,28 @@ class RepairRepositoryTest {
         thumbnailer = FakeThumbnailer()
         jumpCoordinator = TimelineJumpCoordinator()
         db = buildTestDatabase()
+        placeFilter = placeFilterFor(db)
+    }
+
+    /** The repaired photo as the timeline window caches it (opened from the timeline, it
+     * always is). */
+    private suspend fun seedTimelineRow() {
+        db.photoDao().upsertAll(
+            listOf(
+                PhotoEntity(
+                    photoId = photoId,
+                    takenAt = "2026-08-30T10:00:00.000Z",
+                    tzOffsetMin = 0,
+                    mime = "image/jpeg",
+                    width = 100,
+                    height = 100,
+                    status = AssetStatus.READY,
+                    thumbs = emptyMap(),
+                    encDek = encDek,
+                    encKeyId = "mk-1",
+                ),
+            ),
+        )
     }
 
     @AfterEach
@@ -266,6 +293,7 @@ class RepairRepositoryTest {
         runTest {
             connectInstance()
             queueRow()
+            seedTimelineRow()
             setApiDispatcher { _, body ->
                 val sent = json.decodeFromString<Map<String, JsonElement>>(String(body))
                 assertEquals(setOf("256", "1024", "2048"), sent.getValue("thumbs").jsonObject.keys)
@@ -300,6 +328,7 @@ class RepairRepositoryTest {
         runTest {
             connectInstance()
             queueRow()
+            seedTimelineRow()
             setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
 
             val expectedKey = TimelineKey("2026-08-30T10:00:00.000Z", photoId)
@@ -314,6 +343,52 @@ class RepairRepositoryTest {
         }
 
     // ------------------------------------------------------------------
+    // Place filter step 7: the filter's cached rows, and the hidden timeline.
+    // ------------------------------------------------------------------
+
+    /** Opened from the filtered grid, the photo can be far outside the timeline window:
+     * inserting it into `photos` would leave a stray row there, and staging a refresh key
+     * on it would move the hidden timeline. Its filter rows take the new thumbnails, and
+     * keep the stream's own place (F12). */
+    @Test
+    fun `a photo only in the filter's cache - its rows patched, photos and the timeline untouched`() =
+        runTest {
+            connectInstance()
+            queueRow()
+            placeFilter.startFilterSessionForTest()
+            db.seedFilterRow("PLACE#1857910", photoId, placeCc = "JP", placeName = "Kyoto", placeKey = "1857910")
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
+
+            assertEquals(RepairOutcome.Done, buildRepository().repairThumbnails(photoDetail()))
+
+            assertNull(db.photoDao().getByPhotoId(photoId))
+            assertNull(jumpCoordinator.consumeExternalRefreshKey())
+            val row = db.facetStreamDao().rowsOfPhoto(photoId).single()
+            assertEquals(ThumbEntry("derived", "th/o/$photoId/256", "iv-256", 2), row.thumbs[256])
+            assertEquals("Kyoto", row.placeName)
+            assertEquals("1857910", row.placeKey)
+        }
+
+    /** In both caches during a filter session: both patched, but no refresh key, so the
+     * hidden timeline comes back exactly where it was when the filter is cleared (F10). */
+    @Test
+    fun `during a filter session - photos patched in place, no refresh key staged`() =
+        runTest {
+            connectInstance()
+            queueRow()
+            placeFilter.startFilterSessionForTest()
+            seedTimelineRow()
+            db.seedFilterRow("PLACE#1857910", photoId)
+            setApiDispatcher { _, _ -> MockResponse().setResponseCode(200).setBody("{${thumbUploadsJson()}}") }
+
+            assertEquals(RepairOutcome.Done, buildRepository().repairThumbnails(photoDetail()))
+
+            assertEquals(ThumbEntry("derived", "th/o/$photoId/256", "iv-256", 2), db.photoDao().getByPhotoId(photoId)!!.thumbs[256])
+            assertEquals(ThumbEntry("derived", "th/o/$photoId/256", "iv-256", 2), db.facetStreamDao().rowsOfPhoto(photoId).single().thumbs[256])
+            assertNull(jumpCoordinator.consumeExternalRefreshKey())
+        }
+
+    // ------------------------------------------------------------------
     // Video preview clip: repair regenerates it alongside the stills.
     // ------------------------------------------------------------------
 
@@ -324,6 +399,7 @@ class RepairRepositoryTest {
         runTest {
             connectInstance()
             queueRow(mime = "video/mp4")
+            seedTimelineRow()
             refreshedEntryJson =
                 timelineEntryJson(""""preview":{"bucket":"derived","key":"th/o/$photoId/g/preview","iv":"iv-p","bytes":80},""")
             setApiDispatcher { _, _ ->

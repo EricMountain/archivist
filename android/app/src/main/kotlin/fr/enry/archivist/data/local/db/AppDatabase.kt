@@ -36,6 +36,10 @@ import androidx.sqlite.execSQL
  * Version 8 added the `place_vocabulary` table (geolocation plan step 8): the cached
  * `GET /places` answer, see [PlaceVocabularyEntity]. A plain `CREATE TABLE`
  * ([MIGRATION_7_8]); nothing existing changes.
+ *
+ * Version 9 added `facet_streams` and `facet_stream_rows` (timeline place filter step 2):
+ * a client-only session cache of per-place facet pages, see [FacetStreamEntity]. Plain
+ * `CREATE TABLE`s ([MIGRATION_8_9]); nothing existing changes.
  */
 @Database(
     entities = [
@@ -49,8 +53,10 @@ import androidx.sqlite.execSQL
         HistogramEntity::class,
         TimelineWindowEntity::class,
         PlaceVocabularyEntity::class,
+        FacetStreamEntity::class,
+        FacetStreamRowEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -74,6 +80,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun timelineWindowDao(): TimelineWindowDao
 
     abstract fun placeVocabularyDao(): PlaceVocabularyDao
+
+    abstract fun facetStreamDao(): FacetStreamDao
 }
 
 val MIGRATION_4_5 =
@@ -138,6 +146,37 @@ val MIGRATION_7_8 =
             connection.execSQL(
                 "CREATE TABLE IF NOT EXISTS `place_vocabulary` " +
                     "(`id` INTEGER NOT NULL, `body` TEXT NOT NULL, `etag` TEXT, PRIMARY KEY(`id`))",
+            )
+        }
+    }
+
+/**
+ * Adds the place filter's session cache, `facet_streams` and `facet_stream_rows` (see
+ * [FacetStreamEntity]), empty. Touches nothing else. The statements are Room's own
+ * `createSql` from `schemas/.../9.json`, so the post-migration schema check passes.
+ * Connection form for the same reason as [MIGRATION_6_7].
+ */
+val MIGRATION_8_9 =
+    object : androidx.room.migration.Migration(8, 9) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `facet_streams` (`streamKey` TEXT NOT NULL, `cursor` TEXT, " +
+                    "`oldestTakenAt` TEXT, `oldestPhotoId` TEXT, `done` INTEGER NOT NULL, `fetchedAt` TEXT NOT NULL, " +
+                    "PRIMARY KEY(`streamKey`))",
+            )
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `facet_stream_rows` (`streamKey` TEXT NOT NULL, `photoId` TEXT NOT NULL, " +
+                    "`takenAt` TEXT NOT NULL, `tzOffsetMin` INTEGER NOT NULL, `mime` TEXT NOT NULL, `width` INTEGER NOT NULL, " +
+                    "`height` INTEGER NOT NULL, `status` TEXT NOT NULL, `thumbs` TEXT NOT NULL, `encDek` TEXT NOT NULL, " +
+                    "`encKeyId` TEXT NOT NULL, `placeCc` TEXT, `placeName` TEXT, `placeKey` TEXT, " +
+                    "`specificity` INTEGER NOT NULL, `localDay` TEXT NOT NULL, PRIMARY KEY(`streamKey`, `photoId`))",
+            )
+            connection.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_facet_stream_rows_photoId` ON `facet_stream_rows` (`photoId`)",
+            )
+            connection.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_facet_stream_rows_streamKey_takenAt` " +
+                    "ON `facet_stream_rows` (`streamKey`, `takenAt`)",
             )
         }
     }

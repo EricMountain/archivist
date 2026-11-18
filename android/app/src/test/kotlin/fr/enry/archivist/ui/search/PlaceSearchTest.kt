@@ -173,11 +173,17 @@ class PlaceSearchTest {
     }
 
     @Test
-    fun `suggestions are capped`() {
-        val many = PlacesResponse(localities = (1..80).map { PlaceLocalityDto("$it", "Town $it", null, "FR", it) })
+    fun `suggestions are capped, and the uncapped count is reported`() {
+        val count = MAX_PLACE_SUGGESTIONS + 30
+        val many = PlacesResponse(localities = (1..count).map { PlaceLocalityDto("$it", "Town $it", null, "FR", it) })
         assertEquals(MAX_PLACE_SUGGESTIONS, searchPlaces(many, "town", en).size)
-        assertEquals("Town 80", searchPlaces(many, "town", en).first().title)
+        assertEquals("Town $count", searchPlaces(many, "town", en).first().title)
         assertEquals(MAX_PLACE_SUGGESTIONS, searchPlaces(many, "", en).size)
+        val matches = matchPlaces(many, "town", en)
+        assertEquals(MAX_PLACE_SUGGESTIONS, matches.shown.size)
+        assertEquals(count, matches.total)
+        assertEquals(1, matchPlaces(many, "town 7", en, limit = 1).shown.size)
+        assertEquals(11, matchPlaces(many, "town 7", en, limit = 1).total)
     }
 
     @Test

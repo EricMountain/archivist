@@ -418,6 +418,13 @@ verified on a device with a maps app and on the clean 9a AVD (no maps app → fa
 
 ### 8. Search screen (places only)
 
+> **Superseded (2026-11-18)** by [timeline-place-filter.md](timeline-place-filter.md): place
+> search moved into the timeline's `⋮` menu and filters the main timeline in place, and
+> the dedicated screen built here (`SearchScreen`, `SearchViewModel`, the single-place
+> `FacetPagingSource` results grid) was deleted. The vocabulary sync, the matching and
+> ranking (`PlaceSearch.kt`, `PlaceFold`) are still the ones this step built. Kept below as
+> the record of what step 8 asked for.
+
 * Entered from the floating `⋮` menu.
 * The vocabulary is fetched via `GET /places` and cached with its ETag.
 * Folded substring match runs over locality, region and the localized country name.

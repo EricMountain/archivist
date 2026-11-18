@@ -10,6 +10,7 @@ import fr.enry.archivist.data.repo.LocationUpdateRepository
 import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.PhotoDetailRepository
 import fr.enry.archivist.data.repo.PhotoRepository
+import fr.enry.archivist.data.repo.PlaceFilterRepository
 import fr.enry.archivist.data.repo.RepairRepository
 import fr.enry.archivist.data.repo.RotateRepository
 import fr.enry.archivist.data.repo.TakenAtRepository
@@ -54,6 +55,7 @@ class DetailViewModelLocationTest {
             takenAtRepository = mock<TakenAtRepository>(),
             rotateRepository = mock<RotateRepository>(),
             locationUpdateRepository = locationRepo,
+            placeFilterRepository = mock<PlaceFilterRepository>(),
             instanceStore = instanceStore,
             context = mock<Context>(),
         )

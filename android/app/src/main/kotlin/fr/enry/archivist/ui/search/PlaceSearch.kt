@@ -19,6 +19,10 @@ enum class PlaceLevel(val facetType: String) {
  * geonameid. [title] is the place's own name ("Kyoto (region)" for a region); [context]
  * is what tells two same-named places apart (region and country for a town, country for
  * a region; null for a country).
+ *
+ * [cc] is the place's country and [name] its bare name as the vocabulary has it
+ * ("Kyoto", not "Kyoto (region)"; the device-locale name for a country). The timeline
+ * place filter needs both: [cc] to group, [name] for the date bubbles (plan F5, F12).
  */
 data class PlaceSuggestion(
     val level: PlaceLevel,
@@ -26,7 +30,13 @@ data class PlaceSuggestion(
     val title: String,
     val context: String?,
     val n: Int,
+    val cc: String = "",
+    val name: String = title,
 ) {
+    /** `<facetType>#<facetValue>`: unique across levels (a region and a town can share a
+     * name, never a key), and the facet stream's key in the filter's Room cache. */
+    val key: String get() = "${level.facetType}#$facetValue"
+
     /** The second line: context and count, "Kyoto, Japan · 2". */
     fun subtitle(locale: Locale = Locale.getDefault()): String =
         listOfNotNull(context, NumberFormat.getIntegerInstance(locale).format(n)).joinToString(" · ")
@@ -35,9 +45,18 @@ data class PlaceSuggestion(
     fun text(locale: Locale = Locale.getDefault()): String = "$title · ${subtitle(locale)}"
 }
 
-/** The cap on suggestions shown: enough to scroll through for a short query like "a",
- * few enough that a few-thousand-place vocabulary never builds a long list per keystroke. */
-const val MAX_PLACE_SUGGESTIONS = 50
+/** The cap on suggestions shown (timeline place filter F7, was 50): enough that a
+ * query like "paris" lists every arrondissement, few enough that a few-thousand-place
+ * vocabulary never builds a long list per keystroke. Matches past it are counted
+ * ([PlaceMatches.total]) but not shown, and never in the filter. */
+const val MAX_PLACE_SUGGESTIONS = 200
+
+/** [searchPlaces]'s answer with the uncapped count: [shown] is at most the cap, [total]
+ * is every match, for the overlay's "Showing 200 of 340" footer. */
+data class PlaceMatches(
+    val shown: List<PlaceSuggestion>,
+    val total: Int,
+)
 
 /**
  * Geolocation plan step 8 (D6): the place vocabulary matched against [query] on the
@@ -64,7 +83,15 @@ fun searchPlaces(
     query: String,
     locale: Locale = Locale.getDefault(),
     limit: Int = MAX_PLACE_SUGGESTIONS,
-): List<PlaceSuggestion> {
+): List<PlaceSuggestion> = matchPlaces(vocabulary, query, locale, limit).shown
+
+/** [searchPlaces], also reporting how many places matched before the cap. */
+fun matchPlaces(
+    vocabulary: PlacesResponse,
+    query: String,
+    locale: Locale = Locale.getDefault(),
+    limit: Int = MAX_PLACE_SUGGESTIONS,
+): PlaceMatches {
     val q = PlaceFold.fold(query)
     val candidates = ArrayList<Pair<PlaceSuggestion, Boolean>>()
 
@@ -97,27 +124,29 @@ fun searchPlaces(
     for (c in vocabulary.countries) {
         val local = countryName(c.cc, locale)
         val english = countryName(c.cc, Locale.ENGLISH)
-        consider(PlaceSuggestion(PlaceLevel.COUNTRY, c.cc, local, null, c.n), listOf(local, english).distinct())
+        consider(PlaceSuggestion(PlaceLevel.COUNTRY, c.cc, local, null, c.n, c.cc, local), listOf(local, english).distinct())
     }
     for (r in vocabulary.regions) {
         consider(
-            PlaceSuggestion(PlaceLevel.REGION, r.id, "${r.name} (region)", countryName(r.cc, locale), r.n),
+            PlaceSuggestion(PlaceLevel.REGION, r.id, "${r.name} (region)", countryName(r.cc, locale), r.n, r.cc, r.name),
             listOf(r.name),
         )
     }
     for (l in vocabulary.localities) {
         val region = l.regionName?.takeIf { !it.equals(l.name, ignoreCase = true) }
         val context = listOfNotNull(region, countryName(l.cc, locale)).joinToString(", ")
-        consider(PlaceSuggestion(PlaceLevel.LOCALITY, l.id, l.name, context, l.n), listOf(l.name))
+        consider(PlaceSuggestion(PlaceLevel.LOCALITY, l.id, l.name, context, l.n, l.cc, l.name), listOf(l.name))
     }
 
-    return candidates
-        .sortedWith(
-            compareByDescending<Pair<PlaceSuggestion, Boolean>> { it.second }
-                .thenByDescending { it.first.n }
-                .thenBy { PlaceFold.fold(it.first.title) }
-                .thenBy { it.first.level.ordinal }
-                .thenBy { it.first.facetValue },
-        ).take(limit)
-        .map { it.first }
+    val shown =
+        candidates
+            .sortedWith(
+                compareByDescending<Pair<PlaceSuggestion, Boolean>> { it.second }
+                    .thenByDescending { it.first.n }
+                    .thenBy { PlaceFold.fold(it.first.title) }
+                    .thenBy { it.first.level.ordinal }
+                    .thenBy { it.first.facetValue },
+            ).take(limit)
+            .map { it.first }
+    return PlaceMatches(shown, candidates.size)
 }

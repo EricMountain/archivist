@@ -10,6 +10,7 @@ import java.time.temporal.ChronoUnit
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -75,6 +76,9 @@ data class RailPosition(
     val day: LocalDate?,
     val progress: Float = 0f,
     val dayCount: Int? = null,
+    // Past the loaded part of a [PartialScale] (place filter F2): [day] is then the oldest
+    // loaded day, where the grid holds while older photos load.
+    val beyond: Boolean = false,
 )
 
 /** One label on the fast-scroll rail. [fraction] is its position along the track. */
@@ -225,6 +229,96 @@ internal class DensityScale(histogram: TimelineHistogram) : RailScale {
             TimelineTick(fraction = fractionOfDay(day), label = FINE_TICK_FORMATTER.format(day), major = day == centerDay)
         }
     }
+}
+
+/**
+ * The place filter's partial rail (timeline place filter F2, step 6): [total] photos (N,
+ * exact, from the vocabulary) of which only the newest are loaded, [loaded] per day (L of
+ * them). The top `L/N` of the track is a [DensityScale] over [loaded], compressed into that
+ * fraction, with its ticks; the rest is the unloaded segment, unlabelled, where every
+ * position means "the oldest loaded day, and load older" ([isBeyond]).
+ *
+ * Position is still by photo count, so the thumb at `topIndex / N` is exact. With
+ * everything loaded (`N = L`) this is exactly [DensityScale].
+ */
+internal class PartialScale(
+    loaded: TimelineHistogram,
+    total: Int,
+) : RailScale {
+    private val inner = DensityScale(loaded)
+    private val loadedCount = loaded.days.values.sum()
+
+    /** Where the loaded part ends on the track: `L / N`, at most 1. */
+    val loadedFraction: Float = if (total <= loadedCount || total <= 0) 1f else loadedCount.toFloat() / total
+
+    private val oldestDay: LocalDate? = loaded.days.keys.minOfOrNull(LocalDate::parse)
+
+    /** Whether [fraction] is in the unloaded segment. */
+    fun isBeyond(fraction: Float): Boolean = loadedFraction < 1f && fraction > loadedFraction
+
+    /** [fraction] (in the loaded part) as a fraction of [inner]'s track. Kept off the very
+     * top unless [fraction] itself is there: a short loaded part must not turn most of
+     * itself into "back to the present". */
+    private fun innerFraction(fraction: Float): Float {
+        val f = (fraction / loadedFraction).coerceIn(0f, 1f)
+        return if (f <= TOP_OF_RAIL_FRACTION) TOP_OF_RAIL_FRACTION + INNER_TOP_EPSILON else f
+    }
+
+    override fun dayAt(fraction: Float): LocalDate? {
+        if (fraction <= TOP_OF_RAIL_FRACTION) return null
+        if (isBeyond(fraction)) return oldestDay
+        return inner.dayAt(innerFraction(fraction))
+    }
+
+    override fun positionAt(fraction: Float): RailPosition {
+        if (fraction <= TOP_OF_RAIL_FRACTION) return RailPosition(null)
+        if (isBeyond(fraction)) {
+            val day = oldestDay ?: return RailPosition(null)
+            return RailPosition(day, progress = 1f, dayCount = inner.dayCount(day), beyond = true)
+        }
+        return inner.positionAt(innerFraction(fraction))
+    }
+
+    override fun fractionOfDay(day: LocalDate): Float = inner.fractionOfDay(day) * loadedFraction
+
+    override fun dayCount(day: LocalDate): Int? = inner.dayCount(day)
+
+    override fun fractionOf(
+        day: LocalDate,
+        progress: Float,
+    ): Float = inner.fractionOf(day, progress) * loadedFraction
+
+    /** [inner]'s ticks, squeezed into the loaded part: proportionally fewer of them, so
+     * they keep the unfiltered rail's spacing rather than crowding. */
+    override fun ticks(maxTicks: Int): List<TimelineTick> {
+        val n = if (loadedFraction >= 1f) maxTicks else (maxTicks * loadedFraction).roundToInt().coerceIn(2, maxTicks)
+        return inner.ticks(n).map { it.copy(fraction = it.fraction * loadedFraction) }
+    }
+
+    override fun fineTicks(
+        centerFraction: Float,
+        maxCount: Int,
+    ): List<TimelineTick> {
+        val center =
+            when {
+                centerFraction <= TOP_OF_RAIL_FRACTION -> centerFraction
+                isBeyond(centerFraction) -> 1f
+                else -> innerFraction(centerFraction)
+            }
+        return inner.fineTicks(center, maxCount).map { it.copy(fraction = it.fraction * loadedFraction) }
+    }
+}
+
+/** Nudges [PartialScale]'s inner fraction just past the top threshold. */
+private const val INNER_TOP_EPSILON = 0.0001f
+
+/**
+ * The filtered rail's scale (F2), or null to hide it: no filter, nothing loaded yet ("not
+ * shown until the first pages are in"), or N unknown.
+ */
+internal fun filteredRailScale(rail: FilteredRail?): PartialScale? {
+    if (rail == null || rail.total <= 0 || rail.loaded.days.isEmpty() || rail.loaded.days.values.sum() <= 0) return null
+    return PartialScale(rail.loaded, rail.total)
 }
 
 /**

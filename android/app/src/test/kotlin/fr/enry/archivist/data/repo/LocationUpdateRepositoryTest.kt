@@ -148,6 +148,7 @@ class LocationUpdateRepositoryTest {
                 videoLocationReader = FakeVideoLocationReader(FakeMediaStoreSource()),
                 photoDao = db.photoDao(),
                 placeRepository = PlaceRepository(db, instanceStore, apiFactory, json),
+                placeFilterRepository = placeFilterFor(db),
                 context = mock<Context>().also { whenever(it.cacheDir).thenReturn(cacheDir) },
             )
     }
@@ -264,6 +265,38 @@ class LocationUpdateRepositoryTest {
         assertEquals("Kyoto", row.placeName)
         assertEquals("1857910", row.placeKey)
     }
+
+    /**
+     * Place filter step 7 (F13): the filter's cached rows of the photo follow the update.
+     * A row whose stream still holds the new place keeps the stream's own place (F12); one
+     * whose stream it has left stays in the cache for the session (the detail pager keeps
+     * its photo) but shows the photo's real place now.
+     */
+    @Test
+    fun `the place filter's cached rows are patched, and a row the photo has left keeps it`() =
+        runTest {
+            exifBlob = ExifBlob(cameraModel = "Pixel 8a", gpsLat = 35.01161, gpsLon = 135.76804)
+            connect()
+            db.seedFilterRow("REGION#JP.22", photoId, placeCc = "JP", placeName = "Kyoto (region)", placeKey = "JP.22", specificity = 1)
+            db.seedFilterRow("PLACE#3037854", photoId, placeCc = "FR", placeName = "Arles", placeKey = "3037854")
+            db.seedFilterRow("COUNTRY#FR", photoId, placeCc = "FR", specificity = 0)
+            db.seedFilterRow("PLACE#3037854", "other-photo", placeCc = "FR", placeName = "Arles", placeKey = "3037854")
+            val detail = photoDetailRepository.fetchDetail(photoId)
+
+            assertTrue(repository.updateLocation(detail) is LocationUpdateOutcome.Updated)
+
+            val rows = db.facetStreamDao().rowsOfPhoto(photoId).associateBy { it.streamKey }
+            assertEquals(setOf("REGION#JP.22", "PLACE#3037854", "COUNTRY#FR"), rows.keys)
+            // Still in the region stream: its own place, as F12 gives it.
+            assertEquals(Triple("JP", "Kyoto (region)", "JP.22"), rows.getValue("REGION#JP.22").let { Triple(it.placeCc, it.placeName, it.placeKey) })
+            // Left Arles and France: the photo's real place, flattened as photos does.
+            for (key in listOf("PLACE#3037854", "COUNTRY#FR")) {
+                assertEquals(Triple("JP", "Kyoto", "1857910"), rows.getValue(key).let { Triple(it.placeCc, it.placeName, it.placeKey) })
+            }
+            // Another photo's row is untouched.
+            assertEquals("Arles", db.facetStreamDao().rowsOfPhoto("other-photo").single().placeName)
+            assertRoomRowIsKyoto()
+        }
 
     @Test
     fun `coordinates already in the blob - no download, no exifEnc in the PUT`() =

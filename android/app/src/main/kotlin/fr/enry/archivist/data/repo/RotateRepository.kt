@@ -15,7 +15,6 @@ import fr.enry.archivist.crypto.ObjectRef
 import fr.enry.archivist.crypto.WholeObjectCipher
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoDao
-import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.UploadQueueDao
 import fr.enry.archivist.data.local.db.UploadQueueEntity
 import fr.enry.archivist.data.local.db.UploadState
@@ -91,6 +90,7 @@ class RotateRepository
         private val enrolmentRepository: EnrolmentRepository,
         private val photoDetailRepository: PhotoDetailRepository,
         private val jumpCoordinator: TimelineJumpCoordinator,
+        private val placeFilterRepository: PlaceFilterRepository,
         private val okHttpClient: OkHttpClient,
         @ApplicationContext private val context: Context,
     ) {
@@ -162,8 +162,8 @@ class RotateRepository
                 val thumbWarning = reuploadThumbnails(api, apiBase, detail.photoId, dek, rotated!!)
 
                 val refreshed = api.getPhotoAsTimelineEntry(photoUrl(apiBase, detail.photoId))
-                jumpCoordinator.stageExternalRefreshKey(TimelineKey(refreshed.meta.takenAt, refreshed.meta.photoId))
-                photoDao.upsertAll(listOf(refreshed.meta.toEntity()))
+                // `photos`, the refresh key and the place filter's cached rows (step 7).
+                writeEditedPhoto(refreshed.meta.toEntity(), photoDao, jumpCoordinator, placeFilterRepository)
 
                 if (thumbWarning != null) RotateOutcome.Error(thumbWarning) else RotateOutcome.Done
             } catch (e: ImageLockedException) {

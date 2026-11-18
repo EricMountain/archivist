@@ -144,7 +144,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * affected, and only in the case a naive implementation gets wrong.
  */
 @Composable
-fun TimelineScrollbar(
+internal fun TimelineScrollbar(
     gridState: LazyGridState,
     items: LazyPagingItems<PhotoEntity>,
     bounds: TimelineBounds?,
@@ -162,15 +162,27 @@ fun TimelineScrollbar(
     // of the rail clear of the system's gesture-handle strip. Touches below it are left to
     // the grid (and the system) like any other.
     trackBottomInset: Dp = 0.dp,
+    // The place filter's partial rail (F2) in place of the one [histogram]/[bounds] give;
+    // pass those as null with it. Null here and there: no rail.
+    scaleOverride: RailScale? = null,
+    // Whether a long press currently holds the rail — the filter chip hides meanwhile (F9).
+    onHeldChange: (Boolean) -> Unit = {},
+    // Held in a [PartialScale]'s unloaded segment: load one more page, and say whether
+    // anything loaded. Called again and again, one page at a time, while the finger stays
+    // there (F2: "Loading older…").
+    onHoldBeyond: (suspend () -> Boolean)? = null,
     content: @Composable () -> Unit,
 ) {
     // Density-weighted once the histogram is cached, linear in time until then — see
     // RailScale. Null only on a first launch that hasn't reached the server at all.
     val scale =
-        remember(histogram, bounds) { railScale(histogram, bounds) } ?: run {
+        remember(histogram, bounds, scaleOverride) { scaleOverride ?: railScale(histogram, bounds) } ?: run {
             content()
             return
         }
+    // For the gesture detector, which must not restart when the scale changes: a partial
+    // rail's scale changes with every page loaded, which can be mid-drag.
+    val scaleNow by rememberUpdatedState(scale)
 
     val haptics = LocalHapticFeedback.current
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
@@ -183,6 +195,8 @@ fun TimelineScrollbar(
     // pointerInput/LaunchedEffect coroutines that don't restart on every recomposition.
     var heldRaw by remember { mutableStateOf<Float?>(null) }
     var heldSelected by remember { mutableStateOf<Float?>(null) }
+    val heldChanged by rememberUpdatedState(onHeldChange)
+    LaunchedEffect(heldRaw != null) { heldChanged(heldRaw != null) }
     var lastDragNanos by remember { mutableLongStateOf(0L) }
     // Finger speed in dp/ms, smoothed over DRAG_SPEED_SMOOTHING_MS so a single noisy
     // sample doesn't flip the drag between fine and coarse.
@@ -347,6 +361,23 @@ fun TimelineScrollbar(
             .collect { onScrub(it.day) }
     }
 
+    // Held in a partial rail's unloaded segment (F2): one page at a time, each waiting for
+    // the last, for as long as the finger stays there. Each page moves the segment's top
+    // down; once it passes the finger, the finger is over loaded photos and this stops.
+    val holdBeyond by rememberUpdatedState(onHoldBeyond)
+    LaunchedEffect(Unit) {
+        snapshotFlow { heldSelected?.let { (scaleNow as? PartialScale)?.isBeyond(it) } == true }
+            .distinctUntilChanged()
+            .collectLatest { beyond ->
+                if (!beyond) return@collectLatest
+                while (true) {
+                    val load = holdBeyond ?: break
+                    // Nothing loaded (offline, an error): try again, but not in a tight loop.
+                    if (!load()) delay(BEYOND_RETRY_MS)
+                }
+            }
+    }
+
     // The scrub above only *fetches* — it's paced by the network and deals in whole days.
     // Where the grid sits is decided here, every frame the finger moves, from whatever is
     // loaded right now: the same fraction of the way through the day's photos as the
@@ -379,7 +410,7 @@ fun TimelineScrollbar(
     // events (Initial pass) before its children and consumes them only once a long press
     // has confirmed, so everything else reaches the grid untouched.
     Box(
-        modifier.pointerInput(scale, trackTopInset, trackBottomInset) {
+        modifier.pointerInput(trackTopInset, trackBottomInset) {
             val stripStartPx = { size.width - HIT_TARGET_WIDTH.toPx() }
             // Gestures arrive in this outer Box's coordinates; the track starts lower.
             val trackTopPx = trackTopInset.toPx()
@@ -393,7 +424,7 @@ fun TimelineScrollbar(
                     val f = fractionAt(y - trackTopPx, trackHeightPx)
                     val lens = railLens ?: Lens(f, f)
                     val selected = lens.unwarp(f)
-                    val position = scale.positionAt(selected)
+                    val position = scaleNow.positionAt(selected)
                     lingering = LingeringSelection(f, Lens(selected, f), position.day)
                     onCommit(position)
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -443,10 +474,10 @@ fun TimelineScrollbar(
                     // this composable's own doc, "Release" paragraph, for why the
                     // raw final sample can't be trusted on its own.
                     val settled = settledSample(releaseHistory, System.nanoTime(), RELEASE_SETTLE_MS) ?: heldSelected
-                    settled?.let { onCommit(scale.positionAt(it)) }
+                    settled?.let { onCommit(scaleNow.positionAt(it)) }
                     val at = heldRaw
                     if (at != null && settled != null) {
-                        lingering = LingeringSelection(at, Lens(settled, at), scale.dayAt(settled))
+                        lingering = LingeringSelection(at, Lens(settled, at), scaleNow.dayAt(settled))
                     }
                     heldRaw = null
                     heldSelected = null
@@ -505,6 +536,7 @@ fun TimelineScrollbar(
                     fraction = heldRawSnapshot,
                     trackHeightPx = trackHeightPx,
                     modifier = Modifier.align(Alignment.TopStart),
+                    text = if ((scale as? PartialScale)?.isBeyond(heldSelected!!) == true) "Loading older…" else null,
                 )
             lingering != null ->
                 SelectedDateLabel(
@@ -619,6 +651,21 @@ private fun TimelineRail(
 
     // No backing panel: each label is its own translucent white bubble over the photos.
     Box(Modifier.fillMaxSize()) {
+        // A partial rail's unloaded segment (F2): plain, no labels — nothing is known about
+        // the photos there but how many there are.
+        (scale as? PartialScale)?.loadedFraction?.takeIf { it < 1f }?.let { split ->
+            val top = with(density) { ((lens?.warp(split) ?: split) * trackHeightPx).toDp() }
+            val height = with(density) { trackHeightPx.toDp() } - top
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(y = top)
+                    .padding(horizontal = COARSE_TICK_GAP)
+                    .width(UNLOADED_SEGMENT_WIDTH)
+                    .height(height.coerceAtLeast(0.dp))
+                    .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(50)),
+            )
+        }
         for ((tick, drawnAt) in visibleTicks) {
             val y = with(density) { (drawnAt * trackHeightPx).toDp() }
             TickBubble(
@@ -722,6 +769,8 @@ private fun SelectedDateLabel(
     fraction: Float,
     trackHeightPx: Float,
     modifier: Modifier = Modifier,
+    // Instead of the date: "Loading older…" in a partial rail's unloaded segment.
+    text: String? = null,
 ) {
     val density = LocalDensity.current
     val gapPx = with(density) { LABEL_RAIL_GAP.toPx() }
@@ -739,7 +788,7 @@ private fun SelectedDateLabel(
                     // Null is the top of the rail, which means "back to the present"
                     // rather than any particular date — so it says that instead of
                     // naming one.
-                    text = day?.let(SELECTED_DATE_FORMATTER::format) ?: "Latest",
+                    text = text ?: day?.let(SELECTED_DATE_FORMATTER::format) ?: "Latest",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onPrimary,
                     maxLines = 1,
@@ -792,6 +841,13 @@ private fun PositionCursor(
 }
 
 private val CURSOR_HEIGHT = 2.dp
+
+/** The partial rail's unloaded segment: as wide as the idle thumb. */
+private val UNLOADED_SEGMENT_WIDTH = 4.dp
+
+/** How long a hold in the unloaded segment waits before asking again after a page that
+ * loaded nothing (offline, an error). */
+private const val BEYOND_RETRY_MS = 1000L
 
 @Composable
 private fun ScrollbarThumb(

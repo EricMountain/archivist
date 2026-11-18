@@ -102,7 +102,7 @@ class AppDatabaseMigrationTest {
             }
 
             // Opening validates against the current version, so the chain runs on to it.
-            val db = open(MIGRATION_6_7, MIGRATION_7_8)
+            val db = open(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
             try {
                 // The cache is emptied so the mediator's cold-start refresh re-fetches
                 // every row with its place (see MIGRATION_6_7's doc).
@@ -148,13 +148,63 @@ class AppDatabaseMigrationTest {
                 execSQL("INSERT INTO timeline_histogram (id, days, total, etag) VALUES (0, '{}', 0, '\"tl-1\"')")
             }
 
-            val db = open(MIGRATION_7_8)
+            val db = open(MIGRATION_7_8, MIGRATION_8_9)
             try {
                 assertEquals("Kyoto", db.photoDao().getByPhotoId("p1")?.placeName)
                 assertEquals("\"tl-1\"", db.histogramDao().get()?.etag)
                 assertEquals(null, db.placeVocabularyDao().get())
                 db.placeVocabularyDao().set("{}", "\"pl-1\"")
                 assertEquals(PlaceVocabularyEntity(body = "{}", etag = "\"pl-1\""), db.placeVocabularyDao().get())
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun `8 to 9 adds the empty facet stream cache and keeps photos, the histogram and the vocabulary`() =
+        runTest {
+            createAt(8) {
+                execSQL(
+                    "INSERT INTO photos (photoId, takenAt, tzOffsetMin, mime, width, height, status, thumbs, encDek, encKeyId, preview, placeCc, placeName, placeKey) " +
+                        "VALUES ('p1', '2026-07-14T03:00:00.000Z', 540, 'image/jpeg', 1, 1, 'READY', '{}', 'd', 'k', NULL, 'JP', 'Kyoto', '1857910')",
+                )
+                execSQL("INSERT INTO timeline_histogram (id, days, total, etag) VALUES (0, '{\"2026-07-14\":1}', 1, '\"tl-1\"')")
+                execSQL("INSERT INTO place_vocabulary (id, body, etag) VALUES (0, '{}', '\"pl-1\"')")
+            }
+
+            val db = open(MIGRATION_8_9)
+            try {
+                assertEquals("Kyoto", db.photoDao().getByPhotoId("p1")?.placeName)
+                assertEquals(mapOf("2026-07-14" to 1), db.histogramDao().get()?.days)
+                assertEquals("\"pl-1\"", db.placeVocabularyDao().get()?.etag)
+                assertEquals(0L, db.count("facet_streams"))
+                assertEquals(0L, db.count("facet_stream_rows"))
+
+                val dao = db.facetStreamDao()
+                val stream = FacetStreamEntity("REGION#JP.22", "c1", "2026-07-14T03:00:00.000Z", "p1", done = false, fetchedAt = "2026-11-17T00:00:00.000Z")
+                dao.upsertStream(stream)
+                assertEquals(stream, dao.stream("REGION#JP.22"))
+                val row =
+                    FacetStreamRowEntity(
+                        streamKey = "REGION#JP.22",
+                        photoId = "p1",
+                        takenAt = "2026-07-14T03:00:00.000Z",
+                        tzOffsetMin = 540,
+                        mime = "image/jpeg",
+                        width = 1,
+                        height = 1,
+                        status = AssetStatus.READY,
+                        thumbs = mapOf(256 to ThumbEntry("derived", "th/p1/256", "aXY=", 10)),
+                        encDek = "d",
+                        encKeyId = "k",
+                        placeCc = "JP",
+                        placeName = "Kyoto",
+                        placeKey = "JP.22",
+                        specificity = 1,
+                        localDay = "2026-07-14",
+                    )
+                dao.upsertRows(listOf(row))
+                assertEquals(listOf(row), dao.rowsOf("REGION#JP.22"))
             } finally {
                 db.close()
             }

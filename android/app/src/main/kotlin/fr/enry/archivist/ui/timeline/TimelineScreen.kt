@@ -1,6 +1,28 @@
 package fr.enry.archivist.ui.timeline
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import fr.enry.archivist.ui.search.OverlayEffect
+import fr.enry.archivist.ui.search.OverlayEvent
+import fr.enry.archivist.ui.search.OverlayMode
+import fr.enry.archivist.ui.search.PlaceFilter
+import fr.enry.archivist.ui.search.PlaceSearchViewModel
+import fr.enry.archivist.ui.search.SuggestionPanel
+import fr.enry.archivist.ui.search.overlayHandlesBack
+import fr.enry.archivist.ui.search.reduceOverlay
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.compose.foundation.background
@@ -47,8 +69,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -79,11 +99,11 @@ import fr.enry.archivist.data.local.db.localDate
 import fr.enry.archivist.data.repo.TimelineBounds
 import fr.enry.archivist.data.repo.TimelineHistogram
 import fr.enry.archivist.ui.detail.DetailScreen
+import fr.enry.archivist.ui.detail.DetailSwipeSource
 import fr.enry.archivist.ui.onboarding.EnrolmentScreen
 import fr.enry.archivist.ui.onboarding.EnrolmentUiState
 import fr.enry.archivist.ui.onboarding.EnrolmentViewModel
 import fr.enry.archivist.ui.onboarding.PermissionOnboardingScreen
-import fr.enry.archivist.ui.search.SearchScreen
 import fr.enry.archivist.ui.settings.SettingsScreen
 import java.time.LocalDate
 import androidx.compose.runtime.snapshotFlow
@@ -130,7 +150,7 @@ private val GRID_MIN_CELL = 96.dp
  * own concern from here on, including the `PermissionOnboardingScreen` gate further
  * down, not something the caller decides by remounting a different screen underneath.
  */
-@OptIn(kotlinx.coroutines.FlowPreview::class)
+@OptIn(kotlinx.coroutines.FlowPreview::class, ExperimentalLayoutApi::class)
 @Composable
 fun TimelineScreen(
     onSessionEnded: () -> Unit,
@@ -229,6 +249,12 @@ fun TimelineScreen(
         val host by viewModel.cdnHost.collectAsStateWithLifecycle()
         val bounds by viewModel.bounds.collectAsStateWithLifecycle()
         val histogram by viewModel.histogram.collectAsStateWithLifecycle()
+        // Timeline place filter (steps 4-6): the filtered grid's pages, collected alongside
+        // the unfiltered ones, which keep collecting (F10) so clearing the filter shows
+        // the unfiltered grid exactly where it was.
+        val filteredItems = viewModel.filteredTimeline.collectAsLazyPagingItems()
+        val activeFilter by viewModel.activeFilter.collectAsStateWithLifecycle()
+        val filteredRail by viewModel.filteredRail.collectAsStateWithLifecycle()
 
         // LazyPagingItems starts at NotLoading(false)/itemCount==0 -- the same shape a
         // verified-empty library has -- until the LaunchedEffect inside
@@ -313,6 +339,25 @@ fun TimelineScreen(
                 leadingCells(items.itemCount, columns, ranks) { i -> items.peek(i)?.localDate() }
             }
 
+        // The filtered grid's own state (plan step 5), hoisted for the same Detail round
+        // trip. A new set of places is a new grid at its newest photo (F10); a change of
+        // query that selects the same places keeps the grid where it is.
+        val filterActive = activeFilter != null
+        val filterKeys = activeFilter?.streamKeys
+        val filteredGridState = remember(filterKeys) { LazyGridState() }
+        // The lead from the loaded part's own histogram: it is a prefix of the selection,
+        // newest first, so its day ranks are the selection's.
+        val filteredRanks = remember(filteredRail?.loaded) { filteredRail?.loaded?.let(::HistogramRanks) }
+        val filteredLeadTracker = remember(filterKeys) { LeadTracker() }
+        val filteredLead =
+            if (!filterActive) {
+                0
+            } else {
+                filteredLeadTracker.leadFor(filteredItems.itemSnapshotList.items.map { it.photoId }, columns) {
+                    leadingCells(filteredItems.itemCount, columns, filteredRanks) { i -> filteredItems.peek(i)?.localDate() }
+                }
+            }
+
         // A jumped-to window *starts* at the requested instant (TimelineJumpCoordinator), so
         // landing on it used to just mean "go to index 0" once the window was committed to
         // Room. That stopped being true once `TimelineRemoteMediator.loadNewerThanCache`
@@ -348,7 +393,11 @@ fun TimelineScreen(
         //
         // The collector only records the landing: `_jumpCompleted.emit` suspends on it,
         // under the lock every scrub in a drag shares, so it must return at once.
+        //
+        // A filtered landing (place filter step 6) holds the filtered grid, never the
+        // unfiltered one, which keeps its position for when the filter is cleared (F10).
         var pinnedJump by remember { mutableStateOf<JumpLanding?>(null) }
+        val filteredGridNow by rememberUpdatedState(filteredGridState)
         LaunchedEffect(Unit) {
             viewModel.jumpCompleted.collect { jump ->
                 // A mid-drag scrub into a real day is placed by TimelineScrollbar itself,
@@ -361,18 +410,24 @@ fun TimelineScreen(
         }
         LaunchedEffect(pinnedJump) {
             val jump = pinnedJump ?: return@LaunchedEffect
+            val filtered = jump.mode == TimelineMode.FILTERED
+            val jumpItems = if (filtered) filteredItems else items
+            val jumpGrid = if (filtered) filteredGridNow else gridState
             // The settle window starts once the landing is actually in the list, not when
             // it's announced — a slow fetch could otherwise use it all up before there was
             // anything to hold.
             withTimeoutOrNull(JUMP_LANDING_WAIT_MS) {
-                snapshotFlow { landingIndex(items, jump.landing) != null }.first { it }
+                snapshotFlow { landingIndex(jumpItems, jump.landing) != null }.first { it }
             }
             withTimeoutOrNull(JUMP_SCROLL_SETTLE_WINDOW_MS) {
-                snapshotFlow { gridState.isScrollInProgress }.first { it }
+                snapshotFlow { jumpGrid.isScrollInProgress }.first { it }
             }
             pinnedJump = null
         }
-        pinnedJump?.let { jump ->
+        // A filtered landing that outlived its filter has nothing left to hold.
+        pinnedJump?.takeIf { it.mode == TimelineMode.UNFILTERED || filterActive }?.let { jump ->
+            val filtered = jump.mode == TimelineMode.FILTERED
+            val jumpItems = if (filtered) filteredItems else items
             // Nothing is requested until the landing is actually in the list. The landing
             // usually arrives before the rebuilt pager's first page does, and this used to
             // fall back to "the top" meanwhile — which scrolled the *old* list to its top
@@ -380,10 +435,10 @@ fun TimelineScreen(
             // (logged 2026-09-29: the old list jumped to 26 Sep, 250ms before the jump's
             // 22 Nov window arrived).
             PinGridTo(
-                gridState = gridState,
-                target = landingTarget(items, jump.landing, jump.position),
-                lead = lead,
-                photoIdAt = { i -> if (i in 0 until items.itemCount) items.peek(i)?.photoId else null },
+                gridState = if (filtered) filteredGridState else gridState,
+                target = landingTarget(jumpItems, jump.landing, jump.position),
+                lead = if (filtered) filteredLead else lead,
+                photoIdAt = { i -> if (i in 0 until jumpItems.itemCount) jumpItems.peek(i)?.photoId else null },
             )
         }
 
@@ -393,96 +448,235 @@ fun TimelineScreen(
         // The whole entity, not just its id: DetailScreen shows this photo's own thumbnail
         // while its swipe list catches up (see DetailScreen's initialPhoto doc).
         var selectedPhoto by remember { mutableStateOf<PhotoEntity?>(null) }
+        // Opened from the filtered grid: the filter's loaded photos, live (place filter
+        // step 7), so a swipe stays inside the filter and loads more at its end.
+        var detailSource by remember { mutableStateOf<DetailSwipeSource>(DetailSwipeSource.Timeline) }
+        // Plan step 2.14: Settings (which now also hosts Trash — see its own doc) is the
+        // permanent entry point 2.13 deferred. Same "standalone screen, plain local
+        // toggle" pattern as selectedPhotoId above.
+        var showSettings by remember { mutableStateOf(false) }
+        // Place filter step 4: the `⋮` menu's state, A/B/C (see reduceOverlay). Above the
+        // Detail and Settings branches, so it outlives them.
+        var overlayMode by remember { mutableStateOf(OverlayMode.COLLAPSED) }
+        val searchViewModel: PlaceSearchViewModel = hiltViewModel()
+
         val openPhoto = selectedPhoto
         if (openPhoto != null) {
             // A repair's own effect on the grid (re-settling on the repaired photo) is
             // handled independently of this navigation -- see
             // TimelineJumpCoordinator.stageAndAnnounceLanding's own doc -- so this stays the
             // plain "close the screen" it always was, with no repair-awareness needed here.
-            DetailScreen(initialPhoto = openPhoto, onBack = { selectedPhoto = null }, modifier = padded)
+            DetailScreen(initialPhoto = openPhoto, onBack = { selectedPhoto = null }, modifier = padded, swipeSource = detailSource)
             return@PermissionOnboardingScreen
         }
 
-        // Plan step 2.14: Settings (which now also hosts Trash — see its own doc) is the
-        // permanent entry point 2.13 deferred. Same "standalone screen, plain local
-        // toggle" pattern as selectedPhotoId above.
-        var showSettings by remember { mutableStateOf(false) }
         if (showSettings) {
             SettingsScreen(onBack = { showSettings = false }, onSessionEnded = onSessionEnded, modifier = padded)
             return@PermissionOnboardingScreen
         }
 
-        // Geolocation plan step 8: place search, the same plain-toggle pattern. It hosts
-        // its own DetailScreen for a tapped result, so its query and results survive that
-        // round trip.
-        var showSearch by remember { mutableStateOf(false) }
-        if (showSearch) {
-            SearchScreen(onBack = { showSearch = false }, modifier = padded)
-            return@PermissionOnboardingScreen
-        }
-
-        // The grid is edge to edge and immersive only while it is CONTENT; the spinner,
-        // error and empty states keep their normal bars, so the menu button clears them.
+        // The grid is edge to edge and immersive while it is CONTENT, and always in filter
+        // mode (whose loading and empty states come and go as you type: the bars mustn't);
+        // the unfiltered spinner, error and empty states keep their normal bars, so the
+        // menu button clears them.
+        val immersive = filterActive || contentState == TimelineContentState.CONTENT
+        if (immersive) ImmersiveSystemBars()
         val cutoutTop = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
-        val topInset = if (contentState == TimelineContentState.CONTENT) cutoutTop else contentPadding.calculateTopPadding()
+        val topInset = if (immersive) cutoutTop else contentPadding.calculateTopPadding()
 
-        Box(modifier.fillMaxSize()) {
-            TimelineGrid(
-                items = items,
-                host = host,
-                gridState = gridState,
-                bounds = bounds,
-                histogram = histogram,
-                columns = columns,
-                lead = lead,
-                contentState = contentState,
-                topInset = topInset,
-                contentPadding = contentPadding,
-                onPhotoClick = { selectedPhoto = it },
-                onScrub = viewModel::onScrubTo,
-                onCommit = viewModel::onJumpCommitted,
-                modifier = Modifier.fillMaxSize(),
-            )
-            // A floating 3-dot menu rather than bare buttons — for consistency with
-            // DetailScreen's own top bar (plan step 2.12's repair/delete menu). Search and
-            // Settings are its entries. A text glyph: the project has
-            // no material-icons dependency.
-            var showMenu by remember { mutableStateOf(false) }
-            Box(Modifier.align(Alignment.TopEnd).padding(top = topInset + MENU_MARGIN, end = MENU_MARGIN)) {
-                Box(
-                    Modifier
-                        .size(MENU_BUTTON_SIZE)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
-                        .clickable { showMenu = true }
-                        .semantics { contentDescription = "More options" },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("⋮", style = MaterialTheme.typography.titleLarge)
-                }
-                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Search") },
-                        onClick = {
-                            showMenu = false
-                            showSearch = true
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Settings") },
-                        onClick = {
-                            showMenu = false
-                            showSettings = true
-                        },
-                    )
+        val focusManager = LocalFocusManager.current
+        val keyboard = LocalSoftwareKeyboardController.current
+        val imeVisible = WindowInsets.isImeVisible
+        val focusRequester = remember { FocusRequester() }
+        val selection by searchViewModel.selection.collectAsStateWithLifecycle()
+        val vocabularyStatus by searchViewModel.status.collectAsStateWithLifecycle()
+        val hasPlaces by searchViewModel.hasPlaces.collectAsStateWithLifecycle()
+
+        fun dispatch(event: OverlayEvent) {
+            val transition = reduceOverlay(overlayMode, activeFilter != null, event)
+            overlayMode = transition.mode
+            for (effect in transition.effects) {
+                when (effect) {
+                    OverlayEffect.APPLY_NOW -> viewModel.applyNow()
+                    OverlayEffect.CLEAR_FILTER -> {
+                        viewModel.clearFilter()
+                        searchViewModel.reset()
+                    }
+                    OverlayEffect.REVALIDATE -> searchViewModel.revalidate()
+                    // MenuPanel focuses the field itself on entering C.
+                    OverlayEffect.FOCUS_FIELD -> Unit
+                    OverlayEffect.HIDE_KEYBOARD -> {
+                        focusManager.clearFocus()
+                        keyboard?.hide()
+                    }
+                    OverlayEffect.OPEN_SETTINGS -> showSettings = true
                 }
             }
+        }
+
+        // Every keystroke and tick goes to the view model, which debounces it (F6).
+        fun reportSelection() = viewModel.onSelectionChanged(searchViewModel.selection.value)
+
+        // With the keyboard open, the IME takes Back itself (it closes the keyboard).
+        BackHandler(enabled = overlayHandlesBack(overlayMode, filterActive)) { dispatch(OverlayEvent.Back(imeVisible)) }
+
+        // The chip hides while the grid moves, while the rail is held, and while the date
+        // bubbles linger after either (F9): one shared state, so the two cross-fade.
+        val shownGrid = if (filterActive) filteredGridState else gridState
+        val scrollActive by rememberScrollActivity(shownGrid)
+        var railHeld by remember { mutableStateOf(false) }
+
+        // As for the unfiltered grid's hasStartedLoading, per set of places.
+        var filteredStarted by remember(filterKeys) { mutableStateOf(false) }
+        filteredItems.loadState.let { state ->
+            if (state.source.refresh is LoadState.Loading || state.mediator?.refresh is LoadState.Loading) filteredStarted = true
+        }
+        val filteredState =
+            activeFilter?.let {
+                filteredContentState(it, filteredItems.itemCount, filteredItems.loadState.source.refresh, filteredItems.loadState.mediator?.refresh, filteredStarted)
+            }
+        val partialScale = remember(filteredRail) { filteredRailScale(filteredRail) }
+
+        BoxWithConstraints(modifier.fillMaxSize()) {
+            val filter = activeFilter
+            if (filter == null || filteredState == null) {
+                TimelineGrid(
+                    items = items,
+                    host = host,
+                    gridState = gridState,
+                    bounds = bounds,
+                    histogram = histogram,
+                    columns = columns,
+                    lead = lead,
+                    contentState = contentState,
+                    topInset = topInset,
+                    contentPadding = contentPadding,
+                    bubblesVisible = scrollActive,
+                    onPhotoClick = {
+                        detailSource = DetailSwipeSource.Timeline
+                        selectedPhoto = it
+                    },
+                    onScrub = viewModel::onScrubTo,
+                    onCommit = viewModel::onJumpCommitted,
+                    onHeldChange = { railHeld = it },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                FilteredTimeline(
+                    state = filteredState,
+                    items = filteredItems,
+                    host = host,
+                    gridState = filteredGridState,
+                    scale = partialScale,
+                    columns = columns,
+                    lead = filteredLead,
+                    topInset = topInset,
+                    bubblesVisible = scrollActive,
+                    onPhotoClick = {
+                        detailSource = DetailSwipeSource.Filter(filter.streams)
+                        selectedPhoto = it
+                    },
+                    onScrub = viewModel::onScrubTo,
+                    onCommit = viewModel::onJumpCommitted,
+                    onHeldChange = { railHeld = it },
+                    onHoldBeyond = viewModel::loadOlderFiltered,
+                    onClearFilter = { dispatch(OverlayEvent.ChipClear) },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+
+            // F8: the chip, left of `⋮`. Keeps showing the last filter while it fades out.
+            var chipFilter by remember { mutableStateOf<PlaceFilter?>(null) }
+            if (filter != null) chipFilter = filter
+            AnimatedVisibility(
+                visible = filter != null && chipVisible(filterActive, overlayMode, scrollActive, railHeld),
+                enter = fadeIn(tween(150)),
+                exit = fadeOut(tween(300)),
+                modifier =
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = MENU_MARGIN, top = topInset + MENU_MARGIN, end = MENU_MARGIN * 2 + MENU_BUTTON_SIZE),
+            ) {
+                chipFilter?.let { PlaceFilterChip(it, onEvent = ::dispatch) }
+            }
+
+            // B and C: a tap outside the card closes it and goes no further — not to the
+            // grid, so in C it never opens a photo. Swipes stop here too. No semantics:
+            // TalkBack users close the menu with Back.
+            if (overlayMode != OverlayMode.COLLAPSED) {
+                Box(
+                    Modifier.fillMaxSize().pointerInput(overlayMode) {
+                        detectTapGestures {
+                            dispatch(if (overlayMode == OverlayMode.EXPANDED) OverlayEvent.OutsideTap else OverlayEvent.GridTap)
+                        }
+                    },
+                )
+            }
+
+            val aboveKeyboard = maxHeight - WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+            MenuPanel(
+                mode = overlayMode,
+                query = selection.query,
+                availableWidth = maxWidth - MENU_MARGIN * 2,
+                focusRequester = focusRequester,
+                onEvent = ::dispatch,
+                onQueryChange = {
+                    searchViewModel.onQueryChange(it)
+                    reportSelection()
+                },
+                panel = {
+                    SuggestionPanel(
+                        selection = selection,
+                        status = vocabularyStatus,
+                        hasPlaces = hasPlaces,
+                        loading = filteredState == FilteredContentState.LOADING,
+                        onToggle = {
+                            searchViewModel.toggle(it)
+                            reportSelection()
+                        },
+                        onSetAll = { key, ticked ->
+                            searchViewModel.setAll(key, ticked)
+                            reportSelection()
+                        },
+                        onRetry = searchViewModel::revalidate,
+                        maxHeight = aboveKeyboard * SUGGESTION_PANEL_HEIGHT_FRACTION,
+                    )
+                },
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = topInset + MENU_MARGIN, end = MENU_MARGIN),
+            )
         }
     }
 }
 
-private val MENU_MARGIN = 8.dp
-private val MENU_BUTTON_SIZE = 40.dp
+/** The suggestion panel's share of the height above the keyboard (plan state C). */
+private const val SUGGESTION_PANEL_HEIGHT_FRACTION = 0.45f
+
+/** The filter chip's visibility rule (F9): a filter is active, the menu is collapsed (A),
+ * and the grid is neither scrolling, held by the rail, nor lingering after either. */
+internal fun chipVisible(
+    filterActive: Boolean,
+    mode: OverlayMode,
+    scrollActive: Boolean,
+    railHeld: Boolean,
+): Boolean = filterActive && mode == OverlayMode.COLLAPSED && !scrollActive && !railHeld
+
+/**
+ * Immersive while composed: the system bars hidden, a swipe from an edge reveals them
+ * transiently, over the content, without re-laying anything out. onDispose brings them
+ * back (Detail and Settings, the unfiltered spinner, error and empty states).
+ */
+@Composable
+private fun ImmersiveSystemBars() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = view.context.findActivity()?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller?.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+}
+
 
 /**
  * Where [landing] currently sits in [items] — a bounded [LazyPagingItems.peek] scan, so
@@ -600,9 +794,12 @@ private fun TimelineGrid(
     topInset: Dp,
     // For the non-grid states, which keep their normal bars and so their normal padding.
     contentPadding: PaddingValues,
+    // The date bubbles' visibility (rememberScrollActivity, shared with the filter chip).
+    bubblesVisible: Boolean,
     onPhotoClick: (PhotoEntity) -> Unit,
     onScrub: suspend (LocalDate?) -> Unit,
     onCommit: (RailPosition) -> Unit,
+    onHeldChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (contentState) {
@@ -632,50 +829,205 @@ private fun TimelineGrid(
             }
 
         TimelineContentState.CONTENT ->
-            Box(modifier.fillMaxSize().leaveSystemBarSwipesToTheSystem()) {
-                // The host view draws its own fading scroll indicator over any scrollable
-                // content, which has nothing to do with (and doesn't agree with) the
-                // time-based one below — Compose exposes no way to opt a single lazy
-                // layout out of it, so it's turned off at the View that actually draws it.
-                val view = LocalView.current
-                LaunchedEffect(view) {
-                    view.isVerticalScrollBarEnabled = false
-                    view.isHorizontalScrollBarEnabled = false
-                }
-                // Immersive while the grid itself shows. This branch leaves composition
-                // whenever Detail or Settings opens, so onDispose brings the bars back
-                // for them. A swipe from an edge reveals them transiently, over the
-                // content, without re-laying anything out.
-                DisposableEffect(view) {
-                    val window = view.context.findActivity()?.window
-                    val controller = window?.let { WindowCompat.getInsetsController(it, view) }
-                    controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    controller?.hide(WindowInsetsCompat.Type.systemBars())
-                    onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
-                }
-                TimelineScrollbar(
-                    gridState = gridState,
-                    items = items,
-                    bounds = bounds,
-                    histogram = histogram,
-                    lead = lead,
-                    onScrub = onScrub,
-                    onCommit = onCommit,
-                    modifier = Modifier.fillMaxSize(),
-                    trackTopInset = topInset + MENU_MARGIN + MENU_BUTTON_SIZE + MENU_MARGIN,
-                    // Ends above the gesture handle: a track flush with the bottom edge put
-                    // the oldest dates where a finger can barely reach, in the strip whose
-                    // swipes belong to the system anyway.
-                    trackBottomInset = with(LocalDensity.current) { gestureBarHeightPx().toDp() },
-                ) {
-                    Box(Modifier.fillMaxSize()) {
-                        TimelinePhotoGrid(items, host, gridState, columns, lead, onPhotoClick, Modifier.fillMaxSize())
-                        // Above the grid, below the rail (which the scrollbar draws after
-                        // this slot).
-                        DateBubbleOverlay(items, gridState, topInset, Modifier.fillMaxSize())
-                    }
-                }
+            GridWithRail(
+                items = items,
+                host = host,
+                gridState = gridState,
+                bounds = bounds,
+                histogram = histogram,
+                scaleOverride = null,
+                columns = columns,
+                lead = lead,
+                topInset = topInset,
+                bubblesVisible = bubblesVisible,
+                onPhotoClick = onPhotoClick,
+                onScrub = onScrub,
+                onCommit = onCommit,
+                onHeldChange = onHeldChange,
+                onHoldBeyond = null,
+                onRetryAppend = null,
+                modifier = modifier,
+            )
+    }
+}
+
+/** What the filtered grid shows ("The filtered grid" in the plan). Pure, like
+ * [TimelineContentState]. */
+internal enum class FilteredContentState {
+    /** The filter selects no place (F7's amendment): nothing to load. */
+    NO_PLACES,
+    LOADING,
+
+    /** The first pages failed: nothing to show. */
+    ERROR,
+
+    /** Every selected stream came back empty (the vocabulary was stale). */
+    EMPTY,
+    CONTENT,
+}
+
+/** [timelineContentState]'s rule for the filtered grid, plus the empty selection, which
+ * builds no pager at all. */
+internal fun filteredContentState(
+    filter: PlaceFilter,
+    itemCount: Int,
+    sourceRefresh: LoadState,
+    mediatorRefresh: LoadState?,
+    hasStartedLoading: Boolean,
+): FilteredContentState {
+    if (filter.isEmptySelection) return FilteredContentState.NO_PLACES
+    return when (timelineContentState(itemCount, sourceRefresh, mediatorRefresh, hasStartedLoading)) {
+        TimelineContentState.LOADING -> FilteredContentState.LOADING
+        TimelineContentState.ERROR -> FilteredContentState.ERROR
+        TimelineContentState.EMPTY -> FilteredContentState.EMPTY
+        TimelineContentState.CONTENT -> FilteredContentState.CONTENT
+    }
+}
+
+/**
+ * Place filter step 5: the main timeline, filtered (F1, owner's point 2). The same grid,
+ * bubbles and rail as the unfiltered one, over the filtered pages, with the partial rail
+ * ([scale], F2; null hides it) and its own states. Edge to edge in every state: the bars
+ * stay hidden while the filter changes under the overlay.
+ */
+@Composable
+private fun FilteredTimeline(
+    state: FilteredContentState,
+    items: LazyPagingItems<PhotoEntity>,
+    host: String?,
+    gridState: LazyGridState,
+    scale: RailScale?,
+    columns: Int,
+    lead: Int,
+    topInset: Dp,
+    bubblesVisible: Boolean,
+    onPhotoClick: (PhotoEntity) -> Unit,
+    onScrub: suspend (LocalDate?) -> Unit,
+    onCommit: (RailPosition) -> Unit,
+    onHeldChange: (Boolean) -> Unit,
+    onHoldBeyond: suspend () -> Boolean,
+    onClearFilter: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // Below the top band (chip and `⋮`), so a message never sits under them.
+    val messagePadding = PaddingValues(top = topInset + MENU_MARGIN * 2 + MENU_BUTTON_SIZE)
+    when (state) {
+        FilteredContentState.NO_PLACES ->
+            FilterMessage("No places selected.", null, onRetry = null, onClearFilter, modifier.padding(messagePadding))
+        FilteredContentState.LOADING ->
+            Box(modifier.padding(messagePadding).fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        FilteredContentState.ERROR ->
+            FilterMessage(
+                "Couldn't load photos for these places.",
+                "Check your connection and try again.",
+                onRetry = items::retry,
+                onClearFilter,
+                modifier.padding(messagePadding),
+            )
+        FilteredContentState.EMPTY ->
+            FilterMessage("No photos in these places any more.", null, onRetry = null, onClearFilter, modifier.padding(messagePadding))
+        FilteredContentState.CONTENT -> {
+            val appendFailed = items.loadState.append is LoadState.Error || items.loadState.mediator?.append is LoadState.Error
+            GridWithRail(
+                items = items,
+                host = host,
+                gridState = gridState,
+                bounds = null,
+                histogram = null,
+                scaleOverride = scale,
+                columns = columns,
+                lead = lead,
+                topInset = topInset,
+                bubblesVisible = bubblesVisible,
+                onPhotoClick = onPhotoClick,
+                onScrub = onScrub,
+                onCommit = onCommit,
+                onHeldChange = onHeldChange,
+                onHoldBeyond = onHoldBeyond,
+                onRetryAppend = if (appendFailed) items::retry else null,
+                modifier = modifier,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterMessage(
+    title: String,
+    detail: String?,
+    onRetry: (() -> Unit)?,
+    onClearFilter: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+            detail?.let { Text(it, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                onRetry?.let { Button(onClick = it) { Text("Retry") } }
+                OutlinedButton(onClick = onClearFilter) { Text("Clear filter") }
             }
+        }
+    }
+}
+
+/** The grid with its date bubbles and fast-scroll rail: the CONTENT state of both the
+ * unfiltered and the filtered timeline. */
+@Composable
+private fun GridWithRail(
+    items: LazyPagingItems<PhotoEntity>,
+    host: String?,
+    gridState: LazyGridState,
+    bounds: TimelineBounds?,
+    histogram: TimelineHistogram?,
+    scaleOverride: RailScale?,
+    columns: Int,
+    lead: Int,
+    topInset: Dp,
+    bubblesVisible: Boolean,
+    onPhotoClick: (PhotoEntity) -> Unit,
+    onScrub: suspend (LocalDate?) -> Unit,
+    onCommit: (RailPosition) -> Unit,
+    onHeldChange: (Boolean) -> Unit,
+    onHoldBeyond: (suspend () -> Boolean)?,
+    onRetryAppend: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier.fillMaxSize().leaveSystemBarSwipesToTheSystem()) {
+        // The host view draws its own fading scroll indicator over any scrollable
+        // content, which has nothing to do with (and doesn't agree with) the
+        // time-based one below — Compose exposes no way to opt a single lazy
+        // layout out of it, so it's turned off at the View that actually draws it.
+        val view = LocalView.current
+        LaunchedEffect(view) {
+            view.isVerticalScrollBarEnabled = false
+            view.isHorizontalScrollBarEnabled = false
+        }
+        TimelineScrollbar(
+            gridState = gridState,
+            items = items,
+            bounds = bounds,
+            histogram = histogram,
+            lead = lead,
+            onScrub = onScrub,
+            onCommit = onCommit,
+            modifier = Modifier.fillMaxSize(),
+            trackTopInset = topInset + MENU_MARGIN + MENU_BUTTON_SIZE + MENU_MARGIN,
+            // Ends above the gesture handle: a track flush with the bottom edge put
+            // the oldest dates where a finger can barely reach, in the strip whose
+            // swipes belong to the system anyway.
+            trackBottomInset = with(LocalDensity.current) { gestureBarHeightPx().toDp() },
+            scaleOverride = scaleOverride,
+            onHeldChange = onHeldChange,
+            onHoldBeyond = onHoldBeyond,
+        ) {
+            Box(Modifier.fillMaxSize()) {
+                TimelinePhotoGrid(items, host, gridState, columns, lead, onPhotoClick, onRetryAppend, Modifier.fillMaxSize())
+                // Above the grid, below the rail (which the scrollbar draws after
+                // this slot).
+                DateBubbleOverlay(items, gridState, topInset, bubblesVisible, Modifier.fillMaxSize())
+            }
+        }
     }
 }
 
@@ -687,6 +1039,8 @@ private fun TimelinePhotoGrid(
     columns: Int,
     lead: Int,
     onPhotoClick: (PhotoEntity) -> Unit,
+    // Non-null when loading the next page failed: a Retry cell at the end of the grid.
+    onRetryAppend: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     // Which cells currently play their video preview (design.md, "Video preview clip").
@@ -756,6 +1110,13 @@ private fun TimelinePhotoGrid(
                 }
             } else {
                 cell()
+            }
+        }
+        if (onRetryAppend != null) {
+            item(key = "append-retry", span = { GridItemSpan(maxLineSpan) }) {
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Button(onClick = onRetryAppend) { Text("Retry") }
+                }
             }
         }
     }

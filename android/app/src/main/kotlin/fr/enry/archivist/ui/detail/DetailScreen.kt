@@ -90,16 +90,17 @@ import java.util.Locale
  * [DetailViewModel.photos] (Room's plain timeline order), not the grid's own `Paging`
  * flow — see that field's doc.
  *
- * [swipeOrder], when given, replaces that timeline order: place search (geolocation plan
- * step 8) opens a result here and swipes over the results it has loaded, not the
- * timeline. Its photos need not be in Room at all.
+ * [swipeSource] says what to swipe over (place filter step 7): the timeline, or, opened
+ * from the filtered grid, the filter's loaded photos, live, so a swipe stays inside the
+ * filter, an edit or delete shows at once, and reaching the last loaded photo loads the
+ * next page ([DetailViewModel.onReachedEnd]). Those photos need not be in `photos` at all.
  */
 @Composable
 fun DetailScreen(
     initialPhoto: PhotoEntity,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
-    swipeOrder: List<PhotoEntity>? = null,
+    swipeSource: DetailSwipeSource = DetailSwipeSource.Timeline,
     viewModel: DetailViewModel = hiltViewModel(),
 ) {
     // The system back gesture/button has nothing else to consume here (see
@@ -110,8 +111,10 @@ fun DetailScreen(
     // interfere with dismissing that.
     BackHandler(onBack = onBack)
 
-    val timelinePhotos by viewModel.photos.collectAsStateWithLifecycle()
-    val photos = swipeOrder ?: timelinePhotos
+    val swipeFlow = remember(swipeSource) { viewModel.swipePhotos(swipeSource) }
+    val photos by swipeFlow.collectAsStateWithLifecycle(
+        initialValue = remember(swipeSource) { if (swipeSource == DetailSwipeSource.Timeline) viewModel.photos.value else emptyList() },
+    )
     val details by viewModel.details.collectAsStateWithLifecycle()
     val originals by viewModel.originals.collectAsStateWithLifecycle()
     val host by viewModel.cdnHost.collectAsStateWithLifecycle()
@@ -186,6 +189,12 @@ fun DetailScreen(
 
     LaunchedEffect(pagerState.currentPage, pagerPhotos.size) {
         pagerPhotos.getOrNull(pagerState.currentPage)?.let { viewModel.ensureDetail(it.photoId) }
+    }
+    // On the last loaded photo of a filter: load the next page, as the grid would. Re-keyed
+    // on the size, so a page that lands while the user is still on the last photo asks again
+    // only if the user is still at the end.
+    LaunchedEffect(pagerState.currentPage, pagerPhotos.size, listReady) {
+        if (listReady && pagerState.currentPage >= pagerPhotos.lastIndex) viewModel.onReachedEnd(swipeSource)
     }
 
     // The repair / date / rotate / location status lines describe the photo they ran on; once the

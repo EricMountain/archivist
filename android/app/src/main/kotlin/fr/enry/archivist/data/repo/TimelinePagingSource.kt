@@ -27,14 +27,25 @@ import fr.enry.archivist.data.local.db.TimelineKey
  * Not Room-generated, so it hand-rolls the same [InvalidationTracker] wiring Room's own
  * generated `PagingSource` relies on ([observer]/`addWeakObserver`) to still invalidate
  * whenever `photos` changes.
+ *
+ * The four keyset queries sit behind [KeysetPageQueries] (timeline place filter step 2),
+ * so the filtered timeline pages its merged facet streams with this same source: same
+ * item keys, same refresh-around-the-anchor behaviour, its own [TimelineJumpCoordinator].
  */
 class TimelinePagingSource(
     db: AppDatabase,
-    private val photoDao: PhotoDao,
+    private val queries: KeysetPageQueries,
     private val jumpCoordinator: TimelineJumpCoordinator,
 ) : PagingSource<TimelineKey, PhotoEntity>() {
+    /** The timeline's own source, over the `photos` cache. */
+    constructor(
+        db: AppDatabase,
+        photoDao: PhotoDao,
+        jumpCoordinator: TimelineJumpCoordinator,
+    ) : this(db, PhotoPageQueries(photoDao), jumpCoordinator)
+
     private val observer =
-        object : InvalidationTracker.Observer("photos") {
+        object : InvalidationTracker.Observer(queries.tables) {
             override fun onInvalidated(tables: Set<String>) = invalidate()
         }
 
@@ -96,22 +107,22 @@ class TimelinePagingSource(
                                 // is filled from just above it (the reseed fetches those
                                 // too, for exactly this). Otherwise the first list drawn was
                                 // those few photos and then empty space.
-                                val fromLanding = photoDao.pageFromKey(key.takenAt, key.photoId, limit)
+                                val fromLanding = queries.pageFromKey(key.takenAt, key.photoId, limit)
                                 if (fromLanding.size < limit) {
-                                    photoDao.pageBefore(key.takenAt, key.photoId, limit - fromLanding.size) + fromLanding
+                                    queries.pageBefore(key.takenAt, key.photoId, limit - fromLanding.size) + fromLanding
                                 } else {
                                     fromLanding
                                 }
                             } else {
                                 refreshAround(key, limit)
                             }
-                        } ?: photoDao.pageFromStart(limit)
-                    is LoadParams.Append -> photoDao.pageAfter(params.key.takenAt, params.key.photoId, limit)
+                        } ?: queries.pageFromStart(limit)
+                    is LoadParams.Append -> queries.pageAfter(params.key.takenAt, params.key.photoId, limit)
                     is LoadParams.Prepend -> {
                         // Paging is loading above the landing, so the jump has settled —
                         // see TimelineJumpCoordinator.settleLanding.
                         jumpCoordinator.settleLanding()
-                        photoDao.pageBefore(params.key.takenAt, params.key.photoId, limit)
+                        queries.pageBefore(params.key.takenAt, params.key.photoId, limit)
                     }
                 }
             LoadResult.Page(
@@ -159,8 +170,8 @@ class TimelinePagingSource(
         key: TimelineKey,
         limit: Int,
     ): List<PhotoEntity> {
-        val lead = photoDao.pageBefore(key.takenAt, key.photoId, limit / REFRESH_LEAD_FRACTION)
-        return lead + photoDao.pageFromKey(key.takenAt, key.photoId, limit - lead.size)
+        val lead = queries.pageBefore(key.takenAt, key.photoId, limit / REFRESH_LEAD_FRACTION)
+        return lead + queries.pageFromKey(key.takenAt, key.photoId, limit - lead.size)
     }
 }
 
@@ -169,3 +180,60 @@ class TimelinePagingSource(
  * 16-28 items on a phone-sized grid — and a third of `initialLoadSize` clears that with
  * room to spare without meaningfully shrinking what a refresh loads below the anchor. */
 private const val REFRESH_LEAD_FRACTION = 3
+
+/**
+ * The keyset queries [TimelinePagingSource] pages over, and the tables whose writes
+ * invalidate it. Every implementation orders newest first by `takenAt DESC, photoId DESC`
+ * and follows [PhotoDao]'s inclusive/exclusive rules: [pageFromKey] includes the key,
+ * [pageAfter]/[pageBefore] exclude it.
+ */
+interface KeysetPageQueries {
+    val tables: Array<String>
+
+    suspend fun pageFromKey(
+        takenAt: String,
+        photoId: String,
+        limit: Int,
+    ): List<PhotoEntity>
+
+    suspend fun pageFromStart(limit: Int): List<PhotoEntity>
+
+    suspend fun pageAfter(
+        takenAt: String,
+        photoId: String,
+        limit: Int,
+    ): List<PhotoEntity>
+
+    suspend fun pageBefore(
+        takenAt: String,
+        photoId: String,
+        limit: Int,
+    ): List<PhotoEntity>
+}
+
+/** The unfiltered timeline's queries: [PhotoDao] over `photos`. */
+class PhotoPageQueries(
+    private val photoDao: PhotoDao,
+) : KeysetPageQueries {
+    override val tables = arrayOf("photos")
+
+    override suspend fun pageFromKey(
+        takenAt: String,
+        photoId: String,
+        limit: Int,
+    ) = photoDao.pageFromKey(takenAt, photoId, limit)
+
+    override suspend fun pageFromStart(limit: Int) = photoDao.pageFromStart(limit)
+
+    override suspend fun pageAfter(
+        takenAt: String,
+        photoId: String,
+        limit: Int,
+    ) = photoDao.pageAfter(takenAt, photoId, limit)
+
+    override suspend fun pageBefore(
+        takenAt: String,
+        photoId: String,
+        limit: Int,
+    ) = photoDao.pageBefore(takenAt, photoId, limit)
+}

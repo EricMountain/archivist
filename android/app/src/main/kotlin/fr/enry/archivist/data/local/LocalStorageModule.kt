@@ -116,6 +116,7 @@ object LocalStorageModule {
                 fr.enry.archivist.data.local.db.MIGRATION_5_6,
                 fr.enry.archivist.data.local.db.MIGRATION_6_7,
                 fr.enry.archivist.data.local.db.MIGRATION_7_8,
+                fr.enry.archivist.data.local.db.MIGRATION_8_9,
             )
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()

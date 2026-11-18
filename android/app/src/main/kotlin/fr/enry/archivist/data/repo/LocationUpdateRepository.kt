@@ -84,6 +84,7 @@ class LocationUpdateRepository
         private val videoLocationReader: VideoLocationReader,
         private val photoDao: PhotoDao,
         private val placeRepository: PlaceRepository,
+        private val placeFilterRepository: PlaceFilterRepository,
         @ApplicationContext private val context: Context,
     ) {
         /** False when the owner's `stripLocationOnUpload` is on. Read the way upload reads
@@ -154,6 +155,9 @@ class LocationUpdateRepository
                 // the region.
                 val level = stored?.locality ?: stored?.region
                 photoDao.setPlace(detail.photoId, stored?.cc, level?.name, level?.id)
+                // The place filter's cached rows too (step 7; see patchPlace for a photo
+                // that has left the filtered places).
+                placeFilterRepository.patchPlace(detail.photoId, stored)
                 placeRepository.invalidateVocabulary()
 
                 val refreshed = refreshed(detail, stored, point, newExif != null)

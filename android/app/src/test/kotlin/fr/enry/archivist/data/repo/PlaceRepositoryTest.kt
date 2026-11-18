@@ -1,7 +1,7 @@
 package fr.enry.archivist.data.repo
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
-import androidx.paging.PagingSource
+import kotlinx.coroutines.cancel
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.TokenStore
 import fr.enry.archivist.data.local.db.AppDatabase
@@ -31,7 +31,9 @@ import org.junit.jupiter.api.assertThrows
 import retrofit2.HttpException
 
 /** Geolocation plan step 8: the place vocabulary's ETag cache (the same mechanism as
- * `syncHistogram`, see [PhotoRepositoryTest]) and the facet endpoint's [FacetPagingSource]. */
+ * `syncHistogram`, see [PhotoRepositoryTest]), and the facet endpoint as the place filter
+ * reads it ([ApiFacetPageFetcher], [toEntity]; [FacetMergeMediatorTest] covers the merge). */
+@OptIn(androidx.paging.ExperimentalPagingApi::class)
 class PlaceRepositoryTest {
     private lateinit var server: MockWebServer
     private lateinit var tempDir: File
@@ -152,29 +154,40 @@ class PlaceRepositoryTest {
         """"thumbs":{"256":{"bucket":"derived","key":"th/o1/$photoId/256","iv":"aXY=","bytes":100}},""" +
         """"encDek":"ZGVr","encKeyId":"mk-1","width":4000,"height":3000,"mime":"image/jpeg","tzOffsetMin":540,"status":"ready"}"""
 
+    private fun fetcher() = ApiFacetPageFetcher(instanceStore, factory)
+
+    /** A failed or unreadable page is the filter's error state, not a crash. */
+    private suspend fun firstPageResult(
+        type: String,
+        value: String,
+    ): androidx.paging.RemoteMediator.MediatorResult {
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+        try {
+            return PlaceFilterRepository(db, fetcher(), scope).loadFirstPages(listOf(FacetStreamSpec(type, value, null, null, null)))
+        } finally {
+            scope.cancel()
+        }
+    }
+
     @Test
-    fun `the facet paging source follows the server's cursor, newest first`() =
+    fun `the facet fetcher follows the server's cursor, newest first`() =
         runTest {
             connectInstance()
-            val api = factory.create(host, "eu-west-1", "client-id")
-            val url = facetUrl(apiBase(), "PLACE", "1857910")
             server.enqueue(
                 MockResponse().setResponseCode(200)
                     .setBody("""{"items":[${facetJson("A3", "2026-07-14T10:05:41.000Z")}],"cursor":"c1"}"""),
             )
             server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[${facetJson("A1", "2026-07-14T09:22:05.000Z")}]}"""))
-            val source = FacetPagingSource(api, url)
 
-            val first = source.load(PagingSource.LoadParams.Refresh(null, 60, false)) as PagingSource.LoadResult.Page
-            assertEquals(listOf("A3"), first.data.map { it.photoId })
-            assertEquals("c1", first.nextKey)
-            assertNull(first.prevKey)
+            val first = fetcher().fetch("PLACE", "1857910", cursor = null, limit = 60)
+            assertEquals(listOf("A3"), first.items.map { it.photoId })
+            assertEquals("c1", first.cursor)
             val req1 = server.takeRequest()
             assertEquals("/api/facets/PLACE/1857910?limit=60", req1.path)
 
-            val second = source.load(PagingSource.LoadParams.Append("c1", 60, false)) as PagingSource.LoadResult.Page
-            assertEquals(listOf("A1"), second.data.map { it.photoId })
-            assertNull(second.nextKey)
+            val second = fetcher().fetch("PLACE", "1857910", cursor = "c1", limit = 60)
+            assertEquals(listOf("A1"), second.items.map { it.photoId })
+            assertNull(second.cursor)
             assertEquals("/api/facets/PLACE/1857910?cursor=c1&limit=60", server.takeRequest().path)
 
             assertEquals(
@@ -190,18 +203,16 @@ class PlaceRepositoryTest {
                     encDek = "ZGVr",
                     encKeyId = "mk-1",
                 ),
-                first.data.single(),
+                first.items.single().toEntity(),
             )
         }
 
     @Test
-    fun `a failed facet page is a load error, not a crash`() =
+    fun `a failed facet page is the filter's error, not a crash`() =
         runTest {
             connectInstance()
-            val api = factory.create(host, "eu-west-1", "client-id")
             server.enqueue(MockResponse().setResponseCode(500))
-            val result = FacetPagingSource(api, facetUrl(apiBase(), "COUNTRY", "JP")).load(PagingSource.LoadParams.Refresh(null, 60, false))
-            assertTrue(result is PagingSource.LoadResult.Error)
+            assertTrue(firstPageResult("COUNTRY", "JP") is androidx.paging.RemoteMediator.MediatorResult.Error)
         }
 
     /** What dev actually returned on 2026-11-14: facet items carry no `mime`/`status`
@@ -210,29 +221,23 @@ class PlaceRepositoryTest {
     fun `a facet entry without mime or status still loads`() =
         runTest {
             connectInstance()
-            val api = factory.create(host, "eu-west-1", "client-id")
             val body =
                 """{"items":[{"photoId":"A1","facetType":"PLACE","facetValue":"1857910",""" +
                     """"takenAt":"2026-11-12T07:00:00.000Z","thumbs":{},"encDek":"ZGVr","encKeyId":"mk-1",""" +
                     """"width":1200,"height":900,"tzOffsetMin":540}]}"""
             server.enqueue(MockResponse().setResponseCode(200).setBody(body))
-            val page =
-                FacetPagingSource(api, facetUrl(apiBase(), "PLACE", "1857910"))
-                    .load(PagingSource.LoadParams.Refresh(null, 60, false)) as PagingSource.LoadResult.Page
-            val entity = page.data.single()
+            val entity = fetcher().fetch("PLACE", "1857910", cursor = null, limit = 60).items.single().toEntity()
             assertEquals("A1", entity.photoId)
             assertEquals("", entity.mime)
             assertEquals(AssetStatus.READY, entity.status)
         }
 
     @Test
-    fun `an unparseable facet page is a load error, not a crash`() =
+    fun `an unparseable facet page is the filter's error, not a crash`() =
         runTest {
             connectInstance()
-            val api = factory.create(host, "eu-west-1", "client-id")
             server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[{"photoId":"A1"}]}"""))
-            val result = FacetPagingSource(api, facetUrl(apiBase(), "PLACE", "1857910")).load(PagingSource.LoadParams.Refresh(null, 60, false))
-            assertTrue(result is PagingSource.LoadResult.Error)
+            assertTrue(firstPageResult("PLACE", "1857910") is androidx.paging.RemoteMediator.MediatorResult.Error)
         }
 
     @Test

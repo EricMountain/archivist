@@ -12,6 +12,8 @@ import fr.enry.archivist.data.repo.LocationUpdateRepository
 import fr.enry.archivist.data.repo.PhotoDetail
 import fr.enry.archivist.data.repo.PhotoDetailRepository
 import fr.enry.archivist.data.repo.PhotoRepository
+import fr.enry.archivist.data.repo.FacetStreamSpec
+import fr.enry.archivist.data.repo.PlaceFilterRepository
 import fr.enry.archivist.data.repo.RenditionSummary
 import fr.enry.archivist.data.repo.RepairOutcome
 import fr.enry.archivist.data.repo.RepairRepository
@@ -28,6 +30,7 @@ import java.io.File
 import dagger.hilt.android.qualifiers.ApplicationContext
 import android.content.Context
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -157,6 +160,18 @@ sealed interface OriginalUiState {
 }
 
 /**
+ * What the detail pager swipes over (place filter step 7): the timeline ([photos], all of
+ * Room's `photos`), or the filter the photo was opened from, live over the stream cache
+ * ([PlaceFilterRepository.loadedPhotos]), so a swipe stays inside the filter and loads
+ * more at its end ([DetailViewModel.onReachedEnd]).
+ */
+sealed interface DetailSwipeSource {
+    data object Timeline : DetailSwipeSource
+
+    data class Filter(val streams: List<FacetStreamSpec>) : DetailSwipeSource
+}
+
+/**
  * Plan step 2.12. [photos] is the swipe order the detail pager works with —
  * [PhotoRepository.observeTimeline]'s plain list, not the grid's `Paging` flow, see
  * that function's own doc. [details] is fetched lazily, one photo at a time
@@ -175,12 +190,39 @@ class DetailViewModel
         private val takenAtRepository: TakenAtRepository,
         private val rotateRepository: RotateRepository,
         private val locationUpdateRepository: LocationUpdateRepository,
+        private val placeFilterRepository: PlaceFilterRepository,
         instanceStore: InstanceStore,
         @ApplicationContext private val context: Context,
     ) : ViewModel() {
         val photos: StateFlow<List<PhotoEntity>> =
             photoRepository.observeTimeline()
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+        /** The swipe list for [source]: [photos] for the timeline, the filter's loaded rows
+         * for a filter. Not shared: each detail screen collects its own. */
+        fun swipePhotos(source: DetailSwipeSource): Flow<List<PhotoEntity>> =
+            when (source) {
+                DetailSwipeSource.Timeline -> photos
+                is DetailSwipeSource.Filter -> placeFilterRepository.loadedPhotos(source.streams)
+            }
+
+        private var appending = false
+
+        /** The pager is on the last loaded photo of [source]: for a filter, one more page,
+         * on demand, as a scroll to the end of the grid would (F1). The timeline's list is
+         * all of Room, with nothing to append. One at a time; a failure waits for the next
+         * swipe. */
+        fun onReachedEnd(source: DetailSwipeSource) {
+            if (source !is DetailSwipeSource.Filter || appending) return
+            appending = true
+            viewModelScope.launch {
+                try {
+                    placeFilterRepository.loadOlder(source.streams)
+                } finally {
+                    appending = false
+                }
+            }
+        }
 
         /** The CDN host the 2048 thumbnail is fetched from — same source as
          * `TimelineViewModel.cdnHost`. */

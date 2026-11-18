@@ -77,6 +77,7 @@ class DeleteRepositoryTest {
                 uploadQueueDao = db.uploadQueueDao(),
                 localTombstoneDao = db.localTombstoneDao(),
                 mediaStoreSource = mediaStoreSource,
+                placeFilterRepository = placeFilterFor(db),
             )
     }
 
@@ -149,6 +150,37 @@ class DeleteRepositoryTest {
             ),
         )
     }
+
+    /** Place filter step 7 (F13): a delete from the filtered detail leaves the filter's
+     * cached rows too, in every stream that holds the photo, and only that photo. */
+    @Test
+    fun `delete removes the photo from the place filter's cached rows too`() =
+        runTest {
+            connectInstance()
+            seedPhoto()
+            db.seedFilterRow("PLACE#1857910", photoId, placeCc = "JP", placeName = "Kyoto", placeKey = "1857910")
+            db.seedFilterRow("REGION#JP.22", photoId, placeCc = "JP", placeName = "Kyoto (region)", placeKey = "JP.22", specificity = 1)
+            db.seedFilterRow("PLACE#1857910", "other-photo", placeCc = "JP", placeName = "Kyoto", placeKey = "1857910")
+            server.enqueue(MockResponse().setResponseCode(204))
+
+            assertEquals(DeleteOutcome.Done, repository.delete(photoId, DeleteMode.ARCHIVE_ONLY))
+
+            assertTrue(db.facetStreamDao().rowsOfPhoto(photoId).isEmpty())
+            assertEquals(listOf("other-photo"), db.facetStreamDao().rowsOf("PLACE#1857910").map { it.photoId })
+        }
+
+    @Test
+    fun `a failed delete leaves the place filter's cached rows alone`() =
+        runTest {
+            connectInstance()
+            seedPhoto()
+            db.seedFilterRow("PLACE#1857910", photoId)
+            server.enqueue(MockResponse().setResponseCode(500))
+
+            assertTrue(repository.delete(photoId, DeleteMode.ARCHIVE_ONLY) is DeleteOutcome.Error)
+
+            assertEquals(1, db.facetStreamDao().rowsOfPhoto(photoId).size)
+        }
 
     @Test
     fun `archive-only delete removes the Room row and tombstones every local rendition`() =

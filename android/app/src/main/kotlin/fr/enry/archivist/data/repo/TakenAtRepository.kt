@@ -2,7 +2,6 @@ package fr.enry.archivist.data.repo
 
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.PhotoDao
-import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.remote.ArchivistApiFactory
 import fr.enry.archivist.data.remote.PatchTakenAtRequest
 import fr.enry.archivist.data.remote.TransactionConflictRetry
@@ -39,6 +38,7 @@ class TakenAtRepository
         private val archivistApiFactory: ArchivistApiFactory,
         private val photoDao: PhotoDao,
         private val jumpCoordinator: TimelineJumpCoordinator,
+        private val placeFilterRepository: PlaceFilterRepository,
     ) {
         suspend fun correct(
             photoId: String,
@@ -66,10 +66,10 @@ class TakenAtRepository
             // photoDao's row from the values just sent (which would also need takenAtSrc/
             // tzSrc recomputed to match what the server actually set), refetch the
             // authoritative row and stage it as an external refresh -- see this class's
-            // own doc for why that's a refresh key, not a jump landing.
+            // own doc for why that's a refresh key, not a jump landing. The filter's
+            // cached rows follow too (writeEditedPhoto, place filter step 7).
             val refreshed = api.getPhotoAsTimelineEntry(photoUrl(apiBase, photoId))
-            jumpCoordinator.stageExternalRefreshKey(TimelineKey(refreshed.meta.takenAt, refreshed.meta.photoId))
-            photoDao.upsertAll(listOf(refreshed.meta.toEntity()))
+            writeEditedPhoto(refreshed.meta.toEntity(), photoDao, jumpCoordinator, placeFilterRepository)
 
             return TakenAtOutcome.Done
         }

@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -234,20 +235,14 @@ private val BUBBLE_MARGIN = 8.dp
 private val BUBBLE_FORMATTER = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
 
 /**
- * Floating date bubbles over the grid, visible while its scroll position is changing
- * (flings, drags and rail jumps alike) and [BUBBLE_LINGER_MS] after. Placement is
- * [placeBubbles]; this only gathers the geometry, so it reads items with
- * [LazyPagingItems.peek] only — `items[i]` would trigger page loads from a drawing path.
- * Deliberately has no pointer input, so taps fall through to the photos underneath.
+ * Whether [gridState]'s scroll position is changing (flings, drags and rail jumps alike),
+ * or changed in the last [BUBBLE_LINGER_MS]. The date bubbles show while it's true, and the
+ * place filter's chip hides (timeline place filter F9): one shared state, so the two
+ * cross-fade in the top-left band rather than overlap.
  */
 @Composable
-internal fun DateBubbleOverlay(
-    items: LazyPagingItems<PhotoEntity>,
-    gridState: LazyGridState,
-    topInset: Dp,
-    modifier: Modifier = Modifier,
-) {
-    var lingering by remember { mutableStateOf(false) }
+internal fun rememberScrollActivity(gridState: LazyGridState): State<Boolean> {
+    var lingering by remember(gridState) { mutableStateOf(false) }
     LaunchedEffect(gridState) {
         // Keyed on the top item's identity and offset, not firstVisibleItemIndex: Paging
         // reloading or dropping pages above the viewport renumbers every index while
@@ -263,8 +258,23 @@ internal fun DateBubbleOverlay(
                 lingering = false
             }
     }
-    val visible = lingering || gridState.isScrollInProgress
+    return remember(gridState) { derivedStateOf { lingering || gridState.isScrollInProgress } }
+}
 
+/**
+ * Floating date bubbles over the grid, shown while [visible] ([rememberScrollActivity]).
+ * Placement is [placeBubbles]; this only gathers the geometry, so it reads items with
+ * [LazyPagingItems.peek] only — `items[i]` would trigger page loads from a drawing path.
+ * Deliberately has no pointer input, so taps fall through to the photos underneath.
+ */
+@Composable
+internal fun DateBubbleOverlay(
+    items: LazyPagingItems<PhotoEntity>,
+    gridState: LazyGridState,
+    topInset: Dp,
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+) {
     val density = LocalDensity.current
     val heightPx = with(density) { BUBBLE_HEIGHT.roundToPx() }
     val gapPx = with(density) { BUBBLE_GAP.roundToPx() }

@@ -9,6 +9,7 @@ Ordered, implementable plans. Work through them in sequence.
 | [03-automated-updates.md](03-automated-updates.md) | Dependabot → CI-gated automerge → Lambda redeploy on every merge to main, weekly Play internal-track release. Front-loaded with the manual AWS/GitHub/Play setup |
 | [timeline-date-bubbles.md](timeline-date-bubbles.md) | Follow-up to 2.11: immersive, continuously-flowing grid with floating date bubbles and a floating menu |
 | [geolocation.md](geolocation.md) | On-device reverse geocoding, searchable place facets, location + map link on detail, place in date bubbles. Decisions D1–D10 confirmed 2026-10-25 |
+| [timeline-place-filter.md](timeline-place-filter.md) | Place search moves into the `⋮` menu and filters the main timeline live, in place: multi-select suggestions, one-tap clear, chip hides while scrolling, load-as-you-scroll over merged facet streams, partial rail. Replaces geolocation step 8's search screen. No server change. Owner's answers recorded 2026-11-17 |
 
 **[STATUS.md](STATUS.md) tracks progress against both, step by step.** Read it before
 starting work here; update it in the same change when you finish. It is the source of
