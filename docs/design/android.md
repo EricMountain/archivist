@@ -491,7 +491,12 @@ battery, so "only while charging" should be genuinely offered rather than buried
 * **Search (places)** — the timeline's `⋮` menu and the place filter (`ui/search/`,
   `ui/timeline/MenuPanel.kt`). Tapping `⋮` grows it into a card (about
   `min(width − 16dp, 360dp)` wide, from the button's corner) holding a "Search places"
-  field and the menu entries (Settings). Tapping the field focuses it and opens the
+  field and the menu entries (Settings): the button fades out while the card grows out of
+  its 40 dp square, and closing shrinks the card back into it (150 ms, like every menu
+  transition; the system "Remove animations" setting makes them instant). The `⋮` button,
+  the card (and so the suggestion panel in it) and the filter chip share one translucent
+  surface, the theme's surface colour at 60 % opacity (`OVERLAY_SURFACE_ALPHA`), with no
+  shadow; their text, checkboxes and glyphs stay opaque. Tapping the field focuses it and opens the
   keyboard; the menu entries fade out (150 ms), the card widens to the top band, and a
   suggestion panel opens below it, at most 45 % of the height above the keyboard. There's
   no scrim: the live-filtered grid stays visible below the panel. States, Back and

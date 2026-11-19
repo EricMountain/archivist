@@ -1,13 +1,16 @@
 package fr.enry.archivist.ui.timeline
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandIn
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -26,10 +29,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -37,6 +45,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import fr.enry.archivist.ui.search.OverlayEvent
 import fr.enry.archivist.ui.search.OverlayMode
@@ -52,6 +61,22 @@ internal val MENU_BUTTON_SIZE = 40.dp
 
 /** The card's width in B (plan "States"): `min(width − 16dp, 360dp)`. */
 private val MENU_CARD_MAX_WIDTH = 360.dp
+
+/**
+ * The opacity of every container floating over the grid: the `⋮` button, the menu card
+ * (and so the suggestions inside it) and the filter chip. Only the container is
+ * translucent; its text, checkboxes and glyphs draw fully opaque on top.
+ */
+internal const val OVERLAY_SURFACE_ALPHA = 0.85f
+
+/** [OVERLAY_SURFACE_ALPHA] applied to the theme's surface colour. */
+@Composable
+internal fun overlaySurfaceColor(): Color = MaterialTheme.colorScheme.surface.copy(alpha = OVERLAY_SURFACE_ALPHA)
+
+/** One duration for every menu transition: `⋮` ↔ card, B ↔ C, the entries' fade. */
+private const val MENU_ANIMATION_MS = 150
+
+private fun <T> menuTween(): FiniteAnimationSpec<T> = tween(MENU_ANIMATION_MS)
 
 /**
  * Timeline place filter step 4: the floating `⋮` menu (states A–C, see
@@ -76,26 +101,58 @@ internal fun MenuPanel(
     panel: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (mode == OverlayMode.COLLAPSED) {
-        // A text glyph: the project has no material-icons dependency.
-        Box(
-            modifier
-                .size(MENU_BUTTON_SIZE)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
-                .clickable(role = Role.Button) { onEvent(OverlayEvent.MenuButton) }
-                .semantics { contentDescription = "More options" },
-            contentAlignment = Alignment.Center,
+    // A ↔ B: the button fades out as the card grows out of its spot (top-end, from the
+    // button's size), and back. While the card shrinks away, it keeps drawing the mode it
+    // was closed from, so C's suggestions don't flip back to B's entries mid-fade.
+    // Compose scales these durations by the system animator scale, so "Remove animations"
+    // makes them instant.
+    var lastOpen by remember { mutableStateOf(OverlayMode.EXPANDED) }
+    if (mode != OverlayMode.COLLAPSED) lastOpen = mode
+    val buttonPx = with(LocalDensity.current) { MENU_BUTTON_SIZE.roundToPx() }
+    Box(modifier, contentAlignment = Alignment.TopEnd) {
+        AnimatedVisibility(
+            visible = mode == OverlayMode.COLLAPSED,
+            enter = fadeIn(menuTween()),
+            exit = fadeOut(menuTween()),
         ) {
-            Text("⋮", style = MaterialTheme.typography.titleLarge)
+            // A text glyph: the project has no material-icons dependency.
+            Box(
+                Modifier
+                    .size(MENU_BUTTON_SIZE)
+                    .clip(CircleShape)
+                    .background(overlaySurfaceColor())
+                    .clickable(role = Role.Button) { onEvent(OverlayEvent.MenuButton) }
+                    .semantics { contentDescription = "More options" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("⋮", style = MaterialTheme.typography.titleLarge)
+            }
         }
-        return
+        AnimatedVisibility(
+            visible = mode != OverlayMode.COLLAPSED,
+            enter = fadeIn(menuTween()) + expandIn(menuTween(), Alignment.TopEnd) { IntSize(buttonPx, buttonPx) },
+            exit = fadeOut(menuTween()) + shrinkOut(menuTween(), Alignment.TopEnd) { IntSize(buttonPx, buttonPx) },
+        ) {
+            MenuCard(lastOpen, query, availableWidth, focusRequester, onEvent, onQueryChange, panel)
+        }
     }
+}
 
+/** The card itself, states B and C. */
+@Composable
+private fun MenuCard(
+    mode: OverlayMode,
+    query: String,
+    availableWidth: Dp,
+    focusRequester: FocusRequester,
+    onEvent: (OverlayEvent) -> Unit,
+    onQueryChange: (String) -> Unit,
+    panel: @Composable () -> Unit,
+) {
     val searching = mode == OverlayMode.SEARCHING
     val cardWidth by animateDpAsState(
         targetValue = if (searching) availableWidth else minOf(availableWidth, MENU_CARD_MAX_WIDTH),
-        animationSpec = tween(150),
+        animationSpec = menuTween(),
         label = "menuCardWidth",
     )
     val keyboard = LocalSoftwareKeyboardController.current
@@ -107,14 +164,14 @@ internal fun MenuPanel(
         }
     }
 
+    // No shadow: under a translucent surface it would show through as a grey cast.
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 6.dp,
+        color = overlaySurfaceColor(),
         // First for TalkBack: the field, then the entries or suggestions, then the grid.
-        modifier = modifier.width(cardWidth).semantics { traversalIndex = -1f },
+        modifier = Modifier.width(cardWidth).semantics { traversalIndex = -1f },
     ) {
-        Column(Modifier.animateContentSize(tween(150))) {
+        Column(Modifier.animateContentSize(menuTween())) {
             PlaceSearchField(
                 query = query,
                 onQueryChange = onQueryChange,
@@ -125,8 +182,8 @@ internal fun MenuPanel(
             )
             AnimatedVisibility(
                 visible = !searching,
-                enter = fadeIn(tween(150)) + expandVertically(tween(150)),
-                exit = fadeOut(tween(150)) + shrinkVertically(tween(150)),
+                enter = fadeIn(menuTween()) + expandVertically(menuTween()),
+                exit = fadeOut(menuTween()) + shrinkVertically(menuTween()),
             ) {
                 Column {
                     MenuEntry("Settings") { onEvent(OverlayEvent.SettingsPicked) }
@@ -184,8 +241,7 @@ internal fun PlaceFilterChip(
     val label = chipLabel(filter)
     Surface(
         shape = RoundedCornerShape(50),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-        shadowElevation = 2.dp,
+        color = overlaySurfaceColor(),
         modifier = modifier.height(MENU_BUTTON_SIZE),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
