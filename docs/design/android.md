@@ -423,7 +423,26 @@ battery, so "only while charging" should be genuinely offered rather than buried
   among its photos on that date, ties to the latest `takenAt`; an unknown place never
   starts a new bubble. The bubble reads `14 Jul 2026 · Kyoto`, and only the place half
   ellipsizes. The menu is a floating `⋮` button at top-end; the fast-scroll rail
-  starts below it.
+  starts 8 + 40 + 8 dp below the cutout inset (below the chip's lowest position).
+  **Top-band placement** (`ui/timeline/CornerPlacement.kt`, `placeInTopCorner`): `⋮` sits
+  in the screen's top-end corner itself, as close as it can while its 40 dp circle stays
+  8 dp inside the screen's rounded corner (`WindowInsets.getRoundedCorner`, API 31+; the
+  top-left one in RTL). With the corner arc's radius `r` and the button's radius `q`,
+  the button's centre goes on the 45° line from the arc's centre, at `r − q − 8dp` from
+  it, so its box is `r − (r − q − 8dp)/√2 − q` from each edge (37 px, 14 dp, on a
+  1080 px, 128 px-corner phone). No corner reported (API < 31, a square or tight corner):
+  8 dp from both edges. It also stays 8 dp clear of every display cutout's bounding
+  rectangle, dropping below one that it would touch (a centred punch hole doesn't touch
+  it; a corner cutout does). In immersive mode it overlaps the hidden status bar's strip,
+  and a status bar summoned by a swipe draws over it until it hides again; in the
+  non-immersive states (unfiltered spinner, error, empty) it stays below the visible
+  status bar. The card opens where it clears the cutouts by the same rule (on a centred
+  punch hole, below it: the field must not sit under the camera), growing out of the
+  button's spot and sliding there. The filter chip uses the same rule for the top-start
+  corner, on the button's row (never above it) when its whole label fits there beside
+  any cutout; a longer label drops below the cutout. The date bubbles' sticky top stays
+  below the cutout inset: they span most of the width, so they would cross a centred
+  punch hole.
   **Filtered by place** (see "Search (places)"), the same screen shows only the photos
   taken in the selected places: the same grid, bubbles and rail, over the filter's own
   pager, `LazyGridState` and lead, while the unfiltered pager, grid state and `photos`

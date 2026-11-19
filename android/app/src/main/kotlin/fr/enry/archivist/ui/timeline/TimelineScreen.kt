@@ -47,6 +47,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
@@ -538,6 +544,32 @@ fun TimelineScreen(
         val partialScale = remember(filteredRail) { filteredRailScale(filteredRail) }
 
         BoxWithConstraints(modifier.fillMaxSize()) {
+            // The top band: `⋮` tucked into the top-end corner, clear of the screen's
+            // rounding and of any cutout (see [placeInTopCorner]); the card and the chip
+            // placed by the same rule. A status bar that's showing (the non-immersive
+            // states) keeps them below it, as do side bars.
+            val density = LocalDensity.current
+            val layoutDirection = LocalLayoutDirection.current
+            val endAtRight = layoutDirection == LayoutDirection.Ltr
+            val geometry = rememberTopCornerGeometry(constraints.maxWidth)
+            val marginPx = with(density) { MENU_MARGIN.roundToPx() }
+            val buttonPx = with(density) { MENU_BUTTON_SIZE.roundToPx() }
+            val barTopPx = if (immersive) 0 else with(density) { contentPadding.calculateTopPadding().roundToPx() }
+            val barEndPx = if (immersive) 0 else with(density) { contentPadding.calculateEndPadding(layoutDirection).roundToPx() }
+            val barStartPx = if (immersive) 0 else with(density) { contentPadding.calculateStartPadding(layoutDirection).roundToPx() }
+            val buttonOffset = placeInTopCorner(geometry, endAtRight, buttonPx, buttonPx, buttonPx / 2f, marginPx, barTopPx, barEndPx)
+            val cardOffset =
+                placeInTopCorner(
+                    geometry,
+                    endAtRight,
+                    width = { side -> constraints.maxWidth - 2 * side },
+                    height = buttonPx,
+                    roundness = with(density) { MENU_CARD_CORNER.toPx() },
+                    margin = marginPx,
+                    minTop = barTopPx,
+                    minSide = maxOf(barEndPx, barStartPx),
+                )
+
             val filter = activeFilter
             if (filter == null || filteredState == null) {
                 TimelineGrid(
@@ -592,12 +624,25 @@ fun TimelineScreen(
                 visible = filter != null && chipVisible(filterActive, overlayMode, scrollActive, railHeld),
                 enter = fadeIn(tween(150)),
                 exit = fadeOut(tween(300)),
-                modifier =
-                    Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = MENU_MARGIN, top = topInset + MENU_MARGIN, end = MENU_MARGIN * 2 + MENU_BUTTON_SIZE),
+                modifier = Modifier.align(Alignment.TopStart),
             ) {
-                chipFilter?.let { PlaceFilterChip(it, onEvent = ::dispatch) }
+                chipFilter?.let {
+                    PlaceFilterChip(
+                        it,
+                        onEvent = ::dispatch,
+                        // Placed by its full label's width: on the button's row if it fits
+                        // there beside any cutout, below the cutout if not (placeChip).
+                        modifier =
+                            Modifier.layout { measurable, _ ->
+                                val desired = measurable.maxIntrinsicWidth(buttonPx)
+                                val (offset, width) = placeChip(geometry, !endAtRight, desired, buttonPx, buttonOffset, buttonPx, marginPx, barStartPx)
+                                val placeable = measurable.measure(Constraints(maxWidth = width))
+                                layout(offset.side + placeable.width, offset.top + placeable.height) {
+                                    placeable.placeRelative(offset.side, offset.top)
+                                }
+                            },
+                    )
+                }
             }
 
             // B and C: a tap outside the card closes it and goes no further — not to the
@@ -617,7 +662,9 @@ fun TimelineScreen(
             MenuPanel(
                 mode = overlayMode,
                 query = selection.query,
-                availableWidth = maxWidth - MENU_MARGIN * 2,
+                availableWidth = maxWidth - with(density) { (cardOffset.side * 2).toDp() },
+                button = buttonOffset,
+                card = cardOffset,
                 focusRequester = focusRequester,
                 onEvent = ::dispatch,
                 onQueryChange = {
@@ -642,7 +689,7 @@ fun TimelineScreen(
                         maxHeight = aboveKeyboard * SUGGESTION_PANEL_HEIGHT_FRACTION,
                     )
                 },
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = topInset + MENU_MARGIN, end = MENU_MARGIN),
+                modifier = Modifier.align(Alignment.TopEnd),
             )
         }
     }

@@ -11,6 +11,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideIn
+import androidx.compose.animation.slideOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -38,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -45,7 +48,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import fr.enry.archivist.ui.search.OverlayEvent
 import fr.enry.archivist.ui.search.OverlayMode
@@ -54,10 +59,13 @@ import fr.enry.archivist.ui.search.PlaceSearchField
 import java.text.NumberFormat
 import java.util.Locale
 
-/** The `⋮` button's size and its margin from the screen's edges; the chip and the rail's
- * track top are laid out against them. */
+/** The `⋮` button's size, and the smallest margin anything in the top band keeps from the
+ * screen's edges, its corners and cutouts ([placeInTopCorner]). */
 internal val MENU_MARGIN = 8.dp
 internal val MENU_BUTTON_SIZE = 40.dp
+
+/** The menu card's corner radius; [placeInTopCorner] fits this corner into the screen's. */
+internal val MENU_CARD_CORNER = 16.dp
 
 /** The card's width in B (plan "States"): `min(width − 16dp, 360dp)`. */
 private val MENU_CARD_MAX_WIDTH = 360.dp
@@ -86,8 +94,11 @@ private fun <T> menuTween(): FiniteAnimationSpec<T> = tween(MENU_ANIMATION_MS)
  * the card widens to the whole top band, and [panel] (the suggestions) shows below the
  * field.
  *
- * [availableWidth] is the width of the band the card can use (the screen less its
- * margins). The field is one composable across B and C, so focusing it doesn't recreate
+ * [button] and [card] are where each sits ([placeInTopCorner], px from the end edge and the
+ * top): the button tucked into the screen's top-end corner, the card where it clears the
+ * cutouts (on a centred punch hole, lower than the button), so the card grows out of the
+ * button's spot and slides to its own as it does. [availableWidth] is the width of the
+ * band the card can use (the screen less its margins). The field is one composable across B and C, so focusing it doesn't recreate
  * it; tapping it in B is what moves to C ([OverlayEvent.FieldTapped]).
  */
 @Composable
@@ -95,6 +106,8 @@ internal fun MenuPanel(
     mode: OverlayMode,
     query: String,
     availableWidth: Dp,
+    button: CornerOffset,
+    card: CornerOffset,
     focusRequester: FocusRequester,
     onEvent: (OverlayEvent) -> Unit,
     onQueryChange: (String) -> Unit,
@@ -108,12 +121,18 @@ internal fun MenuPanel(
     // makes them instant.
     var lastOpen by remember { mutableStateOf(OverlayMode.EXPANDED) }
     if (mode != OverlayMode.COLLAPSED) lastOpen = mode
-    val buttonPx = with(LocalDensity.current) { MENU_BUTTON_SIZE.roundToPx() }
+    val density = LocalDensity.current
+    val buttonPx = with(density) { MENU_BUTTON_SIZE.roundToPx() }
+    // The card's offset from where it ends up to the button's spot (physical px: the slide
+    // isn't mirrored, so the end edge's direction comes from the layout direction).
+    val endSign = if (LocalLayoutDirection.current == LayoutDirection.Ltr) 1 else -1
+    val fromButton = IntOffset((card.side - button.side) * endSign, button.top - card.top)
     Box(modifier, contentAlignment = Alignment.TopEnd) {
         AnimatedVisibility(
             visible = mode == OverlayMode.COLLAPSED,
             enter = fadeIn(menuTween()),
             exit = fadeOut(menuTween()),
+            modifier = Modifier.padding(top = with(density) { button.top.toDp() }, end = with(density) { button.side.toDp() }),
         ) {
             // A text glyph: the project has no material-icons dependency.
             Box(
@@ -130,8 +149,15 @@ internal fun MenuPanel(
         }
         AnimatedVisibility(
             visible = mode != OverlayMode.COLLAPSED,
-            enter = fadeIn(menuTween()) + expandIn(menuTween(), Alignment.TopEnd) { IntSize(buttonPx, buttonPx) },
-            exit = fadeOut(menuTween()) + shrinkOut(menuTween(), Alignment.TopEnd) { IntSize(buttonPx, buttonPx) },
+            enter =
+                fadeIn(menuTween()) +
+                    expandIn(menuTween(), Alignment.TopEnd) { IntSize(buttonPx, buttonPx) } +
+                    slideIn(menuTween()) { fromButton },
+            exit =
+                fadeOut(menuTween()) +
+                    shrinkOut(menuTween(), Alignment.TopEnd) { IntSize(buttonPx, buttonPx) } +
+                    slideOut(menuTween()) { fromButton },
+            modifier = Modifier.padding(top = with(density) { card.top.toDp() }, end = with(density) { card.side.toDp() }),
         ) {
             MenuCard(lastOpen, query, availableWidth, focusRequester, onEvent, onQueryChange, panel)
         }
@@ -166,7 +192,7 @@ private fun MenuCard(
 
     // No shadow: under a translucent surface it would show through as a grey cast.
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(MENU_CARD_CORNER),
         color = overlaySurfaceColor(),
         // First for TalkBack: the field, then the entries or suggestions, then the grid.
         modifier = Modifier.width(cardWidth).semantics { traversalIndex = -1f },
