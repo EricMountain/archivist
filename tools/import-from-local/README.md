@@ -510,6 +510,78 @@ its own category, not an error, and left untouched. Nothing here restores it.
 Afterwards, `make backfill-places-dev ALL=1` (a dry run of
 `tools/backfill-places.mjs`) should report `differences: 0`.
 
+## Placing photos that have no GPS
+
+`locate_missing.py` works out a coarse place for every file under a local
+directory that has no GPS of its own, and writes it to a JSON Lines file
+(`missing-locations.jsonl`, gitignored) for a later `PUT
+/photos/{photoId}/location`. It never signs in or touches an instance; the only
+network access is a one-time download of GeoNames `cities500.zip`,
+`admin1CodesASCII.txt` and `countryInfo.txt` into `.cache/locate/geonames/`.
+
+```sh
+.venv/bin/python3 locate_missing.py --source /path/to/your/photos
+.venv/bin/python3 locate_missing.py --source ... --no-prompt   # infer + report only
+```
+
+It's built to ask as little as possible:
+
+* **Inferred without asking:** an edited copy whose original (same directory)
+  has GPS, a photo bracketed by two GPS photos within `--bracket-hours` (4) that
+  are within `--agree-km` (15) of each other, or within `--near-minutes` (45) of
+  one GPS photo. Never for a file whose only time is its mtime.
+* **One question per cluster:** photos are grouped wherever consecutive ones are
+  more than `--gap-hours` (6) apart, shown as an inline contact sheet (iTerm2,
+  through tmux if `allow-passthrough` is on; otherwise opened in Preview), with a
+  suggestion taken from the nearest known place in time (within
+  `--suggest-days`, 90). Enter accepts it; `s` splits a mixed cluster at its
+  biggest time gap.
+* **Review sheets:** once a place is known, the next clusters (up to `--sheet`
+  photos, 24) are shown on one numbered sheet with the question "which are NOT
+  <place>?". Enter confirms them all; `3 7-9` sends those back as questions, each
+  run of consecutive numbers as one. Years of photos at home cost one keypress
+  per sheet.
+* **Names:** type part of a name in any language GeoNames has (`lyo`, `munchen`,
+  `st etienne`), optionally narrowed (`paris, tx`, `paris, france`), or a region or
+  country (English names) for something coarser; also `lat,lon` or `#<geonameid>`.
+  Candidates are ranked by match, population and distance to the suggestion. You
+  confirm a name once; it is remembered in `.cache/locate/aliases.json` across
+  runs and sources (`!name` to choose again).
+
+Answers are saved after each question (`.cache/locate/<source hash>/state.json`):
+`q` or Ctrl-C, then the same command, resumes. `u` undoes the last answer, `-`
+skips a cluster (`--retry-skipped` asks again). Changing the thresholds and
+re-running only changes what is inferred, never what you answered. The file scan
+is cached by path, size and mtime.
+
+Each output line carries `path` (relative to `--source`), `size`, `takenLocal`,
+`timeSrc`, `method` (`prompt`, `neighbour-gps`, `sibling-gps`, plus `basis` for
+the inferred ones), `place` in exactly the shape the API takes (with the bundled
+gazetteer's `src`), a human `label`, and `approx`: the chosen locality's centre or
+the coordinates typed. `approx` is not a measurement and shouldn't go into
+`exifEnc` as `gpsLat`/`gpsLon`.
+
+Nothing consumes the file yet: `modify_media.py location` would need a mode that
+reads it, matches each `path` to an asset the way `--source-dir` already does,
+and PUTs `place` alone.
+
+## Looking up coordinates
+
+`geocode.py` prints the cities500 entry for a pair of coordinates, using the same
+bundled `gazetteer.bin` lookup as the importer and the app, so the `place` shown
+is exactly what an upload at those coordinates would get:
+
+```sh
+.venv/bin/python3 geocode.py 45.7640,4.8357 "-33.8688, 151.2093"
+echo "35.0116,135.7681" | .venv/bin/python3 geocode.py --json
+.venv/bin/python3 geocode.py --details --nearest 5 46.2044 6.1432
+```
+
+`--details` adds the matched locality's full cities500 row; `--nearest K` lists the
+K nearest entries ignoring the 25/100 km caps, for when the answer surprises you
+(a border town, a city district such as "Lyon 01" winning over the city). Both
+read the GeoNames files `locate_missing.py` caches in `.cache/locate/geonames/`.
+
 ## What this handles
 
 * **Every rendition-grouping mechanism the design already has**, applied to what
