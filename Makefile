@@ -1,7 +1,7 @@
 .PHONY: install build test typecheck deploy deploy-dev plan-dev clean \
 	test-infra-up test-infra-down test-infra-status test-integration \
 	teardown-load-test-dev backfill-histogram backfill-histogram-dev \
-	backfill-places backfill-places-dev geo-build geo-publish geo-publish-dev
+	backfill-places backfill-places-dev geo-build geo-publish geo-publish-dev geo-prune geo-prune-dev
 
 install:
 	npm install
@@ -155,3 +155,26 @@ geo-publish:
 
 geo-publish-dev:
 	$(call geo_publish_recipe,dev)
+
+# Deletes every set under geo/ that the *published* manifest doesn't name (older tile
+# sets, format-1 pack sets). Dry run unless EXECUTE=1. Run it once clients have had time
+# to pick up the new manifest (5 minutes); an app mid-upload with the old manifest falls
+# back to the gazetteer for that photo, and a later re-geocode redoes it.
+define geo_prune_recipe
+	cd terraform && terraform workspace select $(1) >/dev/null && \
+	BUCKET=$$(terraform output -raw web_bucket) && \
+	CURRENT=$$(aws s3 cp "s3://$$BUCKET/geo/manifest.json" - | python3 -c 'import json,sys; print(json.load(sys.stdin)["set"])') && \
+	test -n "$$CURRENT" && echo "published set: $$CURRENT" && \
+	for p in $$(aws s3 ls "s3://$$BUCKET/geo/" | awk '/ PRE /{print $$2}'); do \
+		if [ "$$p" != "$$CURRENT/" ]; then \
+			if [ -n "$(EXECUTE)" ]; then aws s3 rm --recursive --only-show-errors "s3://$$BUCKET/geo/$$p" && echo "deleted geo/$$p"; \
+			else echo "would delete geo/$$p (EXECUTE=1 to delete)"; fi; \
+		fi; \
+	done
+endef
+
+geo-prune:
+	$(call geo_prune_recipe,default)
+
+geo-prune-dev:
+	$(call geo_prune_recipe,dev)

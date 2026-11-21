@@ -151,6 +151,44 @@ class CombiningWithTheGazetteer(unittest.TestCase):
         self.assertEqual(len({json.dumps(r, sort_keys=True) for r in results}), 1)
         self.assertEqual(len([c for c in http.calls if c.endswith(".bin")]), 1)
 
+    def test_load_caches_per_host_and_prunes_what_the_manifest_dropped(self):
+        msgs = []
+        g = places.load("photos.example.com", cache_dir=self.tmp.name, progress=msgs.append, get=FakeHttp())
+        self.assertIn("(8 tiles)", msgs[-1])
+        g.lookup(45.0110, 5.0110)
+        tile_dir = places.host_cache_dir(self.tmp.name, "photos.example.com")
+        kept = os.listdir(tile_dir)
+        self.assertEqual(len(kept), 1)
+        # A tile from an older set, a leftover temp file, the old flat layout, and another
+        # instance's cache.
+        for name in ("a" * 64 + ".bin", "b" * 64 + ".bin.1.2.tmp"):
+            open(os.path.join(tile_dir, name), "wb").close()
+        os.makedirs(os.path.join(self.tmp.name, "packs"))
+        other = places.host_cache_dir(self.tmp.name, "other.example.com")
+        os.makedirs(other)
+        open(os.path.join(other, "c" * 64 + ".bin"), "wb").close()
+        msgs.clear()
+        places.load("photos.example.com", cache_dir=self.tmp.name, progress=msgs.append, get=FakeHttp())
+        self.assertEqual(sorted(os.listdir(tile_dir)), kept)
+        self.assertIn("removed 2 cached tile(s)", msgs[0])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "packs")))
+        self.assertEqual(os.listdir(other), ["c" * 64 + ".bin"])
+
+    def test_an_instance_that_stops_publishing_loses_its_cached_tiles(self):
+        places.load("photos.example.com", cache_dir=self.tmp.name, progress=lambda m: None,
+                    get=FakeHttp()).lookup(45.0110, 5.0110)
+        tile_dir = places.host_cache_dir(self.tmp.name, "photos.example.com")
+        self.assertTrue(os.listdir(tile_dir))
+        g = places.load("photos.example.com", cache_dir=self.tmp.name, progress=lambda m: None,
+                        get=FakeHttp(manifest_status=404))
+        self.assertIsNone(g.manifest)
+        self.assertEqual(os.listdir(tile_dir), [])
+
+    def test_a_local_set_is_read_in_place(self):
+        g = places.load_local(os.path.join(TESTDATA, "fixture-manifest.json"))
+        self.assertIsNone(g.store.cache_dir)
+        self.assertEqual(g.lookup(45.0110, 5.0110)["src"].split(";")[0], "osm@fixture")
+
     def test_manifest_validation(self):
         good = json.load(open(os.path.join(TESTDATA, "fixture-manifest.json"), encoding="utf-8"))
         for label, mutate in [

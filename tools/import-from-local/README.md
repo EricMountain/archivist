@@ -526,7 +526,7 @@ directory that has no GPS of its own, and writes it to a JSON Lines file
 /photos/{photoId}/location`. It never signs in. Its network access is a one-time
 download of GeoNames `cities500.zip`, `admin1CodesASCII.txt` and `countryInfo.txt`
 into `.cache/locate/geonames/`, and, with `--host`, the instance's public region-pack
-manifest and packs (cached in `.cache/geo/`).
+manifest and tiles (cached in `.cache/geo/tiles/<host>/`).
 
 ```sh
 .venv/bin/python3 locate_missing.py --source /path/to/your/photos --host photos.example.com
@@ -673,10 +673,12 @@ read the GeoNames files `locate_missing.py` caches in `.cache/locate/geonames/`.
   `https://<host>/geo/manifest.json`; design.md "Detailed places: OpenStreetMap
   region packs"), `places.py` applies them on top of the gazetteer, the way the app
   does: the commune, village, hamlet, protected areas and natural feature around a
-  photo, and `src` `osm@<set>;<gazetteer src>`. Packs are downloaded when first
-  needed, checked against the manifest's size and sha256, and cached in
-  `.cache/geo/`. A pack that can't be had gives that photo the gazetteer's place and
-  `src`, so a later `modify_media.py location --all` redoes it.
+  photo, and `src` `osm@<set>;<gazetteer src>`. The one tile a point needs is
+  downloaded when first needed, checked against the manifest's size and sha256, and
+  cached in `.cache/geo/tiles/<host>/`; each run that fetches the instance's manifest
+  deletes cached tiles it no longer names (a set on disk, `--manifest`, is read in place).
+  A tile that can't be had gives that photo the gazetteer's place and `src`, so a later
+  `modify_media.py location --all` redoes it.
   `tests/test_geopack.py` checks `geopack.py` against `tools/geopack/vectors.json`.
   Map data © OpenStreetMap contributors, ODbL 1.0.
 * **Video creation time and dimensions** via a small ISO-BMFF (`mp4box.py`) box

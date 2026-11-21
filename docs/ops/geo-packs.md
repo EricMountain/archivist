@@ -119,8 +119,10 @@ the vocabulary counters agree with the photos.
 ## Updating and removing
 
 * **Rebuild** whenever you like (OSM changes daily; once or twice a year is plenty).
-  `make geo-build`, then `make geo-publish`. Old sets stay in the bucket, which is
-  harmless; delete `s3://<web bucket>/geo/<old set>/` once nothing needs them.
+  `make geo-build`, then `make geo-publish`. Old sets stay in the bucket until you
+  prune them: `make geo-prune` (or `-dev`) lists every set under `geo/` that the
+  published manifest doesn't name, and `make geo-prune EXECUTE=1` deletes them. Wait a
+  few minutes after publishing first, so clients have picked up the new manifest.
 * **Add a region.** Add it to the list and run `make geo-build`: only the new region's
   pack is built (region packs are kept in `<work>/packs/` by region, extract and builder),
   then everything is tiled again and the set gets a new id. Publish, then re-geocode

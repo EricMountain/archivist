@@ -13,8 +13,10 @@ gazetteer, `src` and `lookup(lat, lon)`, so it drops in wherever a gazetteer did
 * a tile that can't be fetched or fails its checks: the gazetteer's place with the
   gazetteer's own `src`, so a later run redoes it.
 
-Tiles are downloaded on first use and cached by sha256 under `.cache/geo/`. Thread-safe:
-modify_media.py geocodes from several threads.
+Tiles are downloaded on first use and cached by sha256 under `.cache/geo/tiles/<host>/`,
+one directory per instance; each time an instance's manifest is fetched, cached tiles it
+no longer names are deleted. A set on disk (`load_local`) is read in place, not copied.
+Thread-safe: modify_media.py geocodes from several threads.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import urllib.error
@@ -87,16 +90,18 @@ def validate_manifest(m: dict) -> dict:
 class PackStore:
     """Fetches the tiles a manifest names, checks them, caches them by sha256."""
 
-    def __init__(self, base_url: str, cache_dir: str = DEFAULT_CACHE_DIR, get=_http_get, progress=lambda m: None):
+    def __init__(self, base_url: str, cache_dir: str | None, get=_http_get, progress=lambda m: None):
+        """`cache_dir`: where tiles are kept by sha256, or None to fetch every time (a set
+        on disk, which needs no copy)."""
         self.base_url = base_url.rstrip("/")
         self.cache_dir = cache_dir
         self.get = get
         self.progress = progress
 
     def load(self, key: str, entry: dict, set_id: str) -> geopack.Pack:
-        path = os.path.join(self.cache_dir, "packs", f"{entry['sha256']}.bin")
+        path = os.path.join(self.cache_dir, f"{entry['sha256']}.bin") if self.cache_dir else None
         data = None
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             with open(path, "rb") as f:
                 data = f.read()
             if hashlib.sha256(data).hexdigest() != entry["sha256"]:
@@ -110,11 +115,12 @@ class PackStore:
                 raise PackUnavailable(f"{url}: {e}") from e
             if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
                 raise PackUnavailable(f"{url}: size or sha256 differs from the manifest")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, path)
+            if path:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, path)
         try:
             pack = geopack.read_pack(data)
         except (ValueError, IndexError, UnicodeDecodeError) as e:
@@ -210,20 +216,50 @@ def combine(base: dict, layers: dict | None, src: str) -> dict:
     return {k: place[k] for k in PLACE_KEYS if k in place}
 
 
+def host_cache_dir(cache_dir: str, host: str) -> str:
+    return os.path.join(cache_dir, "tiles", re.sub(r"[^A-Za-z0-9.-]", "_", host))
+
+
+def prune_cache(tile_dir: str, manifest: dict | None) -> int:
+    """Delete cached tiles (and leftover temp files) the manifest doesn't name; all of
+    them when the instance publishes none. Returns how many were deleted."""
+    keep = {t["sha256"] for t in manifest["tiles"].values()} if manifest else set()
+    n = 0
+    try:
+        names = os.listdir(tile_dir)
+    except FileNotFoundError:
+        return 0
+    for name in names:
+        if name.endswith(".bin") and name[:-4] in keep:
+            continue
+        try:
+            os.remove(os.path.join(tile_dir, name))
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def load(host: str | None, gazetteer_path: str | None = None, cache_dir: str = DEFAULT_CACHE_DIR,
          progress=lambda m: print(m, file=sys.stderr), get=_http_get) -> Geocoder:
     """The geocoder a client of `host` must use: its manifest decides. No host: the
-    gazetteer alone."""
+    gazetteer alone. Prunes the host's tile cache to the manifest it just fetched."""
     gaz = gz.load(gazetteer_path)
     if not host:
         return Geocoder(gaz)
+    # Before tiles, packs of every instance shared one flat `packs/` directory.
+    shutil.rmtree(os.path.join(cache_dir, "packs"), ignore_errors=True)
+    tile_dir = host_cache_dir(cache_dir, host)
     manifest = fetch_manifest(host, get=get)
+    pruned = prune_cache(tile_dir, manifest)
+    if pruned:
+        progress(f"removed {pruned} cached tile(s) {host} no longer publishes")
     if manifest is None:
-        progress(f"{host} publishes no region packs: places come from the gazetteer alone")
+        progress(f"{host} publishes no region tiles: places come from the gazetteer alone")
         return Geocoder(gaz)
-    progress(f"{host} publishes region pack set {manifest['set']} ({len(manifest['packs'])} pack(s))")
+    progress(f"{host} publishes region tile set {manifest['set']} ({len(manifest['tiles'])} tiles)")
     base = manifest_url(host).rsplit("/", 1)[0]
-    return Geocoder(gaz, manifest, PackStore(base, cache_dir, get=get, progress=progress))
+    return Geocoder(gaz, manifest, PackStore(base, tile_dir, get=get, progress=progress))
 
 
 def load_local(manifest_path: str, gazetteer_path: str | None = None) -> Geocoder:
@@ -238,7 +274,7 @@ def load_local(manifest_path: str, gazetteer_path: str | None = None) -> Geocode
         with open(os.path.join(base, url.split("/", 1)[1]), "rb") as f:
             return f.read()
 
-    store = PackStore("local", cache_dir=DEFAULT_CACHE_DIR, get=read)
+    store = PackStore("local", cache_dir=None, get=read)
     return Geocoder(gaz, manifest, store)
 
 
