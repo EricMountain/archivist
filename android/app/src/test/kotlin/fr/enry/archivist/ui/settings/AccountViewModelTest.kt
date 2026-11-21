@@ -16,6 +16,7 @@ import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.data.repo.PreviewCache
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
+import fr.enry.archivist.testutil.FakeRegionTileCache
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import java.io.File
 import java.nio.file.Files
@@ -112,6 +113,7 @@ class AccountViewModelTest {
                 archivistApiFactory = archivistApiFactory,
                 masterKeyHolder = MasterKeyHolder(),
                 hashSecretHolder = HashSecretHolder(),
+                regionTiles = FakeRegionTileCache(),
             )
         val accountRepository =
             AccountRepository(

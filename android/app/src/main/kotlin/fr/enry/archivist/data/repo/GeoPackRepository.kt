@@ -58,6 +58,15 @@ sealed interface GeoPacks {
     data class Covered(val set: String, val packs: GeoPackSet) : GeoPacks
 }
 
+/** On-device region data, for Settings > Storage and sign-out. */
+interface RegionTileCache {
+    /** Bytes on disk: downloaded tiles and saved manifests. */
+    suspend fun sizeBytes(): Long
+
+    /** Deletes everything; tiles are fetched again when a photo next needs one. */
+    suspend fun clear()
+}
+
 /**
  * The connected instance's region tiles (design.md "Detailed places: OpenStreetMap region
  * packs"): the manifest, revalidated at most every [MANIFEST_TTL_MS] and kept on disk for
@@ -67,6 +76,12 @@ sealed interface GeoPacks {
  * in memory (a tile is capped at about 1 MB on disk, a few MB decoded). Every fetch goes
  * to the user's own instance, never a third party. Serialised by a mutex: uploads geocode
  * concurrently.
+ *
+ * Tiles don't pile up: after each successful manifest fetch (at most every
+ * [MANIFEST_TTL_MS]), a tile the manifest no longer names (a rebuilt or withdrawn set) is
+ * deleted, and so is one unused for [UNUSED_TILE_MS]: a trip's tiles go a few months
+ * after the trip. A tile's file time is its last use. Settings > Storage shows the total
+ * and can clear it ([RegionTileCache]); signing out clears it too.
  */
 @Singleton
 class GeoPackRepository
@@ -75,7 +90,7 @@ class GeoPackRepository
         private val instanceStore: InstanceStore,
         private val okHttpClient: OkHttpClient,
         @ApplicationContext private val context: Context,
-    ) {
+    ) : RegionTileCache {
         private val json = Json { ignoreUnknownKeys = true }
         private val mutex = Mutex()
         private var manifestHost: String? = null
@@ -118,11 +133,13 @@ class GeoPackRepository
             val now = System.currentTimeMillis()
             if (host == manifestHost && now - manifestFetchedAt < MANIFEST_TTL_MS) return manifest
             val saved = dir.resolve("manifest-${sha256(host.toByteArray())}.json")
+            var fetched = false
             val fresh: GeoManifest? =
                 try {
                     withContext(Dispatchers.IO) {
                         val request = Request.Builder().url("https://$host/geo/manifest.json").build()
                         okHttpClient.newCall(request).execute().use { response ->
+                            fetched = response.code == 403 || response.code == 404 || response.isSuccessful
                             when {
                                 response.code == 403 || response.code == 404 -> {
                                     saved.delete()
@@ -147,6 +164,9 @@ class GeoPackRepository
             manifestHost = host
             manifest = fresh
             manifestFetchedAt = now
+            // Only on what the instance just said, never on a saved copy: offline, nothing
+            // is known to be superseded.
+            if (fetched) prune(fresh?.tiles?.values?.mapTo(HashSet()) { it.sha256 } ?: emptySet(), now)
             return fresh
         }
 
@@ -189,7 +209,41 @@ class GeoPackRepository
                 }
             tiles[entry.sha256] = set
             while (tiles.size > MAX_TILES_IN_MEMORY) tiles.remove(tiles.keys.first())
+            withContext(Dispatchers.IO) { file.setLastModified(System.currentTimeMillis()) } // last use
             return set
+        }
+
+        /** Deletes cached tiles the current manifest doesn't name, and ones unused for
+         * [UNUSED_TILE_MS], except those decoded in memory right now. */
+        private suspend fun prune(
+            keep: Set<String>,
+            now: Long,
+        ) {
+            tiles.keys.retainAll(keep)
+            withContext(Dispatchers.IO) {
+                val files = dir.resolve("packs").listFiles() ?: return@withContext
+                for (f in files) {
+                    val sha = f.name.removeSuffix(".bin")
+                    val superseded = f.name.endsWith(".tmp") || sha !in keep
+                    val unused = now - f.lastModified() > UNUSED_TILE_MS
+                    if ((superseded || unused) && sha !in tiles) f.delete()
+                }
+            }
+        }
+
+        override suspend fun sizeBytes(): Long =
+            withContext(Dispatchers.IO) {
+                dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            }
+
+        override suspend fun clear() {
+            mutex.withLock {
+                tiles.clear()
+                manifestHost = null
+                manifest = null
+                manifestFetchedAt = 0L
+                withContext(Dispatchers.IO) { dir.deleteRecursively() }
+            }
         }
 
         private fun validate(m: GeoManifest): GeoManifest {
@@ -207,6 +261,7 @@ class GeoPackRepository
         private companion object {
             const val MANIFEST_TTL_MS = 5 * 60 * 1000L
             const val MAX_TILES_IN_MEMORY = 4
+            const val UNUSED_TILE_MS = 90L * 24 * 60 * 60 * 1000
             val SET_RE = Regex("^[0-9A-Za-z._-]{1,20}$")
             val SHA_RE = Regex("^[0-9a-f]{64}$")
 
@@ -241,4 +296,11 @@ class PlaceGeocoder internal constructor(
             is GeoPacks.Covered -> combinePlace(base, p.set, p.packs.lookup(lat, lon))
         }
     }
+}
+
+@dagger.Module
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+abstract class RegionTileCacheModule {
+    @dagger.Binds
+    abstract fun bindRegionTileCache(impl: GeoPackRepository): RegionTileCache
 }

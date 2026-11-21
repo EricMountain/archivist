@@ -240,7 +240,13 @@ publishes none), keeps the last good copy for offline use, computes the photo's 
 `noBackupFilesDir/geo/packs/`, checked against the manifest's size and sha256. Tiles are
 capped at about 1 MB (a few MB decoded); the four most recently used stay decoded in
 memory, and an `OutOfMemoryError` while reading one falls back like a failed download
-instead of crashing the upload. Every request goes to the user's own instance. A tile
+instead of crashing the upload. Tiles don't pile up: after each successful manifest
+fetch, a tile the manifest no longer names (a rebuilt or withdrawn set) is deleted, and so
+is one unused for 90 days (its file time is its last use); nothing is pruned from a saved
+manifest while offline. Settings › Storage shows "Place data" with its size and a clear
+button, and sign-out deletes it (`RegionTileCache`, cleared by `AuthRepository.signOut`),
+since the tiles say roughly where the account's photos were taken. Every request goes to
+the user's own instance. A tile
 that can't be had (offline, a failed check) gives the gazetteer's place with the
 gazetteer's own `src`, so a later re-geocode redoes the photo. `domain/GeoPack.kt` is
 the reader, grid and lookup, a port of `tools/geopack/reference.py`; `GeoPackTest` runs

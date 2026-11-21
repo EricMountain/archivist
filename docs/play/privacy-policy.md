@@ -145,6 +145,12 @@ re-uploaded. All of it lives in
 the app's private storage, and all of it is removed when you uninstall the app or clear
 its data.
 
+If your server publishes detailed map data, the app also keeps the pieces it has
+downloaded for the areas your photos were taken in, so it can name places offline. Since
+these say roughly where you have been, a piece unused for 90 days is deleted
+automatically, all of it is deleted when you sign out, and Settings › Storage shows how
+much there is and can delete it.
+
 ## Children
 
 Archivist is not directed at children under 13.

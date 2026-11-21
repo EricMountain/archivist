@@ -175,4 +175,74 @@ class GeoPackRepositoryTest {
             assertTrue(got is GeoPacks.Covered, "$got")
             assertEquals(oracle.lookup(45.0110, 5.0110), (got as GeoPacks.Covered).packs.lookup(45.0110, 5.0110))
         }
+    private fun packsDir() = tempDir.resolve("no_backup/geo/packs")
+
+    private fun tileFile(
+        lat: Double,
+        lon: Double,
+    ): File {
+        val key = GeoTiles.find(tileKeys, lat, lon)!!
+        val sha = Json.parseToJsonElement(manifestText).jsonObject["tiles"]!!.jsonObject[key]!!.jsonObject["sha256"]!!.toString().trim('"')
+        return packsDir().resolve("$sha.bin")
+    }
+
+    private val ninetyOneDaysAgo get() = System.currentTimeMillis() - 91L * 24 * 60 * 60 * 1000
+
+    @Test
+    fun `a fresh manifest deletes tiles it no longer names and leftover temp files`() =
+        runBlocking {
+            packsDir().mkdirs()
+            val old = packsDir().resolve("${"a".repeat(64)}.bin").apply { writeBytes(ByteArray(10)) }
+            val tmp = packsDir().resolve("${"b".repeat(64)}.bin.tmp").apply { writeBytes(ByteArray(10)) }
+            repository().packsFor(45.0110, 5.0110)
+            assertTrue(!old.exists() && !tmp.exists())
+            assertTrue(tileFile(45.0110, 5.0110).exists())
+        }
+
+    @Test
+    fun `a tile unused for 90 days is deleted, a recently used one isn't`() =
+        runBlocking {
+            val repo = repository()
+            repo.packsFor(45.0110, 5.0110)
+            repo.packsFor(45.0470, 5.4500)
+            val stale = tileFile(45.0110, 5.0110).apply { setLastModified(ninetyOneDaysAgo) }
+            val recent = tileFile(45.0470, 5.4500)
+            repository().packsFor(45.0470, 5.4500) // a fresh repository: fetches the manifest, prunes
+            assertTrue(!stale.exists(), "stale tile kept")
+            assertTrue(recent.exists(), "recent tile deleted")
+        }
+
+    @Test
+    fun `an instance that stops publishing loses its tiles`() =
+        runBlocking {
+            repository().packsFor(45.0110, 5.0110)
+            manifestBody = { MockResponse().setResponseCode(404) }
+            assertEquals(GeoPacks.None, repository().packsFor(45.0110, 5.0110))
+            assertEquals(emptyList<String>(), packsDir().list()?.toList().orEmpty())
+        }
+
+    @Test
+    fun `offline, nothing is pruned`() =
+        runBlocking {
+            repository().packsFor(45.0110, 5.0110)
+            val tile = tileFile(45.0110, 5.0110).apply { setLastModified(ninetyOneDaysAgo) }
+            server.shutdown()
+            repository().packsFor(45.0470, 5.4500) // saved manifest; that tile can't be fetched
+            assertTrue(tile.exists())
+        }
+
+    @Test
+    fun `size and clear`() =
+        runBlocking {
+            val repo = repository()
+            assertEquals(0L, repo.sizeBytes())
+            repo.packsFor(45.0110, 5.0110)
+            assertTrue(repo.sizeBytes() > tileFile(45.0110, 5.0110).length())
+            repo.clear()
+            assertEquals(0L, repo.sizeBytes())
+            assertTrue(!tempDir.resolve("no_backup/geo").exists())
+            repo.packsFor(45.0110, 5.0110) // fetched again, manifest included
+            assertEquals(2, requests.count { it == "/geo/manifest.json" })
+            assertEquals(2, tileRequests().size)
+        }
 }

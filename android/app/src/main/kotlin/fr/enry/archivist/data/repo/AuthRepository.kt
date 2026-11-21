@@ -30,6 +30,7 @@ class AuthRepository
         private val archivistApiFactory: ArchivistApiFactory,
         private val masterKeyHolder: MasterKeyHolder,
         private val hashSecretHolder: HashSecretHolder,
+        private val regionTiles: RegionTileCache,
     ) {
         fun currentSession(host: String): AuthSession? = tokenStore.get(host)
 
@@ -124,6 +125,8 @@ class AuthRepository
             val instance = currentInstanceOrThrow()
             masterKeyHolder.clear()
             hashSecretHolder.clear()
+            // The instance's region tiles: they say roughly where this account's photos are.
+            regionTiles.clear()
             val session = tokenStore.get(instance.host) ?: return
             cognitoAuthClient.revoke(instance.document.region, instance.document.cognito.clientId, session.refreshToken)
             tokenStore.clear(instance.host)

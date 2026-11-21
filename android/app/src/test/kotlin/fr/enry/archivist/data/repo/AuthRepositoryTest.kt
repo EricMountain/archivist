@@ -13,6 +13,7 @@ import fr.enry.archivist.data.remote.DiscoveryDocument
 import fr.enry.archivist.data.remote.PasskeyRegistrationStart
 import fr.enry.archivist.data.remote.StartWebAuthnRegistrationResponse
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
+import fr.enry.archivist.testutil.FakeRegionTileCache
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import java.io.File
 import java.nio.file.Files
@@ -39,6 +40,7 @@ class AuthRepositoryTest {
     private lateinit var instanceStore: InstanceStore
     private lateinit var masterKeyHolder: MasterKeyHolder
     private lateinit var hashSecretHolder: HashSecretHolder
+    private val regionTiles = FakeRegionTileCache(size = 870_817)
     private lateinit var repository: AuthRepository
 
     private val host = "photos.example.com"
@@ -73,6 +75,7 @@ class AuthRepositoryTest {
                 archivistApiFactory = archivistApiFactory,
                 masterKeyHolder = masterKeyHolder,
                 hashSecretHolder = hashSecretHolder,
+                regionTiles = regionTiles,
             )
     }
 
@@ -207,5 +210,16 @@ class AuthRepositoryTest {
 
             assertEquals(null, masterKeyHolder.current.value)
             assertEquals(null, hashSecretHolder.current.value)
+        }
+
+    @Test
+    fun `sign-out deletes the instance's region tiles`() =
+        runTest {
+            connectInstance()
+
+            repository.signOut()
+
+            assertEquals(1, regionTiles.clears)
+            assertEquals(0L, regionTiles.sizeBytes())
         }
 }

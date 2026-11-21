@@ -14,6 +14,7 @@ import fr.enry.archivist.data.repo.AuthRepository
 import fr.enry.archivist.data.repo.HashSecretHolder
 import fr.enry.archivist.data.repo.MasterKeyHolder
 import fr.enry.archivist.testutil.FakeCognitoAuthApi
+import fr.enry.archivist.testutil.FakeRegionTileCache
 import fr.enry.archivist.testutil.FakeSharedPreferences
 import java.io.File
 import java.io.IOException
@@ -84,6 +85,7 @@ class SignInViewModelTest {
                 archivistApiFactory,
                 MasterKeyHolder(),
                 HashSecretHolder(),
+                FakeRegionTileCache(),
             )
 
         runTest(dispatcher) {
