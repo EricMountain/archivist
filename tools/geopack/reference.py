@@ -7,6 +7,7 @@ Standard library only.
 from __future__ import annotations
 
 import math
+import re
 import struct
 from dataclasses import dataclass
 
@@ -143,9 +144,32 @@ def read_pack(data: bytes) -> Pack:
     return Pack(set_id, name, attribution, tuple(bbox), ents)
 
 
-def covers(bbox, lat: float, lon: float) -> bool:
-    la, lo = lat * 1e6, lon * 1e6
-    return bbox[0] <= la <= bbox[2] and bbox[1] <= lo <= bbox[3]
+# -- tiles (README "Tiles") ----------------------------------------------------------------
+
+GRID_BITS = 29
+GRID_ORIGIN = 1 << 28  # micro-degrees: lat/lon + GRID_ORIGIN is in [0, 2^29)
+TILE_KEY_RE = re.compile(r"^[0-3]{1,29}$")
+
+
+def point_key(lat: float, lon: float, depth: int = GRID_BITS) -> str:
+    """The key of the grid square at `depth` containing (lat, lon): one digit per depth,
+    2 × the latitude bit + the longitude bit, most significant first."""
+    y = math.floor(lat * 1e6) + GRID_ORIGIN
+    x = math.floor(lon * 1e6) + GRID_ORIGIN
+    return "".join(str(((y >> (GRID_BITS - d)) & 1) * 2 + ((x >> (GRID_BITS - d)) & 1)) for d in range(1, depth + 1))
+
+
+def find_tile(keys, lat: float, lon: float) -> str | None:
+    """The one key in `keys` (prefix-free, as a manifest's are) that is a prefix of the
+    point's key, or None: no tile, nothing in reach."""
+    if not keys:
+        return None
+    longest = max(len(k) for k in keys)
+    full = point_key(lat, lon, longest)
+    for d in range(1, longest + 1):
+        if full[:d] in keys:
+            return full[:d]
+    return None
 
 
 # -- geometry ----------------------------------------------------------------------------
@@ -329,9 +353,6 @@ class PackSet:
                 for cx in range((e.bbox[1] - lon_pad) // CELL, (e.bbox[3] + lon_pad) // CELL + 1):
                     self.grid.setdefault((cy, cx), []).append(i)
 
-    def covering(self, lat: float, lon: float) -> "PackSet":
-        return PackSet([p for p in self.packs if covers(p.bbox, lat, lon)])
-
     def lookup(self, lat: float, lon: float) -> dict:
         cell = (math.floor(lat * 1e6) // CELL, math.floor(lon * 1e6) // CELL)
         return resolve(lat, lon, [self.entities[i] for i in self.grid.get(cell, [])])
@@ -339,15 +360,19 @@ class PackSet:
     def brute(self, lat: float, lon: float) -> dict:
         return resolve(lat, lon, self.entities)
 
+    def admins_at(self, lat: float, lon: float) -> list:
+        """Every admin entity containing the point (not a lookup rule: tools use it)."""
+        cell = (math.floor(lat * 1e6) // CELL, math.floor(lon * 1e6) // CELL)
+        pl = Plane(lat, lon)
+        return [e for e in (self.entities[i] for i in self.grid.get(cell, [])) if e.layer == ADMIN and inside(pl, e)]
 
-def load_manifest_packs(manifest: dict, read_bytes) -> list[Pack]:
-    """`read_bytes(path)` returns a pack's bytes; packs come back in manifest order."""
-    if manifest.get("format") != 1:
+
+def lookup_with_manifest(manifest: dict, read_bytes, lat: float, lon: float) -> dict:
+    """The full pack-layer lookup through a format-2 manifest: the one tile whose key is a
+    prefix of the point's, read with `read_bytes(path)`; {} when there is none."""
+    if manifest.get("format") != 2:
         raise ValueError("unsupported manifest format")
-    return [read_pack(read_bytes(p["path"])) for p in manifest["packs"]]
-
-
-def lookup_with_manifest(manifest: dict, packs: list[Pack], lat: float, lon: float) -> dict:
-    """The full pack-layer lookup: only the packs whose manifest bbox covers the point."""
-    chosen = [pk for entry, pk in zip(manifest["packs"], packs) if covers(entry["bbox"], lat, lon)]
-    return PackSet(chosen).lookup(lat, lon)
+    key = find_tile(manifest["tiles"].keys(), lat, lon)
+    if key is None:
+        return {}
+    return PackSet([read_pack(read_bytes(f"{manifest['set']}/{key}.bin"))]).lookup(lat, lon)

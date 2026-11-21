@@ -1056,9 +1056,14 @@ photos across eight regions in four countries, and on a 2 km grid over one regio
   and ordering does the rest without any per-country rules.
 * Big islands contain everything near them ("Manhattan Island", "Long Island"), hence
   the "less than half the locality" rule.
-* Packs come to 0.2–2.3 MB per region at 15 m simplification: about 1 MB for
-  Provence-Alpes-Côte d'Azur and about 15–20 MB for all of France (extrapolated, not
-  measured). That's too much to bundle, but small enough to fetch per region.
+* Region packs come to 0.2–2.3 MB per French region at 15 m simplification, but 51 MB
+  for all of France and 10–21 MB for Quebec, Norway or British Columbia, which have no
+  smaller extracts. Decoded whole on a phone, the France pack needed about 300 MB of
+  memory against a 192 MB limit. Hence tiles (decided 2026-11-21): the set is cut into
+  tiles of at most about 1 MB on a fixed world grid, so a photo costs one tile, a few
+  hundred KB to download and a few MB decoded, wherever it is. On the same library, the
+  photos in the seven largest regions touch about 40 tiles, roughly 17 MB, against 137 MB
+  for the whole region packs.
 
 **Delivery.** Packs are not bundled with the app. The instance serves them from its
 `web` bucket, through CloudFront's default behavior (no new behavior, no auth, like the
@@ -1066,23 +1071,35 @@ discovery document):
 
 ```text
 https://<domain>/geo/manifest.json          Cache-Control: max-age=300
-https://<domain>/geo/<set>/<name>.bin       Cache-Control: max-age=31536000, immutable
+https://<domain>/geo/<set>/<key>.bin        Cache-Control: max-age=31536000, immutable
 ```
 
-The set id changes whenever the set's contents do (the builder defaults it to the date
-plus a digest of builder, regions and extracts): a photo placed while no pack covered it
-carries `osm@<old set>`, so publishing a set that adds its region makes a re-geocode redo
-it. The manifest lists the set id and, for each pack, its path, size, sha256 and bounding
-box. A client fetches it before geocoding (ETag-revalidated), then downloads and caches
-every pack whose bounding box contains the photo. It must use **all** of them: an entity
-in two packs is the same entity, and the one in the earlier-listed pack wins, so the
-result depends only on the coordinates and the manifest. A client that can't get a pack
-it needs (offline, or a failed download) falls back to the gazetteer-only `src`, never
-to a partial pack set, so that a later re-geocode can find and redo the photo. No
-manifest (403/404, the default) means no packs: the gazetteer alone, as before.
+**Tiles named by grid square** (decided 2026-11-21). The builder merges the operator's
+regions (an entity in two extracts is taken from the region listed first) and cuts the
+result on a fixed quadtree over the world: a tile's key is its square's path down the
+tree, one digit 0–3 per level, computed from the coordinates alone. Each tile holds
+everything within 5 km of its square, clipped to that, which is more than any lookup rule
+reaches, so the lookup in a point's tile gives the same result as over the whole set. A
+square is split while its tile is over about 1 MB, so dense areas get small squares and
+empty ones big squares. A client computes the photo's key and takes the one tile in the
+manifest whose key is a prefix of it: one download, one small tile in memory, no choice
+among overlapping packs, and a photo just across a border no longer pulls in the whole
+neighbouring country. Naming by square, rather than listing bounding boxes, also scales:
+a client can find the tile for a point with no search, and a planet-sized set could
+later be served without listing every tile up front.
 
-Fetching a pack tells the instance which region a photo is in. It already knows that
-from `place.region`. Nothing goes to a third party: the operator builds packs from
+The set id changes whenever the set's contents do (the builder defaults it to the date
+plus a digest of builder, tiler, regions and extracts): a photo placed while no tile
+covered it carries `osm@<old set>`, so publishing a set that adds its region makes a
+re-geocode redo it. The manifest lists the set id and each tile's key, size and sha256.
+A client fetches it before geocoding (revalidated every five minutes), then downloads
+and caches the photo's tile. A client that can't get it (offline, or a failed download)
+falls back to the gazetteer-only `src`, so that a later re-geocode can find and redo the
+photo. No manifest (403/404, the default) means no tiles: the gazetteer alone, as before.
+
+Fetching a tile tells the instance roughly where a photo is: within a square of a few
+to a few hundred kilometres. It already knows the region from `place.region` and the
+commune from `place.locality`. Nothing goes to a third party: the operator builds packs from
 Geofabrik extracts on their own machine and publishes them to their own bucket
 (`docs/ops/geo-packs.md`). Which regions to build is the operator's choice, kept in
 `private/`, since the list says where its users go.

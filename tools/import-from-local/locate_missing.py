@@ -300,16 +300,36 @@ PLACE_KIND_NAMES = {1: "city", 2: "town", 3: "village", 4: "suburb", 5: "quarter
 SUB_KINDS = {1, 2, 3, 4}  # README "Lookup": the kinds that fill `sub`; the rest fill `spot`
 
 
+_REP_CACHE: dict[tuple, tuple[float, float]] = {}
+
+
+def _interior_points(e: geopack.Entity, n_side: int = 7) -> list[tuple[int, int]]:
+    """Points of an n×n grid over a polygon's bbox that are inside it, nearest the
+    middle first. Inside a tile's clipped copy means inside the real polygon too."""
+    b = e.bbox
+    mid = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+    grid = [(round(b[0] + (b[2] - b[0]) * (i + 0.5) / n_side), round(b[1] + (b[3] - b[1]) * (j + 0.5) / n_side))
+            for i in range(n_side) for j in range(n_side)]
+    pts = [p for p in grid if geopack.inside(geopack.Plane(p[0] / 1e6, p[1] / 1e6), e)]
+    return sorted(pts, key=lambda p: ((p[0] - mid[0]) ** 2 + (p[1] - mid[1]) ** 2, p))
+
+
 def _rep_point(e: geopack.Entity) -> tuple[float, float]:
-    """A point to geocode a pack entity at: itself, a line's middle vertex, or the
-    middle of a polygon's bounding box."""
+    """A point to geocode a pack entity at: itself, a line's middle vertex, or a point
+    inside a polygon near the middle of its bounding box (the middle itself if the grid
+    finds none, e.g. a sliver)."""
     if e.geom_type == geopack.POINT:
         la, lo = e.parts[0][0]
     elif e.geom_type == geopack.LINES:
         pts = e.parts[0]
         la, lo = pts[len(pts) // 2]
     else:
-        la, lo = (e.bbox[0] + e.bbox[2]) // 2, (e.bbox[1] + e.bbox[3]) // 2
+        ck = (e.layer, e.otype, e.oid, e.bbox)
+        if ck in _REP_CACHE:
+            return _REP_CACHE[ck]
+        inner = _interior_points(e)
+        la, lo = inner[0] if inner else ((e.bbox[0] + e.bbox[2]) // 2, (e.bbox[1] + e.bbox[3]) // 2)
+        _REP_CACHE[ck] = (la / 1e6, lo / 1e6)
     return la / 1e6, lo / 1e6
 
 
@@ -381,19 +401,23 @@ class Geo:
         self.entities: list[geopack.Entity] = []
         self.entity_by_key: dict[str, geopack.Entity] = {}
         self.entity_fold: list[str] = []
-        self.parents: list[geopack.Entity] = []
         self._parent_cache: dict[str, str | None] = {}
         if self.geocoder.manifest is not None:
             self.geocoder.preload()
-            ents = geopack.PackSet(self.geocoder.all_packs()).entities
+            # An entity near a tile's edge is in several tiles, each copy clipped to its
+            # tile: keep the copy covering the most, for its representative point.
+            best: dict[tuple, tuple[int, geopack.Entity]] = {}
+            for pk in self.geocoder.all_packs():
+                for e in pk.entities:
+                    b = e.bbox
+                    extent = (b[2] - b[0]) * (b[3] - b[1])
+                    if e.key not in best or extent > best[e.key][0]:
+                        best[e.key] = (extent, e)
+            ents = [best[k][1] for k in sorted(best, key=lambda k: (k[0], geopack.TYPE_ORDER[k[1]], k[2]))]
             # A French arrondissement (level 7) is named after its chef-lieu, a commune
             # (level 8): offering both reads as a duplicate, and the commune is what
             # anyone typing the name means.
             level8 = {e.name for e in ents if e.layer == geopack.ADMIN and e.level == 8}
-            # Level-6 areas (a French département, an English county...): named in a
-            # commune's label, since communes share names ("Le Monteil" in Cantal and in
-            # Haute-Loire, both in the same region).
-            self.parents = [e for e in ents if e.layer == geopack.ADMIN and e.level == 6]
             for e in ents:
                 if e.layer == geopack.ADMIN and (not 6 <= e.level <= 8 or (e.level < 8 and e.name in level8)):
                     continue
@@ -494,27 +518,30 @@ class Geo:
         return Resolution("pack", place, label or place_label(place), (lat, lon), self._entity_key(e))
 
     def _parent_name(self, e: geopack.Entity) -> str | None:
-        """The level-6 area a level-7/8 one lies in: the one containing most of a grid of
-        points inside it. Interior points, not vertices: the two often share a border
-        exactly (Manhattan and New York County), where containment is a coin toss.
-        None if there is none, or it has the same name (Paris, Paris)."""
-        if e.level < 7 or not self.parents:
+        """The level-6 area (a French département, a US county) a level-7/8 one lies in,
+        named in its label since communes share names ("Sainte-Colombe" in the Rhône
+        and in the Doubs). The one containing most of up to 9 points inside the commune,
+        each asked of its own tile: interior points, since the two often share a border
+        exactly (Manhattan and New York County). None if there is none, or it has the
+        same name (Paris, Paris)."""
+        if e.layer != geopack.ADMIN or e.level < 7 or self.geocoder.manifest is None:
             return None
         if e.id in self._parent_cache:
             return self._parent_cache[e.id]
-        n_side = 7
-        grid = [(e.bbox[0] + (e.bbox[2] - e.bbox[0]) * (i + 0.5) / n_side,
-                 e.bbox[1] + (e.bbox[3] - e.bbox[1]) * (j + 0.5) / n_side)
-                for i in range(n_side) for j in range(n_side)]
-        sample = [(la, lo) for la, lo in grid if geopack.inside(geopack.Plane(la / 1e6, lo / 1e6), e)]
-        best, best_n = None, 0
-        for p in self.parents:
-            if not (p.bbox[0] <= e.bbox[2] and e.bbox[0] <= p.bbox[2] and p.bbox[1] <= e.bbox[3] and e.bbox[1] <= p.bbox[3]):
+        inner = _interior_points(e)
+        sample = inner[:: max(1, len(inner) // 9)][:9]
+        votes: dict[tuple, list] = {}
+        for la, lo in sample:
+            try:
+                admins = self.geocoder.admins_at(la / 1e6, lo / 1e6)
+            except places.PackUnavailable:
                 continue
-            n = sum(geopack.inside(geopack.Plane(la / 1e6, lo / 1e6), p) for la, lo in sample)
-            if n > best_n or (n == best_n and best is not None and n and p.area < best.area):
-                best, best_n = p, n
-        name = best.name if best is not None and best.name != e.name else None
+            for a in admins:
+                if a.level == 6:
+                    v = votes.setdefault(a.key, [0, a])
+                    v[0] += 1
+        best = min(votes.values(), key=lambda v: (-v[0], v[1].area, v[1].id_key), default=None)
+        name = best[1].name if best is not None and best[1].name != e.name else None
         self._parent_cache[e.id] = name
         return name
 
@@ -917,7 +944,7 @@ def _inline_capable() -> bool:
 
 HELP = """\
   <name>       place name, partial is fine; 'paris, tx' / 'paris, france' /
-               'le monteil, cantal' (a pack commune's département or county) to narrow;
+               'sainte-colombe, rhone' (a pack commune's département or county) to narrow;
                a region or country name for something coarser
   !<name>      same, but ignore what was remembered for this text
   lat,lon      exact coordinates          #<id>   a GeoNames id

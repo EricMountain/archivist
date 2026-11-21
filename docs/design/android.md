@@ -233,15 +233,19 @@ screen carries the attribution.
 
 **Region packs** (design.md "Detailed places: OpenStreetMap region packs"). Uploads and
 "Update location" geocode through `data/repo/GeoPackRepository.kt`'s `PlaceGeocoder`:
-the gazetteer, plus the connected instance's region packs where they cover the photo.
-`GeoPackRepository` fetches `https://<host>/geo/manifest.json` at most every five
-minutes (403/404: the instance publishes none), keeps the last good copy for offline
-use, and downloads the packs a photo needs into `noBackupFilesDir/geo/packs/`, checked
-against the manifest's size and sha256. Every request goes to the user's own instance.
-A pack that can't be had (offline, a failed check) gives the gazetteer's place with the
-gazetteer's own `src`, never a partial set, so a later re-geocode redoes the photo.
-`domain/GeoPack.kt` is the reader and lookup, a port of `tools/geopack/reference.py`;
-`GeoPackTest` runs `tools/geopack/vectors.json` over the synthetic fixture packs. The
+the gazetteer, plus the connected instance's region tiles. `GeoPackRepository` fetches
+`https://<host>/geo/manifest.json` at most every five minutes (403/404: the instance
+publishes none), keeps the last good copy for offline use, computes the photo's grid key
+(`GeoTiles`) and downloads the one tile whose key prefixes it into
+`noBackupFilesDir/geo/packs/`, checked against the manifest's size and sha256. Tiles are
+capped at about 1 MB (a few MB decoded); the four most recently used stay decoded in
+memory, and an `OutOfMemoryError` while reading one falls back like a failed download
+instead of crashing the upload. Every request goes to the user's own instance. A tile
+that can't be had (offline, a failed check) gives the gazetteer's place with the
+gazetteer's own `src`, so a later re-geocode redoes the photo. `domain/GeoPack.kt` is
+the reader, grid and lookup, a port of `tools/geopack/reference.py`; `GeoPackTest` runs
+`tools/geopack/vectors.json` through the synthetic fixture's tiles, and
+`GeoPackRepositoryTest` the fetch, cache and fallback paths against a mock server. The
 detail screen shows the layers most specific first ("Le Planet, Argentière, Chamonix-Mont-Blanc,
 Auvergne-Rhône-Alpes, France") with protected areas and the feature on a line of
 their own; place search shows a village or hamlet with its commune. The timeline's date

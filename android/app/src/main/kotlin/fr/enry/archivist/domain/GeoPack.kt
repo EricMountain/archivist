@@ -211,21 +211,52 @@ data class PackPlace(
     val feature: PlaceRef? = null,
 )
 
-/** Whether a manifest bbox `[minLat, minLon, maxLat, maxLon]` (micro-degrees) covers a point. */
-fun geoPackCovers(
-    bbox: IntArray,
-    lat: Double,
-    lon: Double,
-): Boolean {
-    val la = lat * 1e6
-    val lo = lon * 1e6
-    return bbox[0] <= la && la <= bbox[2] && bbox[1] <= lo && lo <= bbox[3]
+/** tools/geopack/README.md, "Tiles": the grid a tile set is cut on. */
+object GeoTiles {
+    private const val GRID_BITS = 29
+    private const val ORIGIN = 1L shl 28
+    private val KEY_RE = Regex("^[0-3]{1,29}$")
+
+    fun isKey(key: String): Boolean = KEY_RE.matches(key)
+
+    /** The key of the grid square at [depth] containing the point: one digit per depth,
+     * 2 × the latitude bit + the longitude bit, most significant first. */
+    fun pointKey(
+        lat: Double,
+        lon: Double,
+        depth: Int = GRID_BITS,
+    ): String {
+        val y = floor(lat * 1e6).toLong() + ORIGIN
+        val x = floor(lon * 1e6).toLong() + ORIGIN
+        val sb = StringBuilder(depth)
+        for (d in 1..depth) {
+            val shift = GRID_BITS - d
+            sb.append((((y shr shift) and 1L) * 2 + ((x shr shift) and 1L)).toInt())
+        }
+        return sb.toString()
+    }
+
+    /** The one key in [keys] (prefix-free, as a manifest's are) that is a prefix of the
+     * point's key, or null: no tile, nothing in reach. */
+    fun find(
+        keys: Set<String>,
+        lat: Double,
+        lon: Double,
+    ): String? {
+        val longest = keys.maxOfOrNull { it.length } ?: return null
+        val full = pointKey(lat, lon, longest)
+        for (d in 1..longest) {
+            val k = full.substring(0, d)
+            if (k in keys) return k
+        }
+        return null
+    }
 }
 
 /**
- * The packs covering a point, in manifest order (an entity in several is taken from the
- * first), indexed on a 0.1° grid. Build once per set of packs and reuse: indexing a
- * 2 MB pack takes a moment. Thread-safe after construction.
+ * One or more packs (in order; an entity in several is taken from the first), indexed on
+ * a 0.1° grid. The app uses one tile at a time; several packs are for the conformance
+ * tests' region packs. Thread-safe after construction.
  */
 class GeoPackSet(packs: List<GeoPack>) {
     private val entities: List<GeoEntity>

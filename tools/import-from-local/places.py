@@ -8,12 +8,12 @@ Rules: tools/geopack/README.md, "Combining with the gazetteer". Design: design.m
 gazetteer, `src` and `lookup(lat, lon)`, so it drops in wherever a gazetteer did:
 
 * no manifest (the instance publishes no packs): exactly the gazetteer;
-* with a manifest: `src` is `osm@<set>;<gazetteer src>` for every place, and points a
-  pack covers get the pack's locality, sub, spot, areas and feature;
-* a pack that can't be fetched or fails its checks: the gazetteer's place with the
-  gazetteer's own `src`, never a partial pack set, so a later run redoes it.
+* with a manifest: `src` is `osm@<set>;<gazetteer src>` for every place, and points in
+  a tile's grid square get the tile's locality, sub, spot, areas and feature;
+* a tile that can't be fetched or fails its checks: the gazetteer's place with the
+  gazetteer's own `src`, so a later run redoes it.
 
-Packs are downloaded on first use and cached by sha256 under `.cache/geo/`. Thread-safe:
+Tiles are downloaded on first use and cached by sha256 under `.cache/geo/`. Thread-safe:
 modify_media.py geocodes from several threads.
 """
 from __future__ import annotations
@@ -32,13 +32,12 @@ import gazetteer as gz
 
 DEFAULT_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "geo")
 SET_RE = re.compile(r"^[0-9A-Za-z._-]{1,20}$")
-NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PLACE_KEYS = ("cc", "region", "locality", "sub", "spot", "areas", "feature", "src")
 
 
 class PackUnavailable(Exception):
-    """A covering pack couldn't be fetched, or failed its size/sha256/set checks."""
+    """The tile a point needs couldn't be fetched, or failed its size/sha256/set checks."""
 
 
 def manifest_url(host: str) -> str:
@@ -65,27 +64,28 @@ def fetch_manifest(host: str, get=_http_get) -> dict | None:
 
 
 def validate_manifest(m: dict) -> dict:
-    if m.get("format") != 1:
+    """A format-2 manifest (tools/geopack/README.md, "Manifest"): tiles keyed by grid square."""
+    if m.get("format") != 2:
         raise ValueError(f"unsupported region-pack manifest format {m.get('format')!r}")
     if not isinstance(m.get("set"), str) or not SET_RE.match(m["set"]):
         raise ValueError(f"bad manifest set {m.get('set')!r}")
-    seen = set()
-    for p in m.get("packs", []):
-        if not NAME_RE.match(p.get("name", "")) or p["name"] in seen:
-            raise ValueError(f"bad or duplicate pack name {p.get('name')!r}")
-        seen.add(p["name"])
-        if not SHA256_RE.match(p.get("sha256", "")) or not isinstance(p.get("bytes"), int):
-            raise ValueError(f"pack {p['name']}: bad sha256 or bytes")
-        b = p.get("bbox")
-        if not (isinstance(b, list) and len(b) == 4 and all(isinstance(x, int) for x in b) and b[0] <= b[2] and b[1] <= b[3]):
-            raise ValueError(f"pack {p['name']}: bad bbox")
-        if not isinstance(p.get("path"), str) or ".." in p["path"] or p["path"].startswith("/"):
-            raise ValueError(f"pack {p['name']}: bad path")
+    tiles = m.get("tiles")
+    if not isinstance(tiles, dict):
+        raise ValueError("manifest has no tiles")
+    for key, t in tiles.items():
+        if not geopack.TILE_KEY_RE.match(key):
+            raise ValueError(f"bad tile key {key!r}")
+        if not isinstance(t, dict) or not SHA256_RE.match(t.get("sha256", "")) or not isinstance(t.get("bytes"), int):
+            raise ValueError(f"tile {key}: bad sha256 or bytes")
+    keys = sorted(tiles)
+    for a, b in zip(keys, keys[1:]):
+        if b.startswith(a):
+            raise ValueError(f"tile {a} contains tile {b}")
     return m
 
 
 class PackStore:
-    """Fetches packs named by a manifest, checks them, caches them by sha256."""
+    """Fetches the tiles a manifest names, checks them, caches them by sha256."""
 
     def __init__(self, base_url: str, cache_dir: str = DEFAULT_CACHE_DIR, get=_http_get, progress=lambda m: None):
         self.base_url = base_url.rstrip("/")
@@ -93,7 +93,7 @@ class PackStore:
         self.get = get
         self.progress = progress
 
-    def load(self, entry: dict, set_id: str) -> geopack.Pack:
+    def load(self, key: str, entry: dict, set_id: str) -> geopack.Pack:
         path = os.path.join(self.cache_dir, "packs", f"{entry['sha256']}.bin")
         data = None
         if os.path.exists(path):
@@ -102,8 +102,8 @@ class PackStore:
             if hashlib.sha256(data).hexdigest() != entry["sha256"]:
                 data = None  # corrupt cache entry: fetch again
         if data is None:
-            url = f"{self.base_url}/{entry['path']}"
-            self.progress(f"downloading region pack {entry['name']} ({entry['bytes']:,} bytes)")
+            url = f"{self.base_url}/{set_id}/{key}.bin"
+            self.progress(f"downloading tile {key} ({entry['bytes']:,} bytes)")
             try:
                 data = self.get(url)
             except (OSError, urllib.error.URLError) as e:
@@ -111,16 +111,16 @@ class PackStore:
             if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
                 raise PackUnavailable(f"{url}: size or sha256 differs from the manifest")
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = f"{path}.{os.getpid()}.tmp"
+            tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(tmp, "wb") as f:
                 f.write(data)
             os.replace(tmp, path)
         try:
             pack = geopack.read_pack(data)
         except (ValueError, IndexError, UnicodeDecodeError) as e:
-            raise PackUnavailable(f"{entry['name']}: {e}") from e
-        if pack.set != set_id:
-            raise PackUnavailable(f"{entry['name']}: pack set {pack.set!r} isn't the manifest's {set_id!r}")
+            raise PackUnavailable(f"tile {key}: {e}") from e
+        if pack.set != set_id or pack.name != key:
+            raise PackUnavailable(f"tile {key}: it says it is {pack.set}/{pack.name}")
         return pack
 
 
@@ -135,55 +135,56 @@ class Geocoder:
             raise ValueError("a manifest needs a PackStore")
         self.src = f"osm@{manifest['set']};{gazetteer.src}" if manifest else gazetteer.src
         self._lock = threading.Lock()
-        self._packs: dict[str, geopack.Pack] = {}
+        self._tiles: dict[str, geopack.PackSet] = {}
         self._failed: dict[str, str] = {}
-        self._sets: dict[tuple[str, ...], geopack.PackSet] = {}
 
     @property
     def set_id(self) -> str | None:
         return self.manifest["set"] if self.manifest else None
 
-    def covering(self, lat: float, lon: float) -> list[dict]:
+    def tile_for(self, lat: float, lon: float) -> str | None:
+        """The key of the tile whose grid square contains the point, if any."""
         if not self.manifest:
-            return []
-        return [e for e in self.manifest["packs"] if geopack.covers(e["bbox"], lat, lon)]
+            return None
+        return geopack.find_tile(self.manifest["tiles"].keys(), lat, lon)
 
-    def _pack_set(self, entries: list[dict]) -> geopack.PackSet:
-        names = tuple(e["name"] for e in entries)
+    def _tile(self, key: str) -> geopack.PackSet:
         with self._lock:
-            ps = self._sets.get(names)
+            ps = self._tiles.get(key)
             if ps is not None:
                 return ps
-            for e in entries:
-                if e["name"] in self._failed:
-                    raise PackUnavailable(self._failed[e["name"]])
-                if e["name"] not in self._packs:
-                    try:
-                        self._packs[e["name"]] = self.store.load(e, self.manifest["set"])
-                    except PackUnavailable as err:
-                        self._failed[e["name"]] = str(err)
-                        raise
-            ps = geopack.PackSet([self._packs[e["name"]] for e in entries])
-            self._sets[names] = ps
+            if key in self._failed:
+                raise PackUnavailable(self._failed[key])
+            try:
+                pack = self.store.load(key, self.manifest["tiles"][key], self.manifest["set"])
+            except PackUnavailable as err:
+                self._failed[key] = str(err)
+                raise
+            ps = self._tiles[key] = geopack.PackSet([pack])
             return ps
 
     def preload(self) -> None:
-        """Fetch every pack in the manifest now (locate_missing.py searches them all)."""
-        for e in (self.manifest or {}).get("packs", []):
-            self._pack_set([e])
+        """Fetch every tile in the manifest now (locate_missing.py searches them all)."""
+        for key in sorted((self.manifest or {}).get("tiles", {})):
+            self._tile(key)
 
     def all_packs(self) -> list[geopack.Pack]:
-        """The packs fetched so far, in manifest order."""
-        order = [e["name"] for e in (self.manifest or {}).get("packs", [])]
-        return [self._packs[n] for n in order if n in self._packs]
+        """The tiles fetched so far, in key order. An entity near a tile's edge is in
+        several of them, each copy clipped to its own tile."""
+        return [self._tiles[k].packs[0] for k in sorted(self._tiles)]
+
+    def admins_at(self, lat: float, lon: float) -> list:
+        """The admin areas containing a point, from its tile ([] without one)."""
+        key = self.tile_for(lat, lon)
+        return self._tile(key).admins_at(lat, lon) if key is not None else []
 
     def pack_layers(self, lat: float, lon: float) -> dict | None:
-        """The packs' own result for a point ({} if covered but nothing found), or None
-        when no pack covers it. Raises PackUnavailable."""
-        entries = self.covering(lat, lon)
-        if not entries:
+        """The tile's own result for a point ({} if it found nothing), or None when no tile
+        covers it. Raises PackUnavailable."""
+        key = self.tile_for(lat, lon)
+        if key is None:
             return None
-        return self._pack_set(entries).lookup(lat, lon)
+        return self._tile(key).lookup(lat, lon)
 
     def lookup(self, lat: float, lon: float) -> dict | None:
         base = self.gazetteer.lookup(lat, lon)

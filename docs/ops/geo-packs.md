@@ -26,20 +26,25 @@ cp tools/geopack/regions.example.txt private/instance/geo-regions.txt
 $EDITOR private/instance/geo-regions.txt
 ```
 
-Each line is `<name> <extract>`. The name is lowercase letters, digits and dashes, and
-becomes the pack's file name. The extract is a Geofabrik URL
+Each line is `<name> <extract>`. The name is lowercase letters, digits and dashes and
+names the region in logs and the build record. The extract is a Geofabrik URL
 (<https://download.geofabrik.de/>) or a local `.osm.pbf`.
 
 Choosing extracts:
 
+* **Think in countries.** The builder merges everything listed and cuts it into tiles of
+  at most about 1 MB on a world grid; a phone downloads only the tile its photo is in, a
+  few hundred KB. So listing a whole country costs clients nothing extra, only build time
+  and bucket space (France: about 60 MB of tiles). List the countries your users take
+  photos in, whole, rather than picking regions.
 * **Bigger is safer at the edges.** Geofabrik cuts its extracts on a border, and drops
-  any boundary that crosses it. The Scotland extract has no Dumfries and Galloway,
-  for example. If photos are near a region's edge, list the parent extract
-  (`great-britain` rather than `scotland`) or both neighbours.
-* **Overlaps are fine.** An entity in two packs is taken from the one listed first.
-* **Size.** A pack is roughly 0.3–1% of its extract: Provence-Alpes-Côte d'Azur
-  (392 MB) gives a 1.9 MB pack, Scotland (330 MB) 3.6 MB. Clients only download the
-  packs covering their photos.
+  any boundary that crosses it. The Scotland extract has no Dumfries and Galloway, for
+  example; `united-kingdom` does. If photos are near a country's edge, list the
+  neighbour too.
+* **Overlaps are fine.** An entity in two extracts is taken from the one listed first.
+* **Where are my users' photos?** The server stores each photo's country and region in
+  plain text; Search's place list (`GET /places`) shows them with counts. Photos with no
+  region pack yet show the GeoNames town.
 
 ## 2. Build
 
@@ -49,13 +54,16 @@ make geo-build GEO_PYTHON=~/.venvs/geopack/bin/python
 
 This downloads each extract into `~/.cache/archivist-geo/work` (kept for next time;
 `GEO_WORK=` to move it) and writes the set to `~/.cache/archivist-geo/out`
-(`GEO_OUT=`): `manifest.json` and `<set>/<name>.bin`. The set id is today's UTC date
-plus a digest of the set's contents (builder, regions, extracts), e.g. `2026-11-20.a38b5d`;
+(`GEO_OUT=`): `manifest.json` and `<set>/<key>.bin`, one file per tile, named after its
+grid square, replacing any earlier set in that directory. `GEO_TILE_CAP=` changes the
+tile size cap (bytes, default 1,000,000). The set id is today's UTC date plus a digest of
+the set's contents (builder, tiler, regions, extracts), e.g. `2026-11-21.d221a5`;
 `GEO_SET=` overrides it, but then changing the set without changing the id is on you. It
 ends up in every new photo's `place.src`, which is how `modify_media.py location --all`
-knows which photos to redo: a photo placed from the gazetteer alone because no pack
+knows which photos to redo: a photo placed from the gazetteer alone because no tile
 covered it then gets redone once a set with its region is published. Expect seconds to
-a minute or two per region.
+a minute or two per region, plus a few minutes of tiling (23 regions: 640 tiles,
+198 MB).
 
 **Repeatable builds.** The regions list holds every download URL, and `make geo-build`
 reads only that. Use the form Geofabrik's pages link to,
@@ -88,7 +96,7 @@ make geo-publish                    # prod
 
 It reads the bucket from `terraform output web_bucket`. That output was added with
 region packs, so a workspace that hasn't been applied since needs one `make deploy`
-(or `make deploy-dev`) first. It uploads the packs (`Cache-Control: public,
+(or `make deploy-dev`) first. It uploads the tiles (`Cache-Control: public,
 max-age=31536000, immutable`), then the manifest (`max-age=300`). Clients see the new
 set within five minutes.
 
@@ -96,7 +104,7 @@ Check:
 
 ```sh
 curl -sI https://photos.example.com/geo/manifest.json | grep -i -e '^HTTP' -e cache-control
-curl -s https://photos.example.com/geo/manifest.json | jq '.set, (.packs[] | .name, .bytes)'
+curl -s https://photos.example.com/geo/manifest.json | jq '.format, .set, (.tiles | length), ([.tiles[].bytes] | add)'
 ```
 
 ## 4. Re-geocode existing photos
@@ -113,10 +121,10 @@ the vocabulary counters agree with the photos.
 * **Rebuild** whenever you like (OSM changes daily; once or twice a year is plenty).
   `make geo-build`, then `make geo-publish`. Old sets stay in the bucket, which is
   harmless; delete `s3://<web bucket>/geo/<old set>/` once nothing needs them.
-* **Add a region.** Add it to the list and run `make geo-build`: only the new region is
-  built (built packs are kept in `<work>/packs/` by region, extract and builder, and
-  reused with the new set id in their header), and the set gets a new id. Publish, then
-  re-geocode (section 4) so photos in the new region pick it up.
+* **Add a region.** Add it to the list and run `make geo-build`: only the new region's
+  pack is built (region packs are kept in `<work>/packs/` by region, extract and builder),
+  then everything is tiled again and the set gets a new id. Publish, then re-geocode
+  (section 4) so photos in the new region pick it up.
 * **Stop publishing.** Delete `geo/manifest.json`. Clients fall back to the gazetteer
   for new photos. Stored places stay as they are until re-geocoded.
 

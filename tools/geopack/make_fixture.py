@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Write the synthetic conformance packs: testdata/fixture-a.bin, fixture-b.bin and
-fixture-manifest.json. Hand-placed geometry around 45°N 5°E, no OpenStreetMap data.
+"""Write the synthetic conformance data: two region packs, testdata/fixture-a.bin and
+fixture-b.bin, and the tile set cut from them, testdata/fixture/<key>.bin with
+testdata/fixture-manifest.json. Hand-placed geometry around 45°N 5°E, no OpenStreetMap
+data. The tiles use a tiny size cap (TILE_CAP) so that a handful of tiles at several
+depths cover the fixture.
 
 Each entity exists to exercise a rule in README.md "Lookup"; make_vectors.py names the
 query points that hit them. At 45°N, 0.001° is about 111 m of latitude and 79 m of
@@ -14,10 +17,13 @@ import os
 import sys
 
 import packfmt as pf
+import reference as ref
+import tile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "testdata")
 SET = "fixture"
+TILE_CAP = 1200
 
 
 def m(deg: float) -> int:
@@ -106,16 +112,27 @@ PACK_B = [
 
 def main() -> int:
     os.makedirs(OUT, exist_ok=True)
-    packs = []
+    region_packs = []
     for name, ents in (("fixture-a", PACK_A), ("fixture-b", PACK_B)):
         bbox = pf.bbox_of(ents)
         data = pf.encode(ents, SET, name, bbox)
         with open(os.path.join(OUT, f"{name}.bin"), "wb") as f:
             f.write(data)
-        packs.append({"name": name, "path": f"{name}.bin", "bytes": len(data),
-                      "sha256": hashlib.sha256(data).hexdigest(), "bbox": list(bbox)})
+        region_packs.append(ref.read_pack(data))
         print(f"{name}: {len(ents)} entities, {len(data)} bytes, bbox {bbox}", file=sys.stderr)
-    manifest = {"format": 1, "set": SET, "attribution": pf.ATTRIBUTION, "packs": packs}
+    tiles = tile.tile(tile.merge(region_packs), SET, cap=TILE_CAP, min_depth=8, max_depth=16)
+    tile_dir = os.path.join(OUT, SET)
+    os.makedirs(tile_dir, exist_ok=True)
+    for old in os.listdir(tile_dir):
+        os.remove(os.path.join(tile_dir, old))
+    entries = {}
+    for key, data in tiles.items():
+        with open(os.path.join(tile_dir, f"{key}.bin"), "wb") as f:
+            f.write(data)
+        entries[key] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    print(f"tiles: {', '.join(f'{k} ({e['bytes']} B)' for k, e in entries.items())}",
+          file=sys.stderr)
+    manifest = {"format": 2, "set": SET, "attribution": pf.ATTRIBUTION, "tiles": entries}
     with open(os.path.join(OUT, "fixture-manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=1)
         f.write("\n")

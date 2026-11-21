@@ -57,6 +57,11 @@ class FakeHttp:
             return f.read()
 
 
+def tile_of(lat: float, lon: float) -> str:
+    manifest = json.load(open(os.path.join(TESTDATA, "fixture-manifest.json"), encoding="utf-8"))
+    return places.geopack.find_tile(manifest["tiles"].keys(), lat, lon)
+
+
 def geocoder(http: FakeHttp, cache_dir: str) -> places.Geocoder:
     manifest = places.fetch_manifest("photos.example.com", get=http)
     if manifest is None:
@@ -110,25 +115,26 @@ class CombiningWithTheGazetteer(unittest.TestCase):
     def test_no_gazetteer_place_is_no_place(self):
         self.assertIsNone(geocoder(FakeHttp(), self.tmp.name).lookup(70.0, 5.0))
 
-    def test_unavailable_pack_falls_back_to_the_gazetteers_own_src(self):
-        g = geocoder(FakeHttp(broken={"fixture-b.bin"}), self.tmp.name)
-        place = g.lookup(45.0110, 5.0110)  # covered by both packs; B can't be had
+    def test_unavailable_tile_falls_back_to_the_gazetteers_own_src(self):
+        g = geocoder(FakeHttp(broken={f"fixture/{tile_of(45.0110, 5.0110)}.bin"}), self.tmp.name)
+        place = g.lookup(45.0110, 5.0110)
         self.assertEqual(place, FakeGazetteer().lookup(0, 0))
-        # Covered by A alone (north of B's bbox): still fine.
-        self.assertEqual(g.lookup(45.1100, 5.0000)["src"], f"osm@fixture;{GAZ_SRC}")
+        # A point in another tile: still fine.
+        self.assertNotEqual(tile_of(45.0470, 5.4500), tile_of(45.0110, 5.0110))
+        self.assertEqual(g.lookup(45.0470, 5.4500)["src"], f"osm@fixture;{GAZ_SRC}")
 
     def test_tampered_pack_is_rejected(self):
         http = FakeHttp()
         manifest = places.fetch_manifest("photos.example.com", get=http)
-        manifest["packs"][0]["sha256"] = "0" * 64
+        manifest["tiles"][tile_of(45.0050, 5.3500)]["sha256"] = "0" * 64
         g = places.Geocoder(FakeGazetteer(), manifest, places.PackStore("https://photos.example.com/geo", self.tmp.name, get=http))
         self.assertEqual(g.lookup(45.0050, 5.3500)["src"], GAZ_SRC)
 
-    def test_packs_are_cached_by_sha256(self):
+    def test_a_point_fetches_only_its_tile_and_it_is_cached_by_sha256(self):
         http = FakeHttp()
         geocoder(http, self.tmp.name).lookup(45.0110, 5.0110)
         fetched = [c for c in http.calls if c.endswith(".bin")]
-        self.assertEqual(len(fetched), 2)
+        self.assertEqual(fetched, [f"https://photos.example.com/geo/fixture/{tile_of(45.0110, 5.0110)}.bin"])
         http2 = FakeHttp()
         geocoder(http2, self.tmp.name).lookup(45.0110, 5.0110)
         self.assertEqual([c for c in http2.calls if c.endswith(".bin")], [])
@@ -143,16 +149,18 @@ class CombiningWithTheGazetteer(unittest.TestCase):
         for t in threads:
             t.join()
         self.assertEqual(len({json.dumps(r, sort_keys=True) for r in results}), 1)
-        self.assertEqual(len([c for c in http.calls if c.endswith(".bin")]), 2)
+        self.assertEqual(len([c for c in http.calls if c.endswith(".bin")]), 1)
 
     def test_manifest_validation(self):
         good = json.load(open(os.path.join(TESTDATA, "fixture-manifest.json"), encoding="utf-8"))
         for label, mutate in [
-            ("format", lambda m: m.update(format=2)),
+            ("format", lambda m: m.update(format=1)),
             ("set", lambda m: m.update(set="a b")),
-            ("path escapes", lambda m: m["packs"][0].update(path="../x.bin")),
-            ("bbox", lambda m: m["packs"][0].update(bbox=[1, 2, 0, 3])),
-            ("duplicate name", lambda m: m["packs"].append(dict(m["packs"][0]))),
+            ("key", lambda m: m["tiles"].update({"../x": dict(next(iter(m["tiles"].values())))})),
+            ("digit", lambda m: m["tiles"].update({"3004": dict(next(iter(m["tiles"].values())))})),
+            ("nested", lambda m: m["tiles"].update({next(iter(m["tiles"])) + "0": dict(next(iter(m["tiles"].values())))})),
+            ("sha256", lambda m: next(iter(m["tiles"].values())).update(sha256="x")),
+            ("no tiles", lambda m: m.pop("tiles")),
         ]:
             m = json.loads(json.dumps(good))
             mutate(m)

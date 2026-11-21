@@ -1,12 +1,67 @@
 {
- "about": "Region-pack lookup conformance vectors (tools/geopack/README.md, 'Lookup'). Load testdata/fixture-manifest.json and its packs in manifest order, use the packs whose bbox covers each point, and reproduce `expect` exactly.",
+ "about": "Region-pack lookup conformance vectors (tools/geopack/README.md, 'Tiles' and 'Lookup'). For each vector: find the tile in testdata/fixture-manifest.json whose key is a prefix of the point's grid key (`tile`, null for none), load testdata/<set>/<tile>.bin, and reproduce `expect` exactly ({} when there is no tile). The same results come from the region packs fixture-a.bin then fixture-b.bin merged (an entity in both taken from fixture-a). `keys`: point_key(lat, lon, depth) for each case.",
  "manifest": "testdata/fixture-manifest.json",
+ "regionPacks": [
+  "testdata/fixture-a.bin",
+  "testdata/fixture-b.bin"
+ ],
+ "keys": [
+  {
+   "lat": 45.0225,
+   "lon": 5.0225,
+   "depth": 12,
+   "key": "300202120332"
+  },
+  {
+   "lat": 0.0,
+   "lon": 0.0,
+   "depth": 6,
+   "key": "300000"
+  },
+  {
+   "lat": -1e-06,
+   "lon": -1e-06,
+   "depth": 6,
+   "key": "033333"
+  },
+  {
+   "lat": -33.8688,
+   "lon": 151.2093,
+   "depth": 14,
+   "key": "13203222220330"
+  },
+  {
+   "lat": 64.1466,
+   "lon": -21.9426,
+   "depth": 14,
+   "key": "21132321300212"
+  },
+  {
+   "lat": 89.999999,
+   "lon": 179.999999,
+   "depth": 29,
+   "key": "31212121332121201212013333333"
+  },
+  {
+   "lat": -90.0,
+   "lon": -180.0,
+   "depth": 29,
+   "key": "02121212001212132121320000000"
+  },
+  {
+   "lat": 45.123456,
+   "lon": 5.123456,
+   "depth": 29,
+   "key": "30020212211102010132330000000"
+  }
+ ],
  "vectors": [
   {
    "name": "plain-commune",
    "lat": 45.005,
    "lon": 5.005,
    "why": "inside Alpha only at level 8; Wide Zone and Great Park contain it",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -33,6 +88,7 @@
    "lat": 45.0225,
    "lon": 5.0225,
    "why": "in Alpha's hole: Enclave, not Alpha; Alpha's own node is outside Enclave, so no sub",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r106",
@@ -55,6 +111,7 @@
    "lat": 45.03,
    "lon": 5.1,
    "why": "Beta (8) wins over Gamma County (6) and Delta City (5)",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r102",
@@ -67,6 +124,7 @@
    "lat": 44.98,
    "lon": 5.05,
    "why": "south strip: only Gamma County contains it",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r103",
@@ -83,6 +141,7 @@
    "lat": 45.075,
    "lon": 5.015,
    "why": "Twin North and Twin South both contain it: smaller area wins",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r108",
@@ -99,6 +158,7 @@
    "lat": 45.063,
    "lon": 5.107,
    "why": "Tie R and Tie W, equal level and area: w < r",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "w110",
@@ -111,6 +171,7 @@
    "lat": 45.0,
    "lon": 5.215,
    "why": "outside every admin; Gamma County's edge is ~1.2 km away",
+   "tile": "300202120333",
    "expect": {
     "locality": {
      "id": "r103",
@@ -127,6 +188,7 @@
    "lat": 45.0,
    "lon": 5.26,
    "why": "outside every admin, nothing within 2 km: no locality",
+   "tile": "300202121",
    "expect": {}
   },
   {
@@ -134,6 +196,7 @@
    "lat": 45.03,
    "lon": 5.058,
    "why": "inside Delta City: its label node Delta is never sub",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -156,6 +219,7 @@
    "lat": 45.03,
    "lon": 5.052,
    "why": "outside Delta City, so its label isn't suppressed, but Delta (city, 3 km) is in Beta, not the locality Alpha: Hill",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -182,6 +246,7 @@
    "lat": 44.9605,
    "lon": 4.9605,
    "why": "village named like its locality Gamma County is skipped",
+   "tile": "30020212032",
    "expect": {
     "locality": {
      "id": "r103",
@@ -194,6 +259,7 @@
    "lat": 45.011,
    "lon": 5.011,
    "why": "Brook suburb as sub; Nook hamlet as spot; hamlet named Brook skipped",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -224,6 +290,7 @@
    "lat": 45.0452,
    "lon": 5.0052,
    "why": "Corner neighbourhood within 500 m",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -250,6 +317,7 @@
    "lat": 45.005,
    "lon": 5.0495,
    "why": "Field lieu-dit ~354 m away, inside its 400 m radius",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -276,6 +344,7 @@
    "lat": 45.005,
    "lon": 5.0503,
    "why": "Field lieu-dit ~417 m away, outside its 400 m radius",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -298,6 +367,7 @@
    "lat": 45.001,
    "lon": 5.11,
    "why": "Quay quarter in Beta",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r102",
@@ -314,6 +384,7 @@
    "lat": 45.0703,
    "lon": 5.056,
    "why": "Equal A and Equal B share coordinates: smaller id wins",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r103",
@@ -330,6 +401,7 @@
    "lat": 45.032,
    "lon": 5.045,
    "why": "four protected areas: rank 0 by area, then rank 1; three kept",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -360,6 +432,7 @@
    "lat": 45.0452,
    "lon": 5.0152,
    "why": "Summit peak within 600 m beats the island and lakes",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -386,6 +459,7 @@
    "lat": 45.047,
    "lon": 5.03,
    "why": "Long Ridge: distance to the line, not its vertices",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -416,6 +490,7 @@
    "lat": 45.0088,
    "lon": 5.032,
    "why": "~89 m north of Blue Lake: inside the 100 m water margin",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -442,6 +517,7 @@
    "lat": 45.0095,
    "lon": 5.032,
    "why": "~167 m from Blue Lake: outside the margin, no feature",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -464,6 +540,7 @@
    "lat": 45.025,
    "lon": 5.01,
    "why": "Big Island contains it but is over half of Alpha: no feature",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -486,6 +563,7 @@
    "lat": 45.0145,
    "lon": 5.0525,
    "why": "Small Isle contains it and is small: feature",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -512,6 +590,7 @@
    "lat": 45.042,
    "lon": 5.105,
    "why": "~110 m from Sandy Beach, within its 150 m margin",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r102",
@@ -528,6 +607,7 @@
    "lat": 45.001,
    "lon": 5.213,
    "why": "Cape Far within 300 m; locality from the sea fallback",
+   "tile": "300202120333",
    "expect": {
     "locality": {
      "id": "r103",
@@ -544,6 +624,7 @@
    "lat": 45.0101,
    "lon": 5.0101,
    "why": "a bay point has reach 0: never a feature",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -574,6 +655,7 @@
    "lat": 45.025,
    "lon": 5.315,
    "why": "no locality: Plateau Wide is over 10 km², Lone Glacier isn't",
+   "tile": "300202121",
    "expect": {
     "feature": {
      "id": "w309",
@@ -586,6 +668,7 @@
    "lat": 45.055,
    "lon": 5.065,
    "why": "outside pack A's Alpha but inside pack B's: A's Alpha wins, so not Alpha",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r103",
@@ -604,6 +687,7 @@
    "lat": 45.0466,
    "lon": 5.0466,
    "why": "Bravo hamlet exists only in pack B, which also covers this point",
+   "tile": "300202120332",
    "expect": {
     "locality": {
      "id": "r101",
@@ -633,7 +717,8 @@
    "name": "pack-b-only-coverage",
    "lat": 45.047,
    "lon": 5.45,
-   "why": "only pack B covers this point",
+   "why": "only pack B has anything near this point",
+   "tile": "300202121",
    "expect": {
     "locality": {
      "id": "r150",
@@ -646,10 +731,19 @@
    }
   },
   {
-   "name": "outside-every-pack",
+   "name": "nothing-in-reach",
    "lat": 46.0,
    "lon": 6.0,
-   "why": "no pack covers it: empty result",
+   "why": "inside a big tile's square, but nothing within reach: empty result",
+   "tile": "300202123",
+   "expect": {}
+  },
+  {
+   "name": "no-tile",
+   "lat": -33.8688,
+   "lon": 151.2093,
+   "why": "no tile's square contains it: no tile, empty result",
+   "tile": null,
    "expect": {}
   }
  ]

@@ -138,7 +138,7 @@ GEO_OUT ?= $(HOME)/.cache/archivist-geo/out
 GEO_PYTHON ?= python3
 
 geo-build:
-	$(GEO_PYTHON) tools/geopack/build_set.py --regions "$(GEO_REGIONS)" --work "$(GEO_WORK)" --out "$(GEO_OUT)" $(if $(GEO_SET),--set "$(GEO_SET)") $(if $(GEO_REFRESH),--refresh)
+	$(GEO_PYTHON) tools/geopack/build_set.py --regions "$(GEO_REGIONS)" --work "$(GEO_WORK)" --out "$(GEO_OUT)" $(if $(GEO_SET),--set "$(GEO_SET)") $(if $(GEO_REFRESH),--refresh) $(if $(GEO_TILE_CAP),--tile-cap "$(GEO_TILE_CAP)")
 
 define geo_publish_recipe
 	@test -f "$(GEO_OUT)/manifest.json" || (echo "no $(GEO_OUT)/manifest.json -- run make geo-build first"; exit 1)

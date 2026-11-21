@@ -6,10 +6,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.domain.GeoPack
 import fr.enry.archivist.domain.GeoPackSet
+import fr.enry.archivist.domain.GeoTiles
 import fr.enry.archivist.domain.Place
 import fr.enry.archivist.domain.ReverseGeocoder
 import fr.enry.archivist.domain.combinePlace
-import fr.enry.archivist.domain.geoPackCovers
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -26,23 +26,20 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-/** `https://<domain>/geo/manifest.json` (tools/geopack/README.md, "Manifest"). */
+/** `https://<domain>/geo/manifest.json` (tools/geopack/README.md, "Manifest"): the tiles
+ * of one set, keyed by grid square. A tile is at `<set>/<key>.bin` beside it. */
 @Serializable
 data class GeoManifest(
     val format: Int,
     val set: String,
     val attribution: String? = null,
-    val packs: List<GeoManifestPack> = emptyList(),
+    val tiles: Map<String, GeoManifestTile> = emptyMap(),
 )
 
 @Serializable
-data class GeoManifestPack(
-    val name: String,
-    val path: String,
+data class GeoManifestTile(
     val bytes: Long,
     val sha256: String,
-    /** minLat, minLon, maxLat, maxLon, micro-degrees. */
-    val bbox: List<Int>,
 )
 
 /** What the instance's region packs say about one point. */
@@ -54,20 +51,22 @@ sealed interface GeoPacks {
      * with its own `src`, so a later re-geocode finds and redoes the photo. */
     data object Unavailable : GeoPacks
 
-    /** A pack set exists, and none of it covers the point. */
+    /** A tile set exists, and no tile's square contains the point: nothing in reach. */
     data class Uncovered(val set: String) : GeoPacks
 
-    /** Every pack covering the point, in manifest order. */
+    /** The tile whose square contains the point. */
     data class Covered(val set: String, val packs: GeoPackSet) : GeoPacks
 }
 
 /**
- * The connected instance's region packs (design.md "Detailed places: OpenStreetMap region
+ * The connected instance's region tiles (design.md "Detailed places: OpenStreetMap region
  * packs"): the manifest, revalidated at most every [MANIFEST_TTL_MS] and kept on disk for
- * when the phone is offline, and the packs themselves, fetched when a photo first needs
- * them, checked against the manifest's size and sha256, and cached by sha256 under
- * `noBackupFilesDir/geo/`. Every fetch goes to the user's own instance, never a third
- * party. Serialised by a mutex: uploads geocode concurrently.
+ * when the phone is offline, and the one tile a photo's point falls in, fetched when a
+ * photo first needs it, checked against the manifest's size and sha256, and cached by
+ * sha256 under `noBackupFilesDir/geo/`. At most [MAX_TILES_IN_MEMORY] decoded tiles stay
+ * in memory (a tile is capped at about 1 MB on disk, a few MB decoded). Every fetch goes
+ * to the user's own instance, never a third party. Serialised by a mutex: uploads geocode
+ * concurrently.
  */
 @Singleton
 class GeoPackRepository
@@ -82,8 +81,8 @@ class GeoPackRepository
         private var manifestHost: String? = null
         private var manifest: GeoManifest? = null
         private var manifestFetchedAt = 0L
-        private val packs = HashMap<String, GeoPack>() // by sha256
-        private val sets = HashMap<List<String>, GeoPackSet>() // by covering packs' sha256s
+        // Decoded tiles by sha256, least recently used first.
+        private val tiles = LinkedHashMap<String, GeoPackSet>(8, 0.75f, true)
 
         private val dir: File get() = context.noBackupFilesDir.resolve("geo")
 
@@ -95,18 +94,20 @@ class GeoPackRepository
                 try {
                     val host = instanceStore.current.first()?.host ?: return GeoPacks.None
                     val m = manifestFor(host) ?: return GeoPacks.None
-                    val covering = m.packs.filter { geoPackCovers(it.bbox.toIntArray(), lat, lon) }
-                    if (covering.isEmpty()) return GeoPacks.Uncovered(m.set)
-                    val key = covering.map { it.sha256 }
-                    val set =
-                        sets.getOrPut(key) {
-                            GeoPackSet(covering.map { load(host, m, it) })
-                        }
+                    val key = GeoTiles.find(m.tiles.keys, lat, lon) ?: return GeoPacks.Uncovered(m.set)
+                    val entry = m.tiles.getValue(key)
+                    val set = tiles[entry.sha256] ?: load(host, m, key, entry)
                     GeoPacks.Covered(m.set, set)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.w("GeoPackRepository", "region packs unavailable, using the gazetteer alone", e)
+                    Log.w("GeoPackRepository", "region tile unavailable, using the gazetteer alone", e)
+                    GeoPacks.Unavailable
+                } catch (e: OutOfMemoryError) {
+                    // Tiles are capped so this shouldn't happen; if it does, the upload goes
+                    // on with the gazetteer rather than crashing, and a re-geocode redoes it.
+                    tiles.clear()
+                    Log.w("GeoPackRepository", "out of memory reading a region tile, using the gazetteer alone", e)
                     GeoPacks.Unavailable
                 }
             }
@@ -152,9 +153,9 @@ class GeoPackRepository
         private suspend fun load(
             host: String,
             m: GeoManifest,
-            entry: GeoManifestPack,
-        ): GeoPack {
-            packs[entry.sha256]?.let { return it }
+            key: String,
+            entry: GeoManifestTile,
+        ): GeoPackSet {
             val file = dir.resolve("packs").resolve("${entry.sha256}.bin")
             val bytes =
                 withContext(Dispatchers.IO) {
@@ -162,7 +163,7 @@ class GeoPackRepository
                     if (cached != null && sha256(cached) == entry.sha256) {
                         cached
                     } else {
-                        val url = "https://$host/geo/${entry.path}"
+                        val url = "https://$host/geo/${m.set}/$key.bin"
                         val body =
                             okHttpClient.newCall(Request.Builder().url(url).build()).execute().use { response ->
                                 if (!response.isSuccessful) throw IOException("GET $url failed: HTTP ${response.code}")
@@ -178,29 +179,35 @@ class GeoPackRepository
                         body
                     }
                 }
-            val pack = withContext(Dispatchers.Default) { GeoPack.read(bytes) }
-            if (pack.set != m.set) throw IOException("pack ${entry.name} is from set ${pack.set}, not ${m.set}")
-            packs[entry.sha256] = pack
-            return pack
+            val set =
+                withContext(Dispatchers.Default) {
+                    val pack = GeoPack.read(bytes)
+                    if (pack.set != m.set || pack.name != key) {
+                        throw IOException("tile $key says it is ${pack.set}/${pack.name}")
+                    }
+                    GeoPackSet(listOf(pack))
+                }
+            tiles[entry.sha256] = set
+            while (tiles.size > MAX_TILES_IN_MEMORY) tiles.remove(tiles.keys.first())
+            return set
         }
 
         private fun validate(m: GeoManifest): GeoManifest {
-            require(m.format == 1) { "unsupported region-pack manifest format ${m.format}" }
+            require(m.format == 2) { "unsupported region-pack manifest format ${m.format}" }
             require(SET_RE.matches(m.set)) { "bad manifest set" }
-            for (p in m.packs) {
-                require(NAME_RE.matches(p.name)) { "bad pack name" }
-                require(SHA_RE.matches(p.sha256)) { "bad sha256" }
-                require(p.bbox.size == 4 && p.bbox[0] <= p.bbox[2] && p.bbox[1] <= p.bbox[3]) { "bad bbox" }
-                require(!p.path.startsWith("/") && ".." !in p.path) { "bad path" }
+            for ((key, t) in m.tiles) {
+                require(GeoTiles.isKey(key)) { "bad tile key" }
+                require(SHA_RE.matches(t.sha256)) { "bad sha256" }
             }
-            require(m.packs.map { it.name }.toSet().size == m.packs.size) { "duplicate pack name" }
+            val keys = m.tiles.keys.sorted()
+            for (i in 1 until keys.size) require(!keys[i].startsWith(keys[i - 1])) { "nested tiles" }
             return m
         }
 
         private companion object {
             const val MANIFEST_TTL_MS = 5 * 60 * 1000L
+            const val MAX_TILES_IN_MEMORY = 4
             val SET_RE = Regex("^[0-9A-Za-z._-]{1,20}$")
-            val NAME_RE = Regex("^[a-z0-9-]{1,64}$")
             val SHA_RE = Regex("^[0-9a-f]{64}$")
 
             fun sha256(bytes: ByteArray): String =

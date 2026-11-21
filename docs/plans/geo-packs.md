@@ -29,6 +29,7 @@ this plan's rows in `STATUS.md` before starting a step.
 | G4 | **Plaintext down to hamlet level**, no single dwellings or farms (`place=isolated_dwelling`/`farm` excluded at build time). |
 | G5 | Protected areas unfiltered, ordered: national parks and IUCN classes 1–6 first, then smallest area. |
 | G6 | Packs are stored in S3 Standard in the existing `web` bucket under `geo/`, served by CloudFront's default behavior. No Intelligent-Tiering: a few hundred MB at most, hot, cached at the edge. |
+| G7 | (2026-11-21) **Tiles named after their grid square.** The builder merges the regions and cuts them into tiles of at most about 1 MB on a fixed world quadtree; a tile's name is its square's key, so a client computes the key from the photo's coordinates and fetches that one tile. Replaces per-region packs selected by bounding box, after the France pack (51 MB) measured about 300 MB decoded against a 192 MB app heap. No `largeHeap`. |
 
 ## Steps
 
@@ -135,6 +136,19 @@ unchanged until open question 7(b) is decided.
 
 Publish packs for the regions in use, run `modify_media.py location --all`, run
 `make backfill-places-dev` as the no-drift check, and spot-check the app.
+
+### 10. Tiles (G7)
+
+**Files:** `tools/geopack/tile.py` (new), `build_set.py`, `packfmt.py` (per-entity
+encoding), `reference.py` (grid keys, `find_tile`, `admins_at`), `make_fixture.py`,
+`make_vectors.py`, `testdata/fixture/`, `vectors.json`, README; laptop `geopack.py`,
+`places.py`, `geocode.py`, `locate_missing.py`; Android `GeoPack.kt` (`GeoTiles`),
+`GeoPackRepository.kt`, tests; design.md, android.md, api.md, ops runbook.
+
+**Done when:** a tile lookup equals the merged-set lookup on the fixture and on real
+regions; both clients pass the vectors through tiles and the grid-key vectors; the app
+fetches one tile per photo and keeps a bounded number decoded; a tile set is published
+to dev and an emulator upload uses it.
 
 ## Out of scope
 

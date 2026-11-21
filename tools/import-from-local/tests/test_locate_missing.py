@@ -318,8 +318,8 @@ class RegionPackSearchTest(unittest.TestCase):
                 if set(c.res.place) == {"cc", "region", "locality", "src"} and c.res.place["locality"]["name"] == name]
 
     def test_a_commune_is_labelled_with_its_level_6_area(self):
-        # Communes share names across départements ("Le Monteil" in Cantal and in
-        # Haute-Loire): the label says which. The stored place doesn't change.
+        # Communes share names across départements ("Sainte-Colombe" in the Rhône
+        # and in the Doubs): the label says which. The stored place doesn't change.
         [beta] = self._commune("beta", "Beta")
         self.assertEqual(beta.res.label, "Beta, Gamma County, Auvergne-Rhône-Alpes, FR")
         self.assertTrue(beta.detail.startswith("Beta, Gamma County, Auvergne-Rhône-Alpes, FR (admin area, level 8)"))

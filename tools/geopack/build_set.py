@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Build a pack set: every region in a list, plus manifest.json. Format: README.md.
+"""Build a tile set: every region in a list, merged and cut into tiles, plus manifest.json.
+Format: README.md.
 
     build_set.py --regions private/instance/geo-regions.txt --work ~/geo-work --out ~/geo-out [--set ID]
 
 The regions file has one region per line, `<name> <extract URL or local path>`; `#`
-starts a comment. Manifest order is file order, and an entity in two packs is taken
-from the earlier one, so list a region before its neighbours if it matters.
+starts a comment. An entity in two regions' extracts is taken from the earlier one, so
+list a region before its neighbours if it matters.
 
-Writes `<out>/manifest.json` and `<out>/<set>/<name>.bin`. Publish with
+Each region's extract becomes a region pack (kept in `--work/packs/`), the region packs
+are merged, and the result is cut into tiles of at most `--tile-cap` bytes named after
+their grid square (tile.py). Writes `<out>/manifest.json` and `<out>/<set>/<key>.bin`,
+and removes any other set from `<out>`. Publish with
 `make geo-publish` (docs/ops/geo-packs.md). Needs build.py's dependencies.
 
 The set id defaults to today's date plus a digest of the contents (builder, regions,
@@ -16,8 +20,8 @@ extracts), so a set that differs in any way gets a new id and clients redo every
 Also writes a build record, by default `geo-builds/<set>.json` beside the regions file:
 for each region, the extract's URL, dated URL, cached file, size, hashes and OSM data
 timestamp. Downloaded extracts are kept in `--work` and reused until `--refresh`, and so
-are built packs (`--work/packs/`), so rerunning with the same regions file rebuilds the
-same packs, and adding a region builds only that one.
+are region packs (`--work/packs/`), so rerunning with the same regions file rebuilds the
+same tiles, and adding a region builds only that region's pack before tiling again.
 """
 from __future__ import annotations
 
@@ -28,7 +32,6 @@ import hashlib
 import json
 import os
 import shutil
-import struct
 import sys
 import time
 import urllib.error
@@ -36,6 +39,8 @@ import urllib.request
 
 import build
 import packfmt as pf
+import reference as ref
+import tile
 
 
 def read_regions(path: str) -> list[tuple[str, str]]:
@@ -182,10 +187,22 @@ def osm_timestamp(path: str) -> str | None:
         r.close()
 
 
+REGION_SET = "region"  # set id inside the cached per-region packs: intermediates, never published
+
+
 def _builder_hash() -> str:
-    """Changes whenever the code that decides a pack's bytes does."""
-    h = hashlib.sha256()
-    for mod in (build, pf):
+    """Changes whenever the code that decides a region pack's entities does. The encoder is
+    covered by its format version: its bytes for given entities are fixed by README."""
+    h = hashlib.sha256(f"format {pf.FORMAT_VERSION}\n".encode())
+    with open(build.__file__, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()
+
+
+def _tiler_hash(cap: int, min_depth: int, max_depth: int) -> str:
+    """Changes whenever the tiles would, for the same entities."""
+    h = hashlib.sha256(f"cap {cap} depth {min_depth}-{max_depth}\n".encode())
+    for mod in (tile, ref):
         with open(mod.__file__, "rb") as f:
             h.update(f.read())
     return h.hexdigest()
@@ -214,54 +231,32 @@ def _hashes(path: str) -> tuple[str, str]:
     return out
 
 
-def default_set_id(regions: list[tuple[str, str]], md5s: list[str]) -> str:
-    """Today's UTC date plus a digest of what the set contains: the builder, and every
-    region's name and extract, in order. Adding, removing or reordering a region, a new
-    extract, or a builder change gives a new id, so every stored `place.src` from the
+def default_set_id(regions: list[tuple[str, str]], md5s: list[str], tiler: str) -> str:
+    """Today's UTC date plus a digest of what the set contains: the builder and tiler, and
+    every region's name and extract, in order. Adding, removing or reordering a region, a
+    new extract, or a builder change gives a new id, so every stored `place.src` from the
     previous set no longer matches and `modify_media.py location --all` redoes it. In
-    particular a photo placed while its region had no pack gets redone once one does."""
-    h = hashlib.sha256(_builder_hash().encode())
+    particular a photo placed while its region had no tile gets redone once one does."""
+    h = hashlib.sha256(f"{_builder_hash()}\n{tiler}".encode())
     for (name, _), md5 in zip(regions, md5s):
         h.update(f"\n{name} {md5}".encode())
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d") + "." + h.hexdigest()[:6]
-
-
-def _read_vstr_end(data: bytes, pos: int) -> int:
-    n = shift = 0
-    while True:
-        b = data[pos]
-        pos += 1
-        n |= (b & 0x7F) << shift
-        shift += 7
-        if not b & 0x80:
-            return pos + n
-
-
-def with_set(data: bytes, set_id: str) -> bytes:
-    """The same pack with another set id in its header (README "Header"): the set is the
-    only thing in a pack that depends on the rest of the set."""
-    out = bytearray(data[:32])
-    pf._vstr(out, set_id)
-    out += data[_read_vstr_end(data, 32):]
-    struct.pack_into("<I", out, 12, len(out))
-    return bytes(out)
 
 
 def _pack_cache(work: str, name: str, extract_md5: str) -> str:
     return os.path.join(work, "packs", f"{name}-{extract_md5}-{_builder_hash()[:16]}.bin")
 
 
-def build_pack(work: str, name: str, path: str, extract_md5: str, set_id: str, refresh: bool) -> bytes:
-    """The pack for one region. Built packs are kept in `<work>/packs/` by name, extract and
-    builder, so a set that only adds a region builds only that one; a kept pack gets the
-    new set id in its header and is otherwise byte-identical to a fresh build."""
+def region_pack(work: str, name: str, path: str, extract_md5: str, refresh: bool) -> bytes:
+    """One region's entities, as a pack kept in `<work>/packs/` by name, extract and
+    builder: the input to tiling. Adding a region to a set builds only that one."""
     cache = _pack_cache(work, name, extract_md5)
     if not refresh and os.path.exists(cache):
-        print("   unchanged extract and builder: reusing the pack built before", file=sys.stderr)
+        print("   unchanged extract and builder: reusing the region pack built before", file=sys.stderr)
         with open(cache, "rb") as f:
-            return with_set(f.read(), set_id)
+            return f.read()
     ents = build.build_entities(path, progress=lambda m: print(f"   {m}", file=sys.stderr))
-    data = pf.encode(ents, set_id, name, pf.bbox_of(ents))
+    data = pf.encode(ents, REGION_SET, name, pf.bbox_of(ents))
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     with open(cache + ".tmp", "wb") as f:
         f.write(data)
@@ -277,6 +272,10 @@ def main() -> int:
     ap.add_argument("--set", dest="set_id", help="set id (default: today's date and a digest of the contents)")
     ap.add_argument("--refresh", action="store_true", help="download extracts again")
     ap.add_argument("--download-jobs", type=int, default=3, help="extracts downloaded at once (default 3)")
+    ap.add_argument("--tile-cap", type=int, default=tile.DEFAULT_CAP,
+                    help=f"split a tile while it is over this many bytes (default {tile.DEFAULT_CAP:,})")
+    ap.add_argument("--min-depth", type=int, default=tile.DEFAULT_MIN_DEPTH, help=argparse.SUPPRESS)
+    ap.add_argument("--max-depth", type=int, default=tile.DEFAULT_MAX_DEPTH, help=argparse.SUPPRESS)
     ap.add_argument("--record", help="build record path (default: geo-builds/<set>.json beside --regions)")
     args = ap.parse_args()
     if args.set_id is not None and not pf.SET_RE.match(args.set_id):
@@ -290,11 +289,12 @@ def main() -> int:
         paths = list(ex.map(lambda r: fetch(r[1], args.work, args.refresh), regions))
     hashes = [_hashes(p) for p in paths]
     if args.set_id is None:
-        args.set_id = default_set_id(regions, [h[0] for h in hashes])
+        args.set_id = default_set_id(regions, [h[0] for h in hashes],
+                                     _tiler_hash(args.tile_cap, args.min_depth, args.max_depth))
     print(f"set {args.set_id}", file=sys.stderr)
     os.makedirs(os.path.join(args.out, args.set_id), exist_ok=True)
 
-    packs, sources = [], []
+    region_packs, sources = [], []
     for (name, src), path, (md5, sha) in zip(regions, paths, hashes):
         print(f"== {name}", file=sys.stderr)
         ts = osm_timestamp(path)
@@ -302,21 +302,41 @@ def main() -> int:
         if ds and md5 != ds[1]:
             print(f"   warning: cached extract doesn't match {ds[0]}; GEO_REFRESH=1 to fetch it again",
                   file=sys.stderr)
+        data = region_pack(args.work, name, path, md5, args.refresh)
         sources.append({"name": name, "src": src,
                         # A permanent URL for exactly this file, when Geofabrik's md5 confirms it.
                         "dated": ds[0] if ds and md5 == ds[1] else None,
                         "file": os.path.abspath(path), "bytes": os.path.getsize(path),
-                        "md5": md5, "sha256": sha, "osmTimestamp": ts})
-        rel = f"{args.set_id}/{name}.bin"
-        data = build_pack(args.work, name, path, md5, args.set_id, args.refresh)
-        with open(os.path.join(args.out, rel), "wb") as f:
-            f.write(data)
-        bbox = struct.unpack_from("<4i", data, 16)
-        packs.append({"name": name, "path": rel, "bytes": len(data),
-                      "sha256": hashlib.sha256(data).hexdigest(), "bbox": list(bbox)})
+                        "md5": md5, "sha256": sha, "osmTimestamp": ts, "regionPackBytes": len(data)})
+        region_packs.append(ref.read_pack(data))
         print(f"   {len(data):,} bytes", file=sys.stderr)
 
-    manifest = {"format": 1, "set": args.set_id, "attribution": pf.ATTRIBUTION, "packs": packs}
+    print("== tiles", file=sys.stderr)
+    ents = tile.merge(region_packs)
+    del region_packs
+    tiles = tile.tile(ents, args.set_id, cap=args.tile_cap, min_depth=args.min_depth, max_depth=args.max_depth,
+                      progress=lambda m: print(f"   {m}", file=sys.stderr))
+    # The output directory holds exactly this set: an older one left beside it would be
+    # published along with it.
+    for d in os.listdir(args.out):
+        full = os.path.join(args.out, d)
+        if d != args.set_id and os.path.isdir(full) and pf.SET_RE.match(d) and not d.startswith("."):
+            shutil.rmtree(full)
+    set_dir = os.path.join(args.out, args.set_id)
+    if os.path.isdir(set_dir):
+        shutil.rmtree(set_dir)
+    os.makedirs(set_dir)
+    entries = {}
+    for key, data in tiles.items():
+        with open(os.path.join(set_dir, f"{key}.bin"), "wb") as f:
+            f.write(data)
+        entries[key] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    total = sum(e["bytes"] for e in entries.values())
+    sizes = sorted(e["bytes"] for e in entries.values())
+    print(f"   {len(entries)} tiles, {total:,} bytes (median {sizes[len(sizes) // 2]:,}, largest {sizes[-1]:,})"
+          if sizes else "   no tiles", file=sys.stderr)
+
+    manifest = {"format": 2, "set": args.set_id, "attribution": pf.ATTRIBUTION, "tiles": entries}
     with open(os.path.join(args.out, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=1)
         f.write("\n")
@@ -327,11 +347,13 @@ def main() -> int:
         json.dump({"set": args.set_id,
                    "builtAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                    "regionsFile": os.path.abspath(args.regions),
-                   "regions": [dict(s, pack=p) for s, p in zip(sources, packs)]},
+                   "regions": sources,
+                   "tiles": {"count": len(entries), "bytes": total, "cap": args.tile_cap,
+                             "depths": [args.min_depth, args.max_depth]}},
                   f, ensure_ascii=False, indent=1)
         f.write("\n")
     print(f"build record -> {record}", file=sys.stderr)
-    print(f"manifest: {len(packs)} packs, set {args.set_id} -> {args.out}", file=sys.stderr)
+    print(f"manifest: {len(entries)} tiles, set {args.set_id} -> {args.out}", file=sys.stderr)
     return 0
 
 

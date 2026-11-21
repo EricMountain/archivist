@@ -1,31 +1,39 @@
 {
- "format": 1,
+ "format": 2,
  "set": "fixture",
  "attribution": "© OpenStreetMap contributors, ODbL 1.0",
- "packs": [
-  {
-   "name": "fixture-a",
-   "path": "fixture-a.bin",
-   "bytes": 1286,
-   "sha256": "d9c2aa1a291f37991eee3ce75ddae76bc17c4d4a032050844cb6bc307635ae2e",
-   "bbox": [
-    44920000,
-    4920000,
-    45130000,
-    5390000
-   ]
+ "tiles": {
+  "30020212032": {
+   "bytes": 794,
+   "sha256": "1b8f6c42552d2f76dc018d7bbf12c62667a3822593fce7a5f450a213be7139c4"
   },
-  {
-   "name": "fixture-b",
-   "path": "fixture-b.bin",
-   "bytes": 242,
-   "sha256": "4f64ec285d38e48539e5266eff4d4d8af0ad2367c1d63c12915344036b59960e",
-   "bbox": [
-    44970000,
-    4960000,
-    45090000,
-    5510000
-   ]
+  "300202120330": {
+   "bytes": 448,
+   "sha256": "a1a6d35c75ab40864ecdc4eb5b3c6b2ef6df40e07aa3bd94767ba33b1f4fa353"
+  },
+  "300202120331": {
+   "bytes": 487,
+   "sha256": "7e75f657b56286d5020ea04b47fc73509fc39ccb4b2f3be72ee61f1397304196"
+  },
+  "300202120332": {
+   "bytes": 1196,
+   "sha256": "f627aad68204b655c96bee08eed607a1d6a3703855db1dfb06a23b38f8fd7880"
+  },
+  "300202120333": {
+   "bytes": 798,
+   "sha256": "5bfd8557fab802504a04cfa55eeaf258824aed001f130a6d14aabe7d17d700ea"
+  },
+  "300202121": {
+   "bytes": 334,
+   "sha256": "d05224c2943f10b476b04d5d9ad54880abbe31dc69880772b70b3ace287173bb"
+  },
+  "300202122": {
+   "bytes": 742,
+   "sha256": "e2ee15e84efccf308010e7ccde43c1b4690c03bd06e63ba84bd3a588cc0e99cd"
+  },
+  "300202123": {
+   "bytes": 240,
+   "sha256": "30958c6c78263713b78b0d804e2660b4ad6d62962aa552685f8de654f8ce8c7d"
   }
- ]
+ }
 }

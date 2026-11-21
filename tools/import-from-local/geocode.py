@@ -173,8 +173,7 @@ def main() -> int:
             print(f"  country   {place['cc']}")
             print(f"  src       {place['src']}")
         if geo is not None and geo.manifest is not None:
-            covering = [e["name"] for e in geo.covering(lat, lon)]
-            print(f"  with region packs (set {geo.set_id}; covering: {', '.join(covering) or 'none'}):")
+            print(f"  with region packs (set {geo.set_id}; tile {geo.tile_for(lat, lon) or 'none'}):")
             if full is None:
                 print("    no place")
             else:

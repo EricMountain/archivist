@@ -108,7 +108,55 @@ def bbox_of(entities: list[Entity]) -> tuple[int, int, int, int]:
             min(max(lats) + m, 90_000_000), min(max(lons) + m, 180_000_000))
 
 
-def encode(entities: list[Entity], set_id: str, name: str, bbox: tuple[int, int, int, int] | None = None) -> bytes:
+def encode_entity(e: Entity) -> bytes:
+    """One entity's bytes. Its coordinates are delta-coded within the entity only, so
+    its size doesn't depend on its neighbours: a pack is its header plus the sum."""
+    out = bytearray()
+    out.append(e.layer)
+    out += e.otype.encode("ascii")
+    _varint(out, e.oid)
+    _vstr(out, e.name)
+    if e.layer == ADMIN:
+        out.append(e.level)
+        _varint(out, e.area)
+        _varint(out, e.label)
+    elif e.layer == PLACE:
+        out.append(e.kind)
+    elif e.layer == PROTECTED:
+        out.append(e.rank)
+        _varint(out, e.area)
+    else:
+        out.append(e.kind)
+        _varint(out, e.area)
+    out.append(e.geom_type)
+    if e.geom_type == POINT:
+        la, lo = e.parts[0][0]
+        _zigzag(out, la)
+        _zigzag(out, lo)
+    else:
+        _varint(out, len(e.parts))
+        pla = plo = 0
+        for part in e.parts:
+            _varint(out, len(part))
+            for la, lo in part:
+                _zigzag(out, la - pla)
+                _zigzag(out, lo - plo)
+                pla, plo = la, lo
+    return bytes(out)
+
+
+def header_size(set_id: str, name: str) -> int:
+    out = bytearray(32)
+    _vstr(out, set_id)
+    _vstr(out, name)
+    _vstr(out, ATTRIBUTION)
+    return len(out)
+
+
+def encode(entities: list[Entity], set_id: str, name: str, bbox: tuple[int, int, int, int] | None = None,
+           blobs: dict | None = None) -> bytes:
+    """A pack. `blobs` may map an entity's key() to its encode_entity() bytes, already
+    computed (the tiler sizes entities before it assembles them)."""
     if not SET_RE.match(set_id):
         raise ValueError(f"bad set id {set_id!r}")
     if not NAME_RE.match(name):
@@ -127,35 +175,7 @@ def encode(entities: list[Entity], set_id: str, name: str, bbox: tuple[int, int,
     _vstr(out, name)
     _vstr(out, ATTRIBUTION)
     for e in ents:
-        out.append(e.layer)
-        out += e.otype.encode("ascii")
-        _varint(out, e.oid)
-        _vstr(out, e.name)
-        if e.layer == ADMIN:
-            out.append(e.level)
-            _varint(out, e.area)
-            _varint(out, e.label)
-        elif e.layer == PLACE:
-            out.append(e.kind)
-        elif e.layer == PROTECTED:
-            out.append(e.rank)
-            _varint(out, e.area)
-        else:
-            out.append(e.kind)
-            _varint(out, e.area)
-        out.append(e.geom_type)
-        if e.geom_type == POINT:
-            la, lo = e.parts[0][0]
-            _zigzag(out, la)
-            _zigzag(out, lo)
-        else:
-            _varint(out, len(e.parts))
-            pla = plo = 0
-            for part in e.parts:
-                _varint(out, len(part))
-                for la, lo in part:
-                    _zigzag(out, la - pla)
-                    _zigzag(out, lo - plo)
-                    pla, plo = la, lo
+        b = blobs.get(e.key()) if blobs is not None else None
+        out += b if b is not None else encode_entity(e)
     struct.pack_into("<4sHHII4i", out, 0, MAGIC, FORMAT_VERSION, 0, len(ents), len(out), *bbox)
     return bytes(out)

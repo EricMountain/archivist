@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Write vectors.json: lookups over the fixture packs (make_fixture.py) that every
-reader must reproduce exactly.
+"""Write vectors.json: lookups over the fixture (make_fixture.py) that every reader must
+reproduce exactly, through the tile manifest, plus grid keys for the tile lookup.
 
-Before writing, asserts that the grid-indexed lookup and the brute-force scan agree on
-every named case and on random points across both packs. Standard library only.
+The oracle is the two region packs merged (an entity in both taken from fixture-a).
+Before writing, asserts that the grid-indexed lookup and the brute-force scan agree, and
+that the lookup through the one tile whose key prefixes the point's gives the same
+result, on every named case and on random points. Standard library only.
 """
 from __future__ import annotations
 
@@ -50,51 +52,65 @@ CASES = [
     ("no-locality-cap", 45.0250, 5.3150, "no locality: Plateau Wide is over 10 km², Lone Glacier isn't"),
     ("cross-pack-dedupe", 45.0550, 5.0650, "outside pack A's Alpha but inside pack B's: A's Alpha wins, so not Alpha"),
     ("pack-b-only-entity", 45.0466, 5.0466, "Bravo hamlet exists only in pack B, which also covers this point"),
-    ("pack-b-only-coverage", 45.0470, 5.4500, "only pack B covers this point"),
-    ("outside-every-pack", 46.0000, 6.0000, "no pack covers it: empty result"),
+    ("pack-b-only-coverage", 45.0470, 5.4500, "only pack B has anything near this point"),
+    ("nothing-in-reach", 46.0000, 6.0000, "inside a big tile's square, but nothing within reach: empty result"),
+    ("no-tile", -33.8688, 151.2093, "no tile's square contains it: no tile, empty result"),
+]
+
+
+# (lat, lon, depth): grid keys every reader must compute identically, including the
+# hemisphere splits, a point on a square's edge, and the extremes.
+KEY_CASES = [
+    (45.0225, 5.0225, 12), (0.0, 0.0, 6), (-0.000001, -0.000001, 6), (-33.8688, 151.2093, 14),
+    (64.1466, -21.9426, 14), (89.999999, 179.999999, 29), (-90.0, -180.0, 29), (45.123456, 5.123456, 29),
 ]
 
 
 def load():
+    region = [ref.read_pack(open(os.path.join(TESTDATA, f"{n}.bin"), "rb").read()) for n in ("fixture-a", "fixture-b")]
     manifest = json.load(open(os.path.join(TESTDATA, "fixture-manifest.json"), encoding="utf-8"))
-    packs = ref.load_manifest_packs(manifest, lambda p: open(os.path.join(TESTDATA, p), "rb").read())
-    return manifest, packs
+    tiles = {k: ref.PackSet([ref.read_pack(open(os.path.join(TESTDATA, manifest["set"], f"{k}.bin"), "rb").read())])
+             for k in manifest["tiles"]}
+    return ref.PackSet(region), manifest, tiles
 
 
-def both(manifest, packs, lat, lon):
-    chosen = [pk for entry, pk in zip(manifest["packs"], packs) if ref.covers(entry["bbox"], lat, lon)]
-    ps = ref.PackSet(chosen)
-    a, b = ps.lookup(lat, lon), ps.brute(lat, lon)
+def check(oracle, manifest, tiles, lat, lon):
+    a, b = oracle.lookup(lat, lon), oracle.brute(lat, lon)
     if a != b:
         raise AssertionError(f"index and brute force disagree at {lat},{lon}: {a} vs {b}")
-    return a
+    key = ref.find_tile(manifest["tiles"].keys(), lat, lon)
+    t = tiles[key].lookup(lat, lon) if key else {}
+    if t != a:
+        raise AssertionError(f"tile {key} disagrees with the merged packs at {lat},{lon}: {t} vs {a}")
+    return key, a
 
 
 def main() -> int:
-    manifest, packs = load()
+    oracle, manifest, tiles = load()
     rng = random.Random(20261119)
-    lo_lat = min(p["bbox"][0] for p in manifest["packs"]) / 1e6
-    hi_lat = max(p["bbox"][2] for p in manifest["packs"]) / 1e6
-    lo_lon = min(p["bbox"][1] for p in manifest["packs"]) / 1e6
-    hi_lon = max(p["bbox"][3] for p in manifest["packs"]) / 1e6
     for _ in range(3000):
-        both(manifest, packs, rng.uniform(lo_lat, hi_lat), rng.uniform(lo_lon, hi_lon))
+        check(oracle, manifest, tiles, rng.uniform(44.88, 45.17), rng.uniform(4.88, 5.55))
 
     vectors = []
     for name, lat, lon, why in CASES:
-        vectors.append({"name": name, "lat": lat, "lon": lon, "why": why,
-                        "expect": both(manifest, packs, lat, lon)})
+        key, expect = check(oracle, manifest, tiles, lat, lon)
+        vectors.append({"name": name, "lat": lat, "lon": lon, "why": why, "tile": key, "expect": expect})
     out = {
-        "about": "Region-pack lookup conformance vectors (tools/geopack/README.md, 'Lookup'). "
-                 "Load testdata/fixture-manifest.json and its packs in manifest order, use the packs "
-                 "whose bbox covers each point, and reproduce `expect` exactly.",
+        "about": "Region-pack lookup conformance vectors (tools/geopack/README.md, 'Tiles' and 'Lookup'). "
+                 "For each vector: find the tile in testdata/fixture-manifest.json whose key is a prefix of "
+                 "the point's grid key (`tile`, null for none), load testdata/<set>/<tile>.bin, and reproduce "
+                 "`expect` exactly ({} when there is no tile). The same results come from the region packs "
+                 "fixture-a.bin then fixture-b.bin merged (an entity in both taken from fixture-a). "
+                 "`keys`: point_key(lat, lon, depth) for each case.",
         "manifest": "testdata/fixture-manifest.json",
+        "regionPacks": ["testdata/fixture-a.bin", "testdata/fixture-b.bin"],
+        "keys": [{"lat": la, "lon": lo, "depth": d, "key": ref.point_key(la, lo, d)} for la, lo, d in KEY_CASES],
         "vectors": vectors,
     }
     with open(os.path.join(HERE, "vectors.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
         f.write("\n")
-    print(f"{len(vectors)} vectors; index == brute force on 3000 random points", file=sys.stderr)
+    print(f"{len(vectors)} vectors; index == brute force == tile on 3000 random points", file=sys.stderr)
     return 0
 
 
