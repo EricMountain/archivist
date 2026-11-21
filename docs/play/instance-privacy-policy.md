@@ -41,7 +41,11 @@ and the raw camera metadata block including any exact GPS coordinates.
 - Camera make, model and lens
 - The approximate place a photo was taken: country, region and town. Your device works
   this out from the photo's own GPS data, without sending it to any mapping or geocoding
-  service, and uploads only the result
+  service, and uploads only the result. *[If you publish region packs:]* For areas this
+  service has detailed map data for, the place can also name the village or
+  neighbourhood, hamlet, park or natural feature nearby, which can place a photo to
+  within a few hundred metres. Your device downloads that map data from this service,
+  which tells us which region it needed
 - Folder and file names — for example `2026/07-japan/IMG_4021.HEIC`
 - Search labels such as "beach" or "dog"
 - Album names and favourites

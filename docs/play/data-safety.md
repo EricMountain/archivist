@@ -71,9 +71,11 @@ GPS.
 
 The coordinates go into the EXIF blob, which is encrypted client-side and goes only to
 the user's own server. The server can read the approximate place (town, region,
-country) but not the exact coordinates, which stay encrypted. Place names are computed
-on the device from a bundled GeoNames dataset, with no network call: no location is
-sent to any geocoding or mapping service. **This still does not make the answer "no."**
+country, and where the instance publishes region packs, down to a hamlet, park or
+natural feature within a few hundred metres) but not the exact coordinates, which stay
+encrypted. Place names are computed on the device from a bundled GeoNames dataset and,
+optionally, OpenStreetMap region packs downloaded from the user's own server: no
+location is sent to any geocoding or mapping service. **This still does not make the answer "no."**
 Collection is transmission off the device, regardless of who receives it or who can
 read it — the same reason photos are declared despite being ciphertext.
 

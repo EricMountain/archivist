@@ -1,0 +1,656 @@
+{
+ "about": "Region-pack lookup conformance vectors (tools/geopack/README.md, 'Lookup'). Load testdata/fixture-manifest.json and its packs in manifest order, use the packs whose bbox covers each point, and reproduce `expect` exactly.",
+ "manifest": "testdata/fixture-manifest.json",
+ "vectors": [
+  {
+   "name": "plain-commune",
+   "lat": 45.005,
+   "lon": 5.005,
+   "why": "inside Alpha only at level 8; Wide Zone and Great Park contain it",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "sub": {
+     "id": "n9003",
+     "name": "Brook"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "hole",
+   "lat": 45.0225,
+   "lon": 5.0225,
+   "why": "in Alpha's hole: Enclave, not Alpha; Alpha's own node is outside Enclave, so no sub",
+   "expect": {
+    "locality": {
+     "id": "r106",
+     "name": "Enclave"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "level-8-over-6",
+   "lat": 45.03,
+   "lon": 5.1,
+   "why": "Beta (8) wins over Gamma County (6) and Delta City (5)",
+   "expect": {
+    "locality": {
+     "id": "r102",
+     "name": "Beta"
+    }
+   }
+  },
+  {
+   "name": "level-6-only",
+   "lat": 44.98,
+   "lon": 5.05,
+   "why": "south strip: only Gamma County contains it",
+   "expect": {
+    "locality": {
+     "id": "r103",
+     "name": "Gamma County"
+    },
+    "sub": {
+     "id": "n9009",
+     "name": "Southton"
+    }
+   }
+  },
+  {
+   "name": "smaller-area",
+   "lat": 45.075,
+   "lon": 5.015,
+   "why": "Twin North and Twin South both contain it: smaller area wins",
+   "expect": {
+    "locality": {
+     "id": "r108",
+     "name": "Twin South"
+    },
+    "sub": {
+     "id": "n9012",
+     "name": "Twinville"
+    }
+   }
+  },
+  {
+   "name": "id-tiebreak-admin",
+   "lat": 45.063,
+   "lon": 5.107,
+   "why": "Tie R and Tie W, equal level and area: w < r",
+   "expect": {
+    "locality": {
+     "id": "w110",
+     "name": "Tie W"
+    }
+   }
+  },
+  {
+   "name": "sea-fallback",
+   "lat": 45.0,
+   "lon": 5.215,
+   "why": "outside every admin; Gamma County's edge is ~1.2 km away",
+   "expect": {
+    "locality": {
+     "id": "r103",
+     "name": "Gamma County"
+    },
+    "feature": {
+     "id": "n307",
+     "name": "Cape Far"
+    }
+   }
+  },
+  {
+   "name": "sea-too-far",
+   "lat": 45.0,
+   "lon": 5.26,
+   "why": "outside every admin, nothing within 2 km: no locality",
+   "expect": {}
+  },
+  {
+   "name": "label-suppressed",
+   "lat": 45.03,
+   "lon": 5.058,
+   "why": "inside Delta City: its label node Delta is never sub",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "label-not-containing",
+   "lat": 45.03,
+   "lon": 5.052,
+   "why": "outside Delta City, so its label isn't suppressed, but Delta (city, 3 km) is in Beta, not the locality Alpha: Hill",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "sub": {
+     "id": "n9004",
+     "name": "Hill"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "locality-name-suppressed",
+   "lat": 44.9605,
+   "lon": 4.9605,
+   "why": "village named like its locality Gamma County is skipped",
+   "expect": {
+    "locality": {
+     "id": "r103",
+     "name": "Gamma County"
+    }
+   }
+  },
+  {
+   "name": "sub-and-spot",
+   "lat": 45.011,
+   "lon": 5.011,
+   "why": "Brook suburb as sub; Nook hamlet as spot; hamlet named Brook skipped",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "sub": {
+     "id": "n9003",
+     "name": "Brook"
+    },
+    "spot": {
+     "id": "n9005",
+     "name": "Nook"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "spot-neighbourhood",
+   "lat": 45.0452,
+   "lon": 5.0052,
+   "why": "Corner neighbourhood within 500 m",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "spot": {
+     "id": "n9007",
+     "name": "Corner"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "spot-lieu-dit-inside",
+   "lat": 45.005,
+   "lon": 5.0495,
+   "why": "Field lieu-dit ~354 m away, inside its 400 m radius",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "spot": {
+     "id": "n9008",
+     "name": "Field"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "spot-lieu-dit-outside",
+   "lat": 45.005,
+   "lon": 5.0503,
+   "why": "Field lieu-dit ~417 m away, outside its 400 m radius",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "quarter",
+   "lat": 45.001,
+   "lon": 5.11,
+   "why": "Quay quarter in Beta",
+   "expect": {
+    "locality": {
+     "id": "r102",
+     "name": "Beta"
+    },
+    "spot": {
+     "id": "n9011",
+     "name": "Quay"
+    }
+   }
+  },
+  {
+   "name": "equal-distance",
+   "lat": 45.0703,
+   "lon": 5.056,
+   "why": "Equal A and Equal B share coordinates: smaller id wins",
+   "expect": {
+    "locality": {
+     "id": "r103",
+     "name": "Gamma County"
+    },
+    "spot": {
+     "id": "n9013",
+     "name": "Equal A"
+    }
+   }
+  },
+  {
+   "name": "areas-ordered-capped",
+   "lat": 45.032,
+   "lon": 5.045,
+   "why": "four protected areas: rank 0 by area, then rank 1; three kept",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "sub": {
+     "id": "n9004",
+     "name": "Hill"
+    },
+    "areas": [
+     {
+      "id": "r202",
+      "name": "Little Reserve"
+     },
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "w203",
+      "name": "Heritage Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "peak",
+   "lat": 45.0452,
+   "lon": 5.0152,
+   "why": "Summit peak within 600 m beats the island and lakes",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ],
+    "feature": {
+     "id": "n301",
+     "name": "Summit"
+    }
+   }
+  },
+  {
+   "name": "ridge-line",
+   "lat": 45.047,
+   "lon": 5.03,
+   "why": "Long Ridge: distance to the line, not its vertices",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "sub": {
+     "id": "n9004",
+     "name": "Hill"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ],
+    "feature": {
+     "id": "w302",
+     "name": "Long Ridge"
+    }
+   }
+  },
+  {
+   "name": "lake-margin",
+   "lat": 45.0088,
+   "lon": 5.032,
+   "why": "~89 m north of Blue Lake: inside the 100 m water margin",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ],
+    "feature": {
+     "id": "w303",
+     "name": "Blue Lake"
+    }
+   }
+  },
+  {
+   "name": "lake-outside-margin",
+   "lat": 45.0095,
+   "lon": 5.032,
+   "why": "~167 m from Blue Lake: outside the margin, no feature",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "big-island-capped",
+   "lat": 45.025,
+   "lon": 5.01,
+   "why": "Big Island contains it but is over half of Alpha: no feature",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "islet",
+   "lat": 45.0145,
+   "lon": 5.0525,
+   "why": "Small Isle contains it and is small: feature",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ],
+    "feature": {
+     "id": "w305",
+     "name": "Small Isle"
+    }
+   }
+  },
+  {
+   "name": "beach-margin",
+   "lat": 45.042,
+   "lon": 5.105,
+   "why": "~110 m from Sandy Beach, within its 150 m margin",
+   "expect": {
+    "locality": {
+     "id": "r102",
+     "name": "Beta"
+    },
+    "feature": {
+     "id": "w306",
+     "name": "Sandy Beach"
+    }
+   }
+  },
+  {
+   "name": "cape-at-sea",
+   "lat": 45.001,
+   "lon": 5.213,
+   "why": "Cape Far within 300 m; locality from the sea fallback",
+   "expect": {
+    "locality": {
+     "id": "r103",
+     "name": "Gamma County"
+    },
+    "feature": {
+     "id": "n307",
+     "name": "Cape Far"
+    }
+   }
+  },
+  {
+   "name": "bay-point-ignored",
+   "lat": 45.0101,
+   "lon": 5.0101,
+   "why": "a bay point has reach 0: never a feature",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "sub": {
+     "id": "n9003",
+     "name": "Brook"
+    },
+    "spot": {
+     "id": "n9005",
+     "name": "Nook"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "no-locality-cap",
+   "lat": 45.025,
+   "lon": 5.315,
+   "why": "no locality: Plateau Wide is over 10 km², Lone Glacier isn't",
+   "expect": {
+    "feature": {
+     "id": "w309",
+     "name": "Lone Glacier"
+    }
+   }
+  },
+  {
+   "name": "cross-pack-dedupe",
+   "lat": 45.055,
+   "lon": 5.065,
+   "why": "outside pack A's Alpha but inside pack B's: A's Alpha wins, so not Alpha",
+   "expect": {
+    "locality": {
+     "id": "r103",
+     "name": "Gamma County"
+    },
+    "areas": [
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "pack-b-only-entity",
+   "lat": 45.0466,
+   "lon": 5.0466,
+   "why": "Bravo hamlet exists only in pack B, which also covers this point",
+   "expect": {
+    "locality": {
+     "id": "r101",
+     "name": "Alpha"
+    },
+    "sub": {
+     "id": "n9004",
+     "name": "Hill"
+    },
+    "spot": {
+     "id": "n9100",
+     "name": "Bravo"
+    },
+    "areas": [
+     {
+      "id": "r201",
+      "name": "Great Park"
+     },
+     {
+      "id": "r204",
+      "name": "Wide Zone"
+     }
+    ]
+   }
+  },
+  {
+   "name": "pack-b-only-coverage",
+   "lat": 45.047,
+   "lon": 5.45,
+   "why": "only pack B covers this point",
+   "expect": {
+    "locality": {
+     "id": "r150",
+     "name": "Eastville"
+    },
+    "spot": {
+     "id": "n9102",
+     "name": "Rim"
+    }
+   }
+  },
+  {
+   "name": "outside-every-pack",
+   "lat": 46.0,
+   "lon": 6.0,
+   "why": "no pack covers it: empty result",
+   "expect": {}
+  }
+ ]
+}

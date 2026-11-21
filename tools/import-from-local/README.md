@@ -46,8 +46,9 @@ in shell history):
   --dry-run          # remove this once the plan looks right
 ```
 
-Imports are geocoded offline from the repo's bundled gazetteer; see "Location" under
-"What this handles" for `--gazetteer`.
+Imports are geocoded on this machine from the repo's bundled gazetteer, plus the
+instance's region packs if it publishes any; see "Location" under "What this
+handles".
 
 `--dry-run` resolves and logs every file's plan (timestamp, offset, grouping)
 without calling the API at all — always run this first over a new source
@@ -343,7 +344,7 @@ you have a list. `location` (below) is the exception, because its correction
 **`location`** re-geocodes a photo's place, or every photo's with `--all`
 (docs/plans/geolocation.md "Manual updates", design.md "Location" → "Manual
 update"). For assets uploaded before place names existed, or geocoded with an
-older gazetteer:
+older gazetteer or pack set:
 
 ```sh
 .venv/bin/python3 modify_media.py location \
@@ -361,13 +362,18 @@ from a local copy if there is one, else downloaded and decrypted from
 ciphertext segment, since EXIF sits at the very start; videos are fetched
 whole, since `moov` can be at the end. Coordinates are read with the
 importer's own `media_probe.py`/`mp4box.py` code, (0, 0) counting as none. It
-then geocodes with the same gazetteer as the importer (`--gazetteer`, else
-`$ARCHIVIST_GAZETTEER`, else the Android app's bundled copy) and calls `PUT
+then geocodes exactly as the importer does (the gazetteer, `--gazetteer`, else
+`$ARCHIVIST_GAZETTEER`, else the Android app's bundled copy, plus the instance's
+region packs if it publishes any) and calls `PUT
 /photos/{photoId}/location`. When the coordinates came from the original, the
 PUT also carries `exifEnc` re-encrypted (same DEK, same `…:x` AAD, fresh IV)
 with `gpsLat`/`gpsLon`/`gpsAltM` added and every other field kept, so the
-next run never needs the original. No coordinates anywhere sends
-`place: null`, clearing a stale place.
+next run never needs the original. No coordinates anywhere leaves the stored place as
+it is ("keeps the stored place"): it can't be re-derived, and it may have been set by
+hand (`locate_missing.py`, the app's "Update location"), so a re-geocode after a new
+pack set must not erase it. The photo goes in the no-GPS memory, so later runs don't
+download its original again unless the original or its `exifEnc` changes.
+`--clear-without-gps` restores the old behaviour, sending `place: null` instead.
 
 **Local copies (`--source-dir`).** The directory can have any layout; it
 doesn't have to mirror the server paths. It is walked once at the start and
@@ -434,8 +440,8 @@ separated — and puts a capture-time check in their place:
   read (`content-differs-unreadable`) proves nothing, since a re-saved copy
   may have lost the GPS its original kept: it is treated as missing (the
   original is downloaded in the same run, or left untouched with
-  `--local-only`), never cleared to `place: null` and never put in the no-GPS
-  memory.
+  `--local-only`), never cleared to `place: null` (even with `--clear-without-gps`) and never put in
+  the no-GPS memory.
 * Audit trail: every copy used this way is a row in `--missing-report`, with
   `outcome` `used unverified local copy`, the file in `usedLocalCopy` and the
   capture-time comparison in `detail`; the summary counts them separately
@@ -476,7 +482,9 @@ objects into a Glacier Flexible Retrieval / Deep Archive class, S3 refuses the
 GET with `403 InvalidObjectState`. Such an asset is reported as **archived**,
 its own category, not an error, and left untouched. Nothing here restores it.
 
-* **Skip rule:** an asset whose `place.src` is already the gazetteer's is
+* **Skip rule:** an asset whose `place.src` is already current (the gazetteer's,
+  or `osm@<set>;<gazetteer>` once the instance publishes a pack set, so the first
+  run after publishing one redoes every located asset) is
   skipped straight off the `GET /photos` listing, with no per-asset fetch, so
   `--all` is resumable and an immediate re-run does nothing. Assets whose
   original had no GPS are remembered in the local cache (`.cache/`, see
@@ -515,14 +523,21 @@ Afterwards, `make backfill-places-dev ALL=1` (a dry run of
 `locate_missing.py` works out a coarse place for every file under a local
 directory that has no GPS of its own, and writes it to a JSON Lines file
 (`missing-locations.jsonl`, gitignored) for a later `PUT
-/photos/{photoId}/location`. It never signs in or touches an instance; the only
-network access is a one-time download of GeoNames `cities500.zip`,
-`admin1CodesASCII.txt` and `countryInfo.txt` into `.cache/locate/geonames/`.
+/photos/{photoId}/location`. It never signs in. Its network access is a one-time
+download of GeoNames `cities500.zip`, `admin1CodesASCII.txt` and `countryInfo.txt`
+into `.cache/locate/geonames/`, and, with `--host`, the instance's public region-pack
+manifest and packs (cached in `.cache/geo/`).
 
 ```sh
-.venv/bin/python3 locate_missing.py --source /path/to/your/photos
+.venv/bin/python3 locate_missing.py --source /path/to/your/photos --host photos.example.com
 .venv/bin/python3 locate_missing.py --source ... --no-prompt   # infer + report only
 ```
+
+Pass the `--host` the output is for: its region packs decide what a `place` looks
+like there (design.md "Detailed places"), as they do for uploads. Without it, places
+come from the gazetteer alone, and `modify_media.py location` would later redo them
+on an instance that publishes packs. `--manifest PATH` uses a pack set on disk
+instead (`make geo-build`'s output).
 
 It's built to ask as little as possible:
 
@@ -544,7 +559,17 @@ It's built to ask as little as possible:
 * **Names:** type part of a name in any language GeoNames has (`lyo`, `munchen`,
   `st etienne`), optionally narrowed (`paris, tx`, `paris, france`), or a region or
   country (English names) for something coarser; also `lat,lon` or `#<geonameid>`.
-  Candidates are ranked by match, population and distance to the suggestion. You
+  With region packs, names in the packs are searched too: communes, villages,
+  hamlets, protected areas and natural features. Communes are listed with their
+  level-6 area (a French département, a US county) since names repeat ("Le Monteil,
+  Cantal" vs "Le Monteil, Haute-Loire"), and that name narrows a search too
+  (`le monteil, cantal`); it is only in the label, not the stored place. A pick means no more than it says:
+  a commune is a locality; a village or hamlet is added to its commune (a hamlet
+  with the village it's near); a park is just the park, since it can span
+  communes; a peak or lake is added to its commune. A GeoNames town in a covered
+  area becomes the commune its centre is in. Coordinates typed as `lat,lon` get
+  every layer. Candidates are ranked by match, population (or, for pack names, a
+  stand-in by kind) and distance to the suggestion. You
   confirm a name once; it is remembered in `.cache/locate/aliases.json` across
   runs and sources (`!name` to choose again).
 
@@ -556,9 +581,10 @@ is cached by path, size and mtime.
 
 Each output line carries `path` (relative to `--source`), `size`, `takenLocal`,
 `timeSrc`, `method` (`prompt`, `neighbour-gps`, `sibling-gps`, plus `basis` for
-the inferred ones), `place` in exactly the shape the API takes (with the bundled
-gazetteer's `src`), a human `label`, and `approx`: the chosen locality's centre or
-the coordinates typed. `approx` is not a measurement and shouldn't go into
+the inferred ones), `place` in exactly the shape the API takes (with the
+geocoder's `src`), a human `label`, and `approx`: the chosen place's centre or
+the coordinates typed. An inferred place comes from a nearby GPS photo but is kept
+at town or commune level, never that photo's village or hamlet. `approx` is not a measurement and shouldn't go into
 `exifEnc` as `gpsLat`/`gpsLon`.
 
 Nothing consumes the file yet: `modify_media.py location` would need a mode that
@@ -569,7 +595,10 @@ and PUTs `place` alone.
 
 `geocode.py` prints the cities500 entry for a pair of coordinates, using the same
 bundled `gazetteer.bin` lookup as the importer and the app, so the `place` shown
-is exactly what an upload at those coordinates would get:
+is exactly what an upload at those coordinates would get on an instance with no
+region packs. `--host HOST` adds what HOST's region packs give (every layer, as an
+upload there gets it), and `--manifest PATH` the same for a pack set on disk, to
+try one before publishing it:
 
 ```sh
 .venv/bin/python3 geocode.py 45.7640,4.8357 "-33.8688, 151.2093"
@@ -639,6 +668,17 @@ read the GeoNames files `locate_missing.py` caches in `.cache/locate/geonames/`.
   The lookup is sent as-is. A place within 25 km whose GeoNames record has no region
   (about 460 places, e.g. Stanley, Falkland Islands) goes up as `{cc, locality}`, which
   `POST /uploads` accepts; the app does the same.
+
+  **Region packs.** If the instance publishes them (its public
+  `https://<host>/geo/manifest.json`; design.md "Detailed places: OpenStreetMap
+  region packs"), `places.py` applies them on top of the gazetteer, the way the app
+  does: the commune, village, hamlet, protected areas and natural feature around a
+  photo, and `src` `osm@<set>;<gazetteer src>`. Packs are downloaded when first
+  needed, checked against the manifest's size and sha256, and cached in
+  `.cache/geo/`. A pack that can't be had gives that photo the gazetteer's place and
+  `src`, so a later `modify_media.py location --all` redoes it.
+  `tests/test_geopack.py` checks `geopack.py` against `tools/geopack/vectors.json`.
+  Map data © OpenStreetMap contributors, ODbL 1.0.
 * **Video creation time and dimensions** via a small ISO-BMFF (`mp4box.py`) box
   walker — no `ffprobe`/`ffmpeg` dependency for this part. 92/94 real videos in
   this tool's corpus resolved a usable creation time this way.

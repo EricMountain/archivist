@@ -64,7 +64,9 @@ export type ThumbMap = Record<number, ThumbEntry>;
  * as a still rung or gate an asset's readiness. Same fields as a [ThumbEntry]. */
 export type PreviewEntry = ThumbEntry;
 
-/** One named level of a [Place]: a GeoNames id plus its primary-spelling name. */
+/** One named level of a [Place]: an id plus its name. A GeoNames `geonameid` or admin1
+ * key, or an OpenStreetMap id with its type letter (`r100101`) for anything from a
+ * region pack. */
 export interface PlaceRef {
   id: string;
   name: string;
@@ -72,16 +74,30 @@ export interface PlaceRef {
 
 /** `#META.place` — the approximate, client-geocoded location, plaintext. Every level
  * but `cc` is optional; a `locality` usually comes with a `region`, but not always —
- * some towns have no GeoNames admin1 region (Stanley, FK). Country names
- * are never stored: clients render `cc` in the viewer's locale. See "Location" in
- * design.md. */
+ * some towns have no GeoNames admin1 region (Stanley, FK). `sub`, `spot`, `areas` and
+ * `feature` only come from a region pack. Country names are never stored: clients
+ * render `cc` in the viewer's locale. See "Location" in design.md. */
 export interface Place {
   cc: string;
   region?: PlaceRef;
+  /** The town (GeoNames) or the administrative area containing the photo (pack). */
   locality?: PlaceRef;
-  /** Dataset and snapshot that produced it, e.g. `geonames-cities500@2026-10-20`. */
+  /** A city, town, village or suburb near the photo. */
+  sub?: PlaceRef;
+  /** A quarter, hamlet, neighbourhood or lieu-dit near the photo. */
+  spot?: PlaceRef;
+  /** 1–3 protected areas containing the photo, most significant first. */
+  areas?: PlaceRef[];
+  /** A natural feature at or near the photo. */
+  feature?: PlaceRef;
+  /** Datasets and snapshots that produced it, e.g. `geonames-cities500@2026-10-20` or
+   * `osm@2026-11-19;geonames-cities500@2026-11-13`. */
   src: string;
 }
+
+/** Which `place` field an `L#` vocabulary row came from. Absent on rows written before
+ * region packs, which are all localities. */
+export type PlaceKind = "locality" | "sub" | "spot" | "area" | "feature";
 
 // ---------------------------------------------------------------------------
 // Media partition items

@@ -11,6 +11,10 @@ at those coordinates would get.
     .venv/bin/python3 geocode.py --json 48.8566 2.3522       # a pair as two args
     echo "35.0116,135.7681" | .venv/bin/python3 geocode.py   # one pair per line on stdin
 
+    --host HOST   also apply HOST's region packs (its /geo/manifest.json), exactly as
+                  an upload to that instance would, and print every layer
+    --manifest F  the same with a pack set on disk (`make geo-build`'s manifest.json),
+                  to try packs before publishing them
     --details     also print the full cities500 row of the matched locality
                   (population, feature code, timezone, alternate names...)
     --nearest K   also list the K nearest cities500 entries with their distance,
@@ -35,6 +39,7 @@ import sys
 import zipfile
 
 import gazetteer
+import places
 from locate_missing import DEFAULT_STATE_DIR, ensure_geonames
 
 _NUM = r"[-+]?\d+(?:\.\d+)?"
@@ -116,6 +121,9 @@ def main() -> int:
     ap.add_argument("--details", action="store_true", help="the matched locality's full cities500 row")
     ap.add_argument("--nearest", type=int, default=0, metavar="K", help="also list the K nearest cities500 entries")
     ap.add_argument("--gazetteer", default=None, help="gazetteer.bin, as for main.py")
+    packs = ap.add_mutually_exclusive_group()
+    packs.add_argument("--host", default=None, help="apply this instance's region packs")
+    packs.add_argument("--manifest", default=None, help="apply a local pack set (its manifest.json)")
     ap.add_argument("--geonames-dir", default=os.path.join(DEFAULT_STATE_DIR, "geonames"))
     # Coordinates are taken from what argparse doesn't recognise, so a negative
     # latitude ("-33.86,151.2") isn't mistaken for an option.
@@ -129,6 +137,8 @@ def main() -> int:
     try:
         pairs = parse_pairs(tokens)
         gaz = gazetteer.load(args.gazetteer)
+        geo = (places.load(args.host, args.gazetteer) if args.host
+               else places.load_local(args.manifest, args.gazetteer) if args.manifest else None)
     except (ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -138,9 +148,12 @@ def main() -> int:
         place, dist = lookup(gaz, lat, lon)
         loc_row = cities.by_id.get(place["locality"]["id"]) if cities and place and place.get("locality") else None
         near = cities.nearest(lat, lon, args.nearest) if cities and args.nearest else []
+        full = geo.lookup(lat, lon) if geo is not None and geo.manifest is not None else None
         if args.json:
             rec: dict = {"lat": lat, "lon": lon, "place": place,
                          "distanceKm": round(dist, 3) if dist is not None else None}
+            if full is not None or (geo is not None and geo.manifest is not None):
+                rec["withPacks"] = full
             if args.details:
                 rec["cities500"] = loc_row
             if near:
@@ -159,6 +172,18 @@ def main() -> int:
             print(f"  region    {reg['name']} ({reg['id']})" if reg else "  region    none")
             print(f"  country   {place['cc']}")
             print(f"  src       {place['src']}")
+        if geo is not None and geo.manifest is not None:
+            covering = [e["name"] for e in geo.covering(lat, lon)]
+            print(f"  with region packs (set {geo.set_id}; covering: {', '.join(covering) or 'none'}):")
+            if full is None:
+                print("    no place")
+            else:
+                for k in ("locality", "sub", "spot", "feature"):
+                    if full.get(k):
+                        print(f"    {k:<9} {full[k]['name']}  ({full[k]['id']})")
+                for a in full.get("areas", []):
+                    print(f"    area      {a['name']}  ({a['id']})")
+                print(f"    src       {full['src']}")
         if loc_row:
             print("  cities500 row:")
             for k in COLS:

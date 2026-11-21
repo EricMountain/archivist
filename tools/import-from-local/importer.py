@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 import crypto_format as cf
 import filename_time
 import gazetteer as gz
+import places
 import media_probe
 import mp4box
 import recovery_code
@@ -181,12 +182,13 @@ class Importer:
         dry_run: bool = False,
         restore_trashed: bool = False,
         upload_offset: ladder.UploadOffsetHint | None = None,
-        gazetteer: gz.Gazetteer | None = None,
+        gazetteer: gz.Gazetteer | places.Geocoder | None = None,
         progress=lambda msg: print(msg, file=sys.stderr),
     ):
         self.enrollment = enrollment
-        # Every upload is geocoded (docs/plans/geolocation.md step 5); None means the
-        # bundled default, gazetteer.py's `resolve_path`.
+        # Every upload is geocoded (docs/plans/geolocation.md step 5): a places.Geocoder
+        # (gazetteer + the instance's region packs), or a bare gazetteer; None means the
+        # bundled default, gazetteer.py's `resolve_path`, with no packs.
         self.gazetteer = gazetteer if gazetteer is not None else gz.load()
         self.source_root = os.path.abspath(source_root)
         self.dry_run = dry_run
@@ -541,8 +543,7 @@ def exif_blob(exif: media_probe.ExifData | None, coords) -> dict | None:
 
 
 def _describe_place(place: dict) -> str:
-    parts = [p["name"] for p in (place.get("locality"), place.get("region")) if p]
-    return ", ".join(parts + [place["cc"]])
+    return places.describe(place)
 
 
 def mp4box_strip(src: str, dst: str) -> bool:

@@ -49,6 +49,29 @@ const PARIS: Place = {
   locality: { id: "2988507", name: "Paris" },
   src: SRC,
 };
+const PACK_SRC = "osm@2026-11-19;geonames-cities500@2026-11-13";
+const ARA = { id: "FR.84", name: "Auvergne-Rhône-Alpes" };
+/** What the gazetteer alone says for a hamlet of Chamonix-Mont-Blanc (sample-data.md A12). */
+const VALLORCINE: Place = { cc: "FR", region: ARA, locality: { id: "2971001", name: "Vallorcine" }, src: SRC };
+/** The same photo with a region pack: sample-data.md A12. */
+const ARGENTIERE: Place = {
+  cc: "FR",
+  region: ARA,
+  locality: { id: "r100101", name: "Chamonix-Mont-Blanc" },
+  sub: { id: "n200202", name: "Argentière" },
+  spot: { id: "n300303", name: "Le Planet" },
+  areas: [{ id: "r400404", name: "Réserve naturelle des Aiguilles Rouges" }],
+  src: PACK_SRC,
+};
+/** sample-data.md A13: no sub or spot, a national park and a lake. */
+const DEUX_ALPES: Place = {
+  cc: "FR",
+  region: ARA,
+  locality: { id: "r500505", name: "Les Deux Alpes" },
+  areas: [{ id: "r600606", name: "Parc national des Écrins (cœur)" }],
+  feature: { id: "r700707", name: "Lac de la Muzelle" },
+  src: PACK_SRC,
+};
 
 async function newOwner() {
   return bootstrapUser({
@@ -221,7 +244,7 @@ describe.skipIf(!RUN)("place on create (POST /uploads)", () => {
 
     const vocab = (await getPlaces(req(ownerId, userId))).body as { localities: unknown[]; regions: unknown[] };
     expect(vocab.regions).toEqual([]);
-    expect(vocab.localities).toEqual([{ id: "3426691", name: "Stanley", cc: "FK", n: 1 }]);
+    expect(vocab.localities).toEqual([{ id: "3426691", name: "Stanley", cc: "FK", kind: "locality", n: 1 }]);
   });
 
   it("no place: nothing location-shaped is written", async () => {
@@ -526,6 +549,18 @@ describe.skipIf(!RUN)("place validation (design.md \"Location\")", () => {
     ["locality id over 12 digits", { ...KYOTO, locality: { id: "1".repeat(13), name: "Kyoto" } }],
     ["locality name over 200 chars", { ...KYOTO, locality: { id: "1857910", name: "k".repeat(201) } }],
     ["locality name with a newline", { ...KYOTO, locality: { id: "1857910", name: "Kyo\nto" } }],
+    ["OSM locality id with a leading zero", { ...KYOTO, locality: { id: "r0123", name: "Kyoto" } }],
+    ["OSM locality id with an unknown type", { ...KYOTO, locality: { id: "x123", name: "Kyoto" } }],
+    ["OSM id over 15 digits", { ...ARGENTIERE, sub: { id: `n${"1".repeat(16)}`, name: "Argentière" } }],
+    ["a GeoNames id as sub", { ...ARGENTIERE, sub: { id: "2996824", name: "Argentière" } }],
+    ["a spot that isn't an object", { ...ARGENTIERE, spot: "Le Planet" }],
+    ["a feature with no name", { ...DEUX_ALPES, feature: { id: "r700707" } }],
+    ["areas that aren't a list", { ...DEUX_ALPES, areas: { id: "r600606", name: "Écrins" } }],
+    ["an empty areas list", { ...DEUX_ALPES, areas: [] }],
+    ["four areas", { ...DEUX_ALPES, areas: ["r1", "r2", "r3", "r4"].map((id) => ({ id, name: id })) }],
+    ["an area with a bad id", { ...DEUX_ALPES, areas: [{ id: "1024511", name: "Écrins" }] }],
+    ["the same id twice", { ...ARGENTIERE, spot: { id: "n200202", name: "Argentière" } }],
+    ["the same id as locality and area", { ...DEUX_ALPES, areas: [{ id: "r500505", name: "Les Deux Alpes" }] }],
   ];
 
   it.each(bad)("POST /uploads rejects %s", async (_label, place) => {
@@ -545,6 +580,21 @@ describe.skipIf(!RUN)("place validation (design.md \"Location\")", () => {
     expect((await putLocation(ownerId, userId, photoId, { place: STANLEY })).body).toEqual({ place: STANLEY });
   });
 
+  it("accepts a region-pack place with every level, and stores it as sent", async () => {
+    const { userId, ownerId } = await newOwner();
+    const place = {
+      ...ARGENTIERE,
+      areas: [
+        { id: "r400404", name: "Réserve naturelle des Aiguilles Rouges" },
+        { id: "w1", name: "Small" },
+        { id: `r${"9".repeat(15)}`, name: "Largest id" },
+      ],
+      feature: { id: "n1", name: "Peak" },
+    };
+    const { photoId } = await upload(ownerId, userId, uploadBody({ place }));
+    expect((await getAssetPartition(ownerId, photoId)).meta?.place).toEqual(place);
+  });
+
   it("accepts boundary values, and stores only the known fields", async () => {
     const { userId, ownerId } = await newOwner();
     const place = {
@@ -557,6 +607,111 @@ describe.skipIf(!RUN)("place validation (design.md \"Location\")", () => {
     const { photoId } = await upload(ownerId, userId, uploadBody({ place }));
     const { extra: _extra, ...stored } = place;
     expect((await getAssetPartition(ownerId, photoId)).meta?.place).toEqual(stored);
+  });
+});
+
+describe.skipIf(!RUN)("region-pack places (design.md \"Detailed places\")", () => {
+  it("writes one PLACE facet per named level, and L# rows with kind and within", async () => {
+    const { userId, ownerId } = await newOwner();
+    const { photoId } = await upload(ownerId, userId, uploadBody({ place: ARGENTIERE }));
+    expect(Object.keys(await locationFacets(ownerId, photoId)).sort()).toEqual([
+      "F#COUNTRY#FR",
+      "F#PLACE#n200202",
+      "F#PLACE#n300303",
+      "F#PLACE#r100101",
+      "F#PLACE#r400404",
+      "F#REGION#FR.84",
+    ]);
+    const rows = await placeRows(ownerId);
+    const rn = "Auvergne-Rhône-Alpes";
+    expect(rows["L#r100101"]).toMatchObject({ n: 1, name: "Chamonix-Mont-Blanc", kind: "locality", regionName: rn, cc: "FR" });
+    expect(rows["L#r100101"]).not.toHaveProperty("within");
+    expect(rows["L#n200202"]).toMatchObject({ n: 1, name: "Argentière", kind: "sub", within: "Chamonix-Mont-Blanc" });
+    expect(rows["L#n300303"]).toMatchObject({ n: 1, name: "Le Planet", kind: "spot", within: "Chamonix-Mont-Blanc" });
+    expect(rows["L#r400404"]).toMatchObject({ n: 1, kind: "area", regionName: rn });
+    expect(rows["L#r400404"]).not.toHaveProperty("within");
+    expect((await counts(ownerId))["#META"]).toBe(1);
+
+    // Found by its suburb, like any other place facet.
+    const page = await getFacetPage(req(ownerId, userId, { params: { type: "PLACE", value: "n200202" } }));
+    expect((page.body as { items: Array<{ photoId: string }> }).items.map((i) => i.photoId)).toEqual([photoId]);
+  });
+
+  it("GET /places returns kind and within", async () => {
+    const { userId, ownerId } = await newOwner();
+    await upload(ownerId, userId, uploadBody({ place: DEUX_ALPES }));
+    const body = (await getPlaces(req(ownerId, userId))).body as { localities: unknown[] };
+    const rn = "Auvergne-Rhône-Alpes";
+    expect(body.localities).toEqual(
+      expect.arrayContaining([
+        { id: "r500505", name: "Les Deux Alpes", regionName: rn, cc: "FR", kind: "locality", n: 1 },
+        { id: "r600606", name: "Parc national des Écrins (cœur)", regionName: rn, cc: "FR", kind: "area", n: 1 },
+        { id: "r700707", name: "Lac de la Muzelle", regionName: rn, cc: "FR", kind: "feature", within: "Les Deux Alpes", n: 1 },
+      ]),
+    );
+    expect(body.localities).toHaveLength(3);
+  });
+
+  it("re-geocoding from the gazetteer's town to a pack place moves every level's counts", async () => {
+    const { userId, ownerId } = await newOwner();
+    const { photoId } = await upload(ownerId, userId, uploadBody({ place: VALLORCINE }));
+    await putLocation(ownerId, userId, photoId, { place: ARGENTIERE });
+    expect(await counts(ownerId)).toEqual({
+      "#META": 1,
+      "C#FR": 1,
+      "R#FR.84": 1,
+      "L#2971001": 0,
+      "L#r100101": 1,
+      "L#n200202": 1,
+      "L#n300303": 1,
+      "L#r400404": 1,
+    });
+    expect(await locationFacets(ownerId, photoId)).not.toHaveProperty("F#PLACE#2971001");
+
+    // To another pack place in the same region: shared C#/R# rows untouched, the rest swapped.
+    await putLocation(ownerId, userId, photoId, { place: DEUX_ALPES });
+    expect(await counts(ownerId)).toEqual({
+      "#META": 1,
+      "C#FR": 1,
+      "R#FR.84": 1,
+      "L#2971001": 0,
+      "L#r100101": 0,
+      "L#n200202": 0,
+      "L#n300303": 0,
+      "L#r400404": 0,
+      "L#r500505": 1,
+      "L#r600606": 1,
+      "L#r700707": 1,
+    });
+    expect(Object.keys(await locationFacets(ownerId, photoId)).sort()).toEqual([
+      "F#COUNTRY#FR",
+      "F#PLACE#r500505",
+      "F#PLACE#r600606",
+      "F#PLACE#r700707",
+      "F#REGION#FR.84",
+    ]);
+  });
+
+  it("a row counted in again without a locality loses its within", async () => {
+    const { userId, ownerId } = await newOwner();
+    const { photoId } = await upload(ownerId, userId, uploadBody({ place: ARGENTIERE }));
+    expect((await placeRows(ownerId))["L#n200202"]).toMatchObject({ within: "Chamonix-Mont-Blanc" });
+    const { locality: _locality, ...noLocality } = ARGENTIERE;
+    await putLocation(ownerId, userId, photoId, { place: noLocality });
+    const row = (await placeRows(ownerId))["L#n200202"];
+    expect(row).toMatchObject({ n: 1, kind: "sub" });
+    expect(row).not.toHaveProperty("within");
+  });
+
+  it("trash and restore move every level's counts", async () => {
+    const { userId, ownerId } = await newOwner();
+    const { photoId } = await upload(ownerId, userId, uploadBody({ place: ARGENTIERE }));
+    await deletePhoto(req(ownerId, userId, { method: "DELETE", params: { photoId } }));
+    const trashed = await counts(ownerId);
+    expect(Object.values(trashed).every((n) => n === 0)).toBe(true);
+    expect(Object.values(await locationFacets(ownerId, photoId)).every((pk) => pk === undefined)).toBe(true);
+    await postRestore(req(ownerId, userId, { method: "POST", params: { photoId } }));
+    expect((await counts(ownerId))["L#n300303"]).toBe(1);
   });
 });
 
@@ -585,7 +740,9 @@ describe.skipIf(!RUN)("GET /places", () => {
     );
     expect(body.countries).toHaveLength(2);
     expect(body.regions.map((r) => r.id).sort()).toEqual(["FR.11", "JP.12"]);
-    expect(body.localities).toEqual([{ id: "2988507", name: "Paris", regionName: "Île-de-France", cc: "FR", n: 1 }]);
+    expect(body.localities).toEqual([
+      { id: "2988507", name: "Paris", regionName: "Île-de-France", cc: "FR", kind: "locality", n: 1 },
+    ]);
     expect(body.regions).toContainEqual({ id: "JP.12", name: "Hokkaido", cc: "JP", n: 1 });
 
     const etag = first.headers!["etag"]!;
@@ -628,6 +785,9 @@ describe.skipIf(!RUN)("tools/backfill-places.mjs", () => {
     const c = await upload(ownerId, userId, uploadBody({ place: HOKKAIDO }));
     const d = await upload(ownerId, userId, uploadBody());
     await upload(ownerId, userId, uploadBody({ place: STANLEY }));
+    const e = await upload(ownerId, userId, uploadBody({ place: VALLORCINE }));
+    await putLocation(ownerId, userId, e.photoId, { place: ARGENTIERE });
+    await upload(ownerId, userId, uploadBody({ place: DEUX_ALPES }));
     await deletePhoto(req(ownerId, userId, { method: "DELETE", params: { photoId: b.photoId } }));
     await putLocation(ownerId, userId, c.photoId, { place: PARIS });
     await putLocation(ownerId, userId, d.photoId, { place: OSAKA });
@@ -662,6 +822,9 @@ describe.skipIf(!RUN)("tools/backfill-places.mjs", () => {
     expect(after["L#1857910"]?.["n"]).toBe(1);
     expect(after["L#3426691"]).toMatchObject({ n: 1, name: "Stanley", cc: "FK" });
     expect(after["L#3426691"]).not.toHaveProperty("regionName");
+    expect(after["L#n200202"]).toMatchObject({ n: 1, kind: "sub", within: "Chamonix-Mont-Blanc" });
+    expect(after["L#r600606"]).toMatchObject({ n: 1, kind: "area" });
+    expect(after["L#r600606"]).not.toHaveProperty("within");
     expect(after["#META"]?.["version"]).toBe((before["#META"]?.["version"] as number) + 1);
   });
 });

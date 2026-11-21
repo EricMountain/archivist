@@ -386,11 +386,47 @@ class LocationStripSetting(LocationTestBase):
 
 
 class LocationNoGps(LocationTestBase):
-    def test_no_gps_anywhere_sends_place_null(self):
+    def test_no_gps_anywhere_keeps_the_place(self):
+        # Set by hand (locate_missing.py) or from a pack set since replaced: either way
+        # there's nothing to re-derive it from, so it stays.
         self.api.add("P1", place={**KYOTO, "src": OLD_SRC}, blob={"cameraMake": "Canon"}, original=_jpeg())
         self.run_location("--execute")
-        self.assertEqual(self.put_for("P1"), [("P1", None, None, None)])
+        self.assertEqual(self.put_for("P1"), [])
+        self.assertIn("keeps the stored place", self.stdout)
         self.assertIn("no GPS                 1", self.stdout)
+        self.assertIn("P1", library_cache.load_no_gps("photos.example.com", "someone@example.com"))
+
+    def test_a_kept_place_is_not_downloaded_again(self):
+        self.api.add("P1", place={**KYOTO, "src": OLD_SRC}, original=_jpeg())
+        self.run_location("--execute")
+        self.run_location("--execute")
+        self.assertEqual(len(self.downloads.calls), 1)
+        self.assertEqual(self.api.puts, [])
+        self.assertIn("remembered from an earlier run; --force to re-read); keeps", self.stdout)
+
+    def test_a_kept_place_is_regeocoded_once_exifenc_has_coordinates(self):
+        self.api.add("P1", place={**KYOTO, "src": OLD_SRC}, original=_jpeg())
+        self.run_location("--execute")
+        # The app's "Update location" (say) added coordinates to exifEnc since.
+        enc = cf.encrypt_object(self.api.deks["P1"], cf.aad("P1", cf.object_ref_exif()),
+                                json.dumps({"gpsLat": 35.01, "gpsLon": 135.77}).encode(), 0)
+        meta = self.api.details["P1"]["meta"]
+        meta["exifEnc"], meta["exifIv"] = _b64(enc.ciphertext), _b64(enc.iv)
+        self.run_location("--execute")
+        self.assertEqual(len(self.downloads.calls), 1)
+        self.assertEqual(self.put_for("P1")[0][1], KYOTO)
+
+    def test_clear_without_gps_sends_place_null(self):
+        self.api.add("P1", place={**KYOTO, "src": OLD_SRC}, blob={"cameraMake": "Canon"}, original=_jpeg())
+        self.run_location("--execute", "--clear-without-gps")
+        self.assertEqual(self.put_for("P1"), [("P1", None, None, None)])
+        self.assertIn("clears the stored place", self.stdout)
+
+    def test_dry_run_neither_clears_nor_remembers(self):
+        self.api.add("P1", place={**KYOTO, "src": OLD_SRC}, original=_jpeg())
+        self.run_location()
+        self.assertEqual(self.api.puts, [])
+        self.assertNotIn("P1", library_cache.load_no_gps("photos.example.com", "someone@example.com"))
 
     def test_no_gps_and_no_place_sends_nothing_but_is_remembered(self):
         self.api.add("P1", original=_jpeg())
@@ -683,14 +719,14 @@ class LocationLocalCopies(_LocalCopiesBase):
         self.assertIn("errors                 0", self.stdout)
         self.assertIn("P1  missing locally, left untouched: -1/IMG_0001.jpg", self.stdout)
         # And a later run without --local-only still does it.
-        self.run_location("--execute", "--source-dir", self.src)
+        self.run_location("--execute", "--source-dir", self.src, "--clear-without-gps")
         self.assertEqual(self.downloads.calls, [("raw/P1", None)])
         self.assertEqual(self.put_for("P1"), [("P1", None, None, None)])
 
     def test_local_copy_without_gps_is_still_no_gps(self):
         self.api.add("P1", place={**KYOTO, "src": OLD_SRC}, original=_jpeg(), path="-1/IMG_0001.jpg")
         self.put_local("y/IMG_0001.jpg", _jpeg())
-        self.run_location("--execute", "--source-dir", self.src, "--local-only")
+        self.run_location("--execute", "--source-dir", self.src, "--local-only", "--clear-without-gps")
         self.assertEqual(self.put_for("P1"), [("P1", None, None, None)])
         self.assertIn("P1", library_cache.load_no_gps("photos.example.com", "someone@example.com"))
 

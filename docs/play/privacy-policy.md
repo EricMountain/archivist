@@ -40,8 +40,11 @@ Archivist transmits, **only to the server address you enter**:
 - The full technical metadata block from your camera (EXIF), **encrypted** — this is
   where the exact GPS coordinates live, if your camera recorded them
 - The approximate place each photo was taken — country, region and town — worked out on
-  your device from the photo's own GPS data. No location is ever sent to a mapping or
-  geocoding service
+  your device from the photo's own GPS data. If your server offers detailed map data for
+  the area, also the village or neighbourhood, hamlet, park or natural feature nearby,
+  which can place a photo to within a few hundred metres. No location is ever sent to a
+  mapping or geocoding service. To work these out, the app may download map data for a
+  region from your server, which tells your server which region it needed
 - Your account details on that server: email address, display name, sign-in identifiers
 
 That destination is a server you chose. The app has no default server and no fallback.
@@ -209,7 +212,13 @@ lighter obligation than the previous, service-operator framing.
 The first two are worth guarding carefully. A single analytics SDK, added casually,
 invalidates the central claim of this document.
 
-**Place-name data.** The GeoNames attribution that CC BY 4.0 requires is on the app's
-About screen. This policy has no licences section, so it isn't repeated here.
+**Place-name data.** The GeoNames attribution that CC BY 4.0 requires, and the
+OpenStreetMap attribution that ODbL requires for region packs, are on the app's About
+screen. This policy has no licences section, so they aren't repeated here.
+
+**How precise the readable place is.** With region packs, it can be a hamlet, within a few
+hundred metres; single dwellings and farms are never used (design.md, "Location"). If a
+change ever makes it finer than that, this policy's "approximate place" wording needs
+revisiting.
 
 **Keep aligned with `data-safety.md`.** Reviewers read both.

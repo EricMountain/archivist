@@ -1,0 +1,3 @@
+# Build-time only (build.py, build_set.py). The readers and make_fixture/make_vectors need none.
+osmium==4.3.2
+shapely==2.2.0

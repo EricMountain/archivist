@@ -1,0 +1,31 @@
+{
+ "format": 1,
+ "set": "fixture",
+ "attribution": "© OpenStreetMap contributors, ODbL 1.0",
+ "packs": [
+  {
+   "name": "fixture-a",
+   "path": "fixture-a.bin",
+   "bytes": 1286,
+   "sha256": "d9c2aa1a291f37991eee3ce75ddae76bc17c4d4a032050844cb6bc307635ae2e",
+   "bbox": [
+    44920000,
+    4920000,
+    45130000,
+    5390000
+   ]
+  },
+  {
+   "name": "fixture-b",
+   "path": "fixture-b.bin",
+   "bytes": 242,
+   "sha256": "4f64ec285d38e48539e5266eff4d4d8af0ad2367c1d63c12915344036b59960e",
+   "bbox": [
+    44970000,
+    4960000,
+    45090000,
+    5510000
+   ]
+  }
+ ]
+}

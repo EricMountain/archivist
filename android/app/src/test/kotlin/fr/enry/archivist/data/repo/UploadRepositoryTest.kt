@@ -185,7 +185,7 @@ class UploadRepositoryTest {
                 baseOkHttpClient = OkHttpClient.Builder().build(),
                 uploadEvents = uploadEvents,
                 videoLocationReader = FakeVideoLocationReader(mediaStoreSource).also { videoLocationReader = it },
-                reverseGeocoder = geocoder,
+                placeGeocoder = PlaceGeocoder(geocoder) { _, _ -> GeoPacks.None },
             )
     }
 

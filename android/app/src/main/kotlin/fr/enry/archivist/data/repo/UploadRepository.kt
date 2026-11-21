@@ -25,7 +25,6 @@ import fr.enry.archivist.domain.ExifBlob
 import fr.enry.archivist.domain.ExifData
 import fr.enry.archivist.domain.ExifExtractor
 import fr.enry.archivist.domain.Iso6709
-import fr.enry.archivist.domain.ReverseGeocoder
 import fr.enry.archivist.domain.Timestamps
 import fr.enry.archivist.domain.Ulid
 import fr.enry.archivist.sync.LocationStripper
@@ -140,7 +139,7 @@ class UploadRepository
         private val baseOkHttpClient: OkHttpClient,
         private val uploadEvents: UploadEvents,
         private val videoLocationReader: VideoLocationReader,
-        private val reverseGeocoder: ReverseGeocoder,
+        private val placeGeocoder: PlaceGeocoder,
     ) {
         /** The current master key version (`mk-<n>`) rarely changes (only on
          * rotation, which nothing in this app triggers yet) — cached for the life of
@@ -540,12 +539,16 @@ class UploadRepository
             }
 
         /** Best-effort, like the preview clip: a gazetteer that can't be read (a corrupt
-         * asset) must not stop the backup itself, so it logs and uploads without a place. */
-        private fun geocode(
+         * asset) must not stop the backup itself, so it logs and uploads without a place.
+         * Region packs that can't be fetched already degrade to the gazetteer alone inside
+         * [PlaceGeocoder]. */
+        private suspend fun geocode(
             lat: Double,
             lon: Double,
         ) = try {
-            reverseGeocoder.lookup(lat, lon)
+            placeGeocoder.lookup(lat, lon)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("UploadRepository", "reverse geocoding failed, uploading without a place", e)
             null

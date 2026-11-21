@@ -173,6 +173,44 @@ class DetailFormattingTest {
         assertEquals("Hokkaido, Japan", placeLabel(place("JP", region = "Hokkaido"), en))
     }
 
+    /** sample-data.md A12: every level from a region pack, most specific first. */
+    private val argennosc =
+        PlaceDto(
+            cc = "FR",
+            region = PlaceRefDto("FR.84", "Auvergne-Rhône-Alpes"),
+            locality = PlaceRefDto("r100101", "Chamonix-Mont-Blanc"),
+            sub = PlaceRefDto("n200202", "Argentière"),
+            spot = PlaceRefDto("n300303", "Le Planet"),
+            areas = listOf(PlaceRefDto("r400404", "Réserve naturelle des Aiguilles Rouges")),
+            src = "osm@2026-11-19;geonames-cities500@2026-11-13",
+        )
+
+    @Test
+    fun `placeLabel with region-pack levels`() {
+        assertEquals(
+            "Le Planet, Argentière, Chamonix-Mont-Blanc, Auvergne-Rhône-Alpes, France",
+            placeLabel(argennosc, en),
+        )
+    }
+
+    @Test
+    fun `placeExtras lists areas then the feature, and is null without either`() {
+        assertEquals("Réserve naturelle des Aiguilles Rouges", placeExtras(argennosc))
+        assertEquals(
+            "Parc national des Écrins (cœur) · Lac de la Muzelle",
+            placeExtras(
+                PlaceDto(
+                    cc = "FR",
+                    locality = PlaceRefDto("r500505", "Les Deux Alpes"),
+                    areas = listOf(PlaceRefDto("r600606", "Parc national des Écrins (cœur)")),
+                    feature = PlaceRefDto("r700707", "Lac de la Muzelle"),
+                    src = "osm@2026-11-19;geonames-cities500@2026-11-13",
+                ),
+            ),
+        )
+        assertEquals(null, placeExtras(place("JP", region = "Kyoto", locality = "Kyoto")))
+    }
+
     @Test
     fun `placeLabel country only`() {
         assertEquals("Japan", placeLabel(place("JP"), en))

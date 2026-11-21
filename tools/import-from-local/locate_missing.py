@@ -3,9 +3,10 @@
 of their own, asking as few questions as possible, and writes the result to a
 JSON Lines file that a later step can push through `PUT /photos/{photoId}/location`.
 
-Nothing here touches an instance: no sign-in, no network except a one-time GeoNames
-download (the same three files tools/gazetteer/build.py uses). It only reads the
-source directory and writes local state.
+Nothing here signs in to an instance. Network: a one-time GeoNames download (the
+same three files tools/gazetteer/build.py uses) and, with `--host`, the instance's
+public region-pack manifest and packs. It only reads the source directory and writes
+local state.
 
 How it keeps the questions down:
 
@@ -33,13 +34,16 @@ How it keeps the questions down:
    `5-8 12` sends those back as questions, each run of consecutive numbers as one
    (a trip is usually a run). Years of isolated photos taken at home cost one
    keypress per sheet instead of one per day.
-5. **Resolve names against GeoNames cities500.** Type part of a place name (any
-   language GeoNames knows it in, diacritics optional), optionally qualified
+5. **Resolve names against GeoNames cities500**, and with `--host` (or
+   `--manifest`) against the instance's region packs too. Type part of a place name
+   (any language GeoNames knows it in, diacritics optional), optionally qualified
    (`paris, tx`, `paris, france`), or a region/country name for something coarser.
-   Candidates are ranked by match quality, then by population weighted by distance
-   to the suggestion, so "paris" during a Texas trip offers Paris TX first. You
-   confirm once; the choice is remembered for that exact text and never asked
-   again (prefix with `!` to ask anyway). `lat,lon` and `#<geonameid>` also work.
+   Candidates are ranked by match quality, then by population (a stand-in by kind
+   for pack names) weighted by distance to the suggestion, so "paris" during a
+   Texas trip offers Paris TX first. A pick resolves to no more than it names (see
+   `Geo.entity_res`). You confirm once; the choice is remembered for that exact
+   text and never asked again (prefix with `!` to ask anyway). `lat,lon` and
+   `#<geonameid>` also work.
 
 Answers are saved after every question, so `q` (or Ctrl-C) and a re-run resumes
 where you stopped; changing the inference thresholds and re-running only changes
@@ -91,7 +95,9 @@ from datetime import datetime, timedelta
 
 import filename_time
 import gazetteer
+import geopack
 import media_probe as mp
+import places
 import takenat_ladder as ladder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -281,9 +287,38 @@ class Candidate:
     detail: str
 
 
+# Region-pack entities as search candidates: a stand-in for log10(population) by kind,
+# so a commune ranks with a town of ~10k, a hamlet with a few hundred people.
+PACK_WEIGHT = {
+    ("admin", 6): 4.6, ("admin", 7): 4.3, ("admin", 8): 4.0,
+    ("place", 1): 5.0, ("place", 2): 4.0, ("place", 3): 3.3, ("place", 4): 3.3,
+    ("place", 5): 2.8, ("place", 6): 2.3, ("place", 7): 2.5, ("place", 8): 2.0,
+    ("protected", 0): 4.5, ("protected", 1): 3.0, ("feature", 0): 3.0,
+}
+PLACE_KIND_NAMES = {1: "city", 2: "town", 3: "village", 4: "suburb", 5: "quarter", 6: "hamlet",
+                    7: "neighbourhood", 8: "lieu-dit"}
+SUB_KINDS = {1, 2, 3, 4}  # README "Lookup": the kinds that fill `sub`; the rest fill `spot`
+
+
+def _rep_point(e: geopack.Entity) -> tuple[float, float]:
+    """A point to geocode a pack entity at: itself, a line's middle vertex, or the
+    middle of a polygon's bounding box."""
+    if e.geom_type == geopack.POINT:
+        la, lo = e.parts[0][0]
+    elif e.geom_type == geopack.LINES:
+        pts = e.parts[0]
+        la, lo = pts[len(pts) // 2]
+    else:
+        la, lo = (e.bbox[0] + e.bbox[2]) // 2, (e.bbox[1] + e.bbox[3]) // 2
+    return la / 1e6, lo / 1e6
+
+
 class Geo:
-    def __init__(self, geonames_dir: str, gaz: gazetteer.Gazetteer):
+    def __init__(self, geonames_dir: str, gaz: gazetteer.Gazetteer, geocoder: places.Geocoder | None = None):
         self.gaz = gaz
+        # Gazetteer alone unless the instance publishes region packs (--host/--manifest).
+        self.geocoder = geocoder or places.Geocoder(gaz)
+        self.src = self.geocoder.src
         self.countries: dict[str, str] = {}
         for line in _read_text(os.path.join(geonames_dir, "countryInfo.txt")).splitlines():
             if line and not line.startswith("#"):
@@ -342,39 +377,160 @@ class Geo:
             if c not in self.country_centre or self.pop[i] > self.pop[self.country_centre[c]]:
                 self.country_centre[c] = i
 
+        # Every entity of every region pack, searchable by name like the towns above.
+        self.entities: list[geopack.Entity] = []
+        self.entity_by_key: dict[str, geopack.Entity] = {}
+        self.entity_fold: list[str] = []
+        self.parents: list[geopack.Entity] = []
+        self._parent_cache: dict[str, str | None] = {}
+        if self.geocoder.manifest is not None:
+            self.geocoder.preload()
+            ents = geopack.PackSet(self.geocoder.all_packs()).entities
+            # A French arrondissement (level 7) is named after its chef-lieu, a commune
+            # (level 8): offering both reads as a duplicate, and the commune is what
+            # anyone typing the name means.
+            level8 = {e.name for e in ents if e.layer == geopack.ADMIN and e.level == 8}
+            # Level-6 areas (a French département, an English county...): named in a
+            # commune's label, since communes share names ("Le Monteil" in Cantal and in
+            # Haute-Loire, both in the same region).
+            self.parents = [e for e in ents if e.layer == geopack.ADMIN and e.level == 6]
+            for e in ents:
+                if e.layer == geopack.ADMIN and (not 6 <= e.level <= 8 or (e.level < 8 and e.name in level8)):
+                    continue
+                self.entity_by_key[self._entity_key(e)] = e
+                self.entities.append(e)
+                self.entity_fold.append(fold(e.name))
+
     # -- building resolutions --
 
     def _label(self, *parts: str | None) -> str:
         return ", ".join(p for p in parts if p)
 
     def locality(self, i: int) -> Resolution:
+        """A GeoNames town picked by name. With region packs covering its centre, the
+        commune containing that centre stands in for it: what an upload there would
+        get as its locality, without claiming the finer levels at the centre."""
         cc, r = self.cc[i], self.region[i]
         place: dict = {"cc": cc}
         if r:
             place["region"] = {"id": r, "name": self.admin1[r]}
         place["locality"] = {"id": str(self.gid[i]), "name": self.name[i]}
-        place["src"] = self.gaz.src
-        return Resolution("locality", place, self._label(self.name[i], self.admin1.get(r or ""), cc),
-                          (self.lat[i], self.lon[i]), f"L:{self.gid[i]}")
+        src = self.src
+        try:
+            layers = self.geocoder.pack_layers(self.lat[i], self.lon[i])
+        except places.PackUnavailable:
+            layers, src = None, self.gaz.src
+        if layers and layers.get("locality"):
+            place["locality"] = layers["locality"]
+        place["src"] = src
+        return Resolution("locality", place, place_label(place), (self.lat[i], self.lon[i]), f"L:{self.gid[i]}")
 
     def region_res(self, key: str) -> Resolution:
         cc = key[:2]
         c = self.region_centre.get(key)
-        return Resolution("region", {"cc": cc, "region": {"id": key, "name": self.admin1[key]}, "src": self.gaz.src},
+        return Resolution("region", {"cc": cc, "region": {"id": key, "name": self.admin1[key]}, "src": self.src},
                           self._label(self.admin1[key], cc), (self.lat[c], self.lon[c]) if c is not None else None,
                           f"R:{key}")
 
     def country_res(self, cc: str) -> Resolution:
         c = self.country_centre.get(cc)
-        return Resolution("country", {"cc": cc, "src": self.gaz.src}, self.countries.get(cc, cc),
+        return Resolution("country", {"cc": cc, "src": self.src}, self.countries.get(cc, cc),
                           (self.lat[c], self.lon[c]) if c is not None else None, f"C:{cc}")
 
     def coords_res(self, lat: float, lon: float) -> Resolution:
-        place = self.gaz.lookup(lat, lon)
+        """Typed coordinates are exact, so every layer applies."""
+        place = self.geocoder.lookup(lat, lon)
         return Resolution("coords", place, f"{place_label(place)} ({lat:.4f},{lon:.4f})", (lat, lon),
                           f"P:{lat:.6f},{lon:.6f}")
 
+    # -- region-pack entities --
+
+    @staticmethod
+    def _entity_key(e: geopack.Entity) -> str:
+        return f"O:{e.layer}:{e.id}"
+
+    def entity_res(self, e: geopack.Entity) -> Resolution | None:
+        """A pack entity picked by name, resolved to no more than the pick means: a
+        commune is a locality; a village or hamlet adds itself (and, for a hamlet, the
+        village it's near) to its commune; a protected area is just the area, since
+        it can span communes; a feature adds itself to its commune."""
+        lat, lon = _rep_point(e)
+        base = self.gaz.lookup(lat, lon)
+        if base is None:
+            return None
+        place: dict = {"cc": base["cc"]}
+        if base.get("region"):
+            place["region"] = base["region"]
+        ref = {"id": e.id, "name": e.name}
+        try:
+            layers = self.geocoder.pack_layers(lat, lon) or {}
+        except places.PackUnavailable:
+            return None
+        label = None
+        if e.layer == geopack.ADMIN:
+            place["locality"] = ref
+            parent = self._parent_name(e)
+            if parent:
+                first, _, rest = place_label(place).partition(", ")
+                label = self._label(first, parent, rest)
+        elif e.layer == geopack.PLACE:
+            if layers.get("locality"):
+                place["locality"] = layers["locality"]
+            if place.get("locality", {}).get("name") != e.name:
+                if e.kind in SUB_KINDS:
+                    place["sub"] = ref
+                else:
+                    if layers.get("sub") and layers["sub"]["name"] != e.name:
+                        place["sub"] = layers["sub"]
+                    place["spot"] = ref
+        elif e.layer == geopack.PROTECTED:
+            place["areas"] = [ref]
+        else:
+            if layers.get("locality"):
+                place["locality"] = layers["locality"]
+            place["feature"] = ref
+        place["src"] = self.src
+        place = {k: place[k] for k in places.PLACE_KEYS if k in place}
+        return Resolution("pack", place, label or place_label(place), (lat, lon), self._entity_key(e))
+
+    def _parent_name(self, e: geopack.Entity) -> str | None:
+        """The level-6 area a level-7/8 one lies in: the one containing most of a grid of
+        points inside it. Interior points, not vertices: the two often share a border
+        exactly (Manhattan and New York County), where containment is a coin toss.
+        None if there is none, or it has the same name (Paris, Paris)."""
+        if e.level < 7 or not self.parents:
+            return None
+        if e.id in self._parent_cache:
+            return self._parent_cache[e.id]
+        n_side = 7
+        grid = [(e.bbox[0] + (e.bbox[2] - e.bbox[0]) * (i + 0.5) / n_side,
+                 e.bbox[1] + (e.bbox[3] - e.bbox[1]) * (j + 0.5) / n_side)
+                for i in range(n_side) for j in range(n_side)]
+        sample = [(la, lo) for la, lo in grid if geopack.inside(geopack.Plane(la / 1e6, lo / 1e6), e)]
+        best, best_n = None, 0
+        for p in self.parents:
+            if not (p.bbox[0] <= e.bbox[2] and e.bbox[0] <= p.bbox[2] and p.bbox[1] <= e.bbox[3] and e.bbox[1] <= p.bbox[3]):
+                continue
+            n = sum(geopack.inside(geopack.Plane(la / 1e6, lo / 1e6), p) for la, lo in sample)
+            if n > best_n or (n == best_n and best is not None and n and p.area < best.area):
+                best, best_n = p, n
+        name = best.name if best is not None and best.name != e.name else None
+        self._parent_cache[e.id] = name
+        return name
+
+    def _entity_detail(self, e: geopack.Entity) -> str:
+        if e.layer == geopack.ADMIN:
+            return f"admin area, level {e.level}"
+        if e.layer == geopack.PLACE:
+            return PLACE_KIND_NAMES.get(e.kind, "place")
+        if e.layer == geopack.PROTECTED:
+            return "protected area" + (" (national park / IUCN)" if e.rank == 0 else "")
+        return "natural feature"
+
     def from_key(self, key: str) -> Resolution | None:
+        if key.startswith("O:"):
+            e = self.entity_by_key.get(key)
+            return self.entity_res(e) if e is not None else None
         kind, _, v = key.partition(":")
         if kind == "L" and int(v) in self.by_gid:
             return self.locality(self.by_gid[int(v)])
@@ -388,12 +544,19 @@ class Geo:
         return None
 
     def from_place(self, place: dict | None, near: tuple[float, float] | None) -> Resolution | None:
-        """The resolution a reverse-geocoded `place` stands for (used for GPS photos)."""
+        """The resolution a reverse-geocoded `place` stands for (used for GPS photos).
+        Town (or commune) level, never finer: it becomes the suggestion for *other*
+        photos taken nearby, which may not have been at the same hamlet."""
         if not place:
             return None
         loc = place.get("locality")
-        if loc and int(loc["id"]) in self.by_gid:
+        if loc and loc["id"].isdigit() and int(loc["id"]) in self.by_gid:
             return self.locality(self.by_gid[int(loc["id"])])
+        if loc and not loc["id"].isdigit():
+            coarse = {k: place[k] for k in ("cc", "region", "locality", "src") if k in place}
+            e = self.entity_by_key.get(f"O:{geopack.ADMIN}:{loc['id']}")
+            return Resolution("pack", coarse, place_label(coarse), near or (_rep_point(e) if e else None),
+                              f"O:{geopack.ADMIN}:{loc['id']}")
         if place.get("region") and place["region"]["id"] in self.admin1:
             r = self.region_res(place["region"]["id"])
         else:
@@ -463,8 +626,47 @@ class Geo:
                     tier = 0 if q == cc.casefold() else self._tier(f"\x1f{f_name}\x1f", q)
                     cands.append(Candidate(res, tier, 8.0 - TIER_PENALTY[tier], f"{res.label} (country)"))
 
+        # Region-pack entities, resolved lazily (each one is a pack lookup): ranked
+        # first, then only the best few are turned into resolutions.
+        lazy: list[tuple[float, int, geopack.Entity]] = []
+        for e, f_name in zip(self.entities, self.entity_fold):
+            if q not in f_name:
+                continue
+            tier = self._tier(f"\x1f{f_name}\x1f", q)
+            if tier == 0:
+                tier = -1
+            weight_key = (("admin", e.level) if e.layer == geopack.ADMIN else ("place", e.kind)
+                          if e.layer == geopack.PLACE else ("protected", e.rank)
+                          if e.layer == geopack.PROTECTED else ("feature", 0))
+            pen, _ = proximity(*_rep_point(e))
+            lazy.append((PACK_WEIGHT[weight_key] + pen - TIER_PENALTY[tier], tier, e))
+        lazy.sort(key=lambda x: -x[0])
+        for score, tier, e in lazy[: limit * 2]:
+            res = self.entity_res(e)
+            if res is None:
+                continue
+            parent = self._parent_name(e) if e.layer == geopack.ADMIN else None
+            if qual and not (qual == res.place["cc"].casefold()
+                             or (res.place.get("region") and self.admin1_fold.get(res.place["region"]["id"], "").startswith(qual))
+                             or self.country_fold.get(res.place["cc"], "").startswith(qual)
+                             or (parent and fold(parent).startswith(qual))):
+                continue
+            _, dist = proximity(*_rep_point(e))
+            cands.append(Candidate(res, tier, score, f"{res.label} ({self._entity_detail(e)}){dist}"))
+
         cands.sort(key=lambda c: -c.score)
-        return cands[:limit]
+        # Two candidates that resolve to the same place (a GeoNames town and the commune
+        # its centre is in) are one choice.
+        out, seen = [], set()
+        for c in cands:
+            sig = json.dumps(c.res.place, sort_keys=True)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            out.append(c)
+            if len(out) == limit:
+                break
+        return out
 
 
 def _matched_name(hay: str, q: str) -> str:
@@ -479,13 +681,7 @@ def _matched_name(hay: str, q: str) -> str:
 def place_label(place: dict | None) -> str:
     if not place:
         return "open sea / nowhere near a town"
-    parts = []
-    if place.get("locality"):
-        parts.append(place["locality"]["name"])
-    if place.get("region"):
-        parts.append(place["region"]["name"])
-    parts.append(place["cc"])
-    return ", ".join(parts)
+    return places.describe(place)
 
 
 def _read_text(path: str) -> str:
@@ -720,7 +916,8 @@ def _inline_capable() -> bool:
 # --- The interactive session --------------------------------------------------------
 
 HELP = """\
-  <name>       place name, partial is fine; 'paris, tx' / 'paris, france' to narrow;
+  <name>       place name, partial is fine; 'paris, tx' / 'paris, france' /
+               'le monteil, cantal' (a pack commune's département or county) to narrow;
                a region or country name for something coarser
   !<name>      same, but ignore what was remembered for this text
   lat,lon      exact coordinates          #<id>   a GeoNames id
@@ -1132,6 +1329,11 @@ def main() -> int:
                     help="cities500.zip + admin1CodesASCII.txt + countryInfo.txt (default: <state-dir>/geonames, "
                     "downloaded from geonames.org on first use)")
     ap.add_argument("--gazetteer", default=None, help="gazetteer.bin, as for main.py")
+    packs = ap.add_mutually_exclusive_group()
+    packs.add_argument("--host", default=None,
+                       help="the instance the output is for: its region packs (public /geo/manifest.json, no "
+                       "sign-in) are used for places and searched by name, as an upload there would be")
+    packs.add_argument("--manifest", default=None, help="a local region-pack set's manifest.json instead")
     ap.add_argument("--gap-hours", type=float, default=6.0,
                     help="start a new question after a gap this long between photos (default: %(default)s)")
     ap.add_argument("--bracket-hours", type=float, default=4.0,
@@ -1163,19 +1365,26 @@ def main() -> int:
     geonames_dir = args.geonames_dir or os.path.join(args.state_dir, "geonames")
 
     try:
-        gaz = gazetteer.load(args.gazetteer)
+        geocoder = (places.load(args.host, args.gazetteer) if args.host
+                    else places.load_local(args.manifest, args.gazetteer) if args.manifest
+                    else places.Geocoder(gazetteer.load(args.gazetteer)))
+        gaz = geocoder.gazetteer
         ensure_geonames(geonames_dir)
     except (OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print("loading GeoNames cities500...", file=sys.stderr)
-    geo = Geo(geonames_dir, gaz)
+    print("loading GeoNames cities500" + (" and region packs" if geocoder.manifest else "") + "...", file=sys.stderr)
+    try:
+        geo = Geo(geonames_dir, gaz, geocoder)
+    except places.PackUnavailable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
     items, errors = scan(source, os.path.join(run_dir, "scan.json"), args.jobs)
     anchor_res: dict[str, Resolution] = {}
     for it in items:
         if it.gps is not None:
-            r = geo.from_place(gaz.lookup(*it.gps), it.gps)
+            r = geo.from_place(geocoder.lookup(*it.gps), it.gps)
             if r is not None:
                 anchor_res[it.rel] = r
     opts = Options(timedelta(hours=args.bracket_hours), timedelta(minutes=args.near_minutes),

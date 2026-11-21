@@ -1,7 +1,7 @@
 .PHONY: install build test typecheck deploy deploy-dev plan-dev clean \
 	test-infra-up test-infra-down test-infra-status test-integration \
 	teardown-load-test-dev backfill-histogram backfill-histogram-dev \
-	backfill-places backfill-places-dev
+	backfill-places backfill-places-dev geo-build geo-publish geo-publish-dev
 
 install:
 	npm install
@@ -124,3 +124,34 @@ backfill-places:
 
 backfill-places-dev:
 	$(call backfill_places_recipe,backfill-places-dev,dev)
+
+# Region packs (design.md "Detailed places: OpenStreetMap region packs";
+# docs/ops/geo-packs.md). geo-build builds the regions listed in GEO_REGIONS (one
+# "<name> <extract URL or path>" per line; the real list is private, since it says
+# where the instance's users take photos) into GEO_OUT. geo-publish / geo-publish-dev
+# upload GEO_OUT to that workspace's web bucket under geo/: the packs first (immutable,
+# a year), then the manifest (five minutes), so a manifest never names a pack that
+# isn't there yet. GEO_PYTHON must have tools/geopack/requirements.txt installed.
+GEO_REGIONS ?= private/instance/geo-regions.txt
+GEO_WORK ?= $(HOME)/.cache/archivist-geo/work
+GEO_OUT ?= $(HOME)/.cache/archivist-geo/out
+GEO_PYTHON ?= python3
+
+geo-build:
+	$(GEO_PYTHON) tools/geopack/build_set.py --regions "$(GEO_REGIONS)" --work "$(GEO_WORK)" --out "$(GEO_OUT)" $(if $(GEO_SET),--set "$(GEO_SET)") $(if $(GEO_REFRESH),--refresh)
+
+define geo_publish_recipe
+	@test -f "$(GEO_OUT)/manifest.json" || (echo "no $(GEO_OUT)/manifest.json -- run make geo-build first"; exit 1)
+	cd terraform && terraform workspace select $(1) >/dev/null && \
+	BUCKET=$$(terraform output -raw web_bucket) && \
+	aws s3 sync "$(GEO_OUT)" "s3://$$BUCKET/geo" --exclude manifest.json --exclude ".*" --exclude "*/.*" \
+		--content-type application/octet-stream --cache-control "public, max-age=31536000, immutable" && \
+	aws s3 cp "$(GEO_OUT)/manifest.json" "s3://$$BUCKET/geo/manifest.json" \
+		--content-type application/json --cache-control "public, max-age=300"
+endef
+
+geo-publish:
+	$(call geo_publish_recipe,default)
+
+geo-publish-dev:
+	$(call geo_publish_recipe,dev)

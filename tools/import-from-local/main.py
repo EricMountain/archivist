@@ -27,7 +27,7 @@ import os
 import sys
 
 import cli_auth
-import gazetteer
+import places
 import takenat_ladder as ladder
 from importer import EnrollmentError, Importer, enroll
 
@@ -72,9 +72,10 @@ def main() -> int:
         print(f"error: --source {args.source!r} is not a directory", file=sys.stderr)
         return 2
     # Loaded before signing in, so a missing file fails fast rather than after the
-    # recovery-code prompt.
+    # recovery-code prompt. The instance's region-pack manifest (public, no sign-in)
+    # decides whether places come from the gazetteer alone or with packs.
     try:
-        gaz = gazetteer.load(args.gazetteer)
+        gaz = places.load(args.host, args.gazetteer)
     except (OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

@@ -144,7 +144,7 @@ class LocationUpdateRepositoryTest {
                 photoDetailRepository = photoDetailRepository,
                 originalDownloader = downloader,
                 ownerSettingsRepository = OwnerSettingsRepository(instanceStore, apiFactory),
-                reverseGeocoder = geocoder,
+                placeGeocoder = PlaceGeocoder(geocoder) { _, _ -> GeoPacks.None },
                 videoLocationReader = FakeVideoLocationReader(FakeMediaStoreSource()),
                 photoDao = db.photoDao(),
                 placeRepository = PlaceRepository(db, instanceStore, apiFactory, json),

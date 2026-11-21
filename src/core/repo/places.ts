@@ -25,7 +25,7 @@ import {
   sortKey,
 } from "../keys";
 import { LOCATION_FACET_TYPES } from "../items";
-import type { FacetItem, LocationFacetType, MetaItem, Place, ThumbMap } from "../items";
+import type { FacetItem, LocationFacetType, MetaItem, Place, PlaceKind, PlaceRef, ThumbMap } from "../items";
 import { getAssetPartition } from "./media";
 
 type TransactItems = NonNullable<TransactWriteCommandInput["TransactItems"]>;
@@ -38,7 +38,10 @@ type TransactItems = NonNullable<TransactWriteCommandInput["TransactItems"]>;
 
 const CC_RE = /^[A-Z]{2}$/;
 const REGION_ID_RE = /^[A-Z]{2}\.[0-9A-Z]{1,20}$/;
-const LOCALITY_ID_RE = /^[0-9]{1,12}$/;
+const GEONAMES_ID_RE = /^[0-9]{1,12}$/;
+/** An OpenStreetMap id with its type letter: node, way or relation. */
+const OSM_ID_RE = /^[nwr][1-9][0-9]{0,14}$/;
+const MAX_AREAS = 3;
 const CONTROL_RE = /\p{Cc}/u;
 const MAX_NAME_CHARS = 200;
 const MAX_SRC_CHARS = 64;
@@ -53,6 +56,18 @@ function validName(v: unknown): v is string {
   return chars >= 1 && chars <= MAX_NAME_CHARS && !CONTROL_RE.test(v);
 }
 
+function parseRef(raw: unknown, field: string, idOk: (id: string) => boolean, idRule: string): PlaceRef {
+  if (!isObject(raw)) throw ApiError.validation(`${field} must be an object`);
+  if (typeof raw["id"] !== "string" || !idOk(raw["id"])) throw ApiError.validation(`${field}.id must be ${idRule}`);
+  if (!validName(raw["name"])) {
+    throw ApiError.validation(`${field}.name must be 1-${MAX_NAME_CHARS} characters, no control characters`);
+  }
+  return { id: raw["id"], name: raw["name"] };
+}
+
+const osmRef = (raw: unknown, field: string) =>
+  parseRef(raw, field, (id) => OSM_ID_RE.test(id), "an OpenStreetMap id like r100101");
+
 /**
  * Validates a client-supplied `place` and returns a fresh object holding only the
  * known fields — anything else the client sent is dropped rather than stored.
@@ -60,7 +75,7 @@ function validName(v: unknown): v is string {
  */
 export function parsePlace(raw: unknown, field = "place"): Place {
   if (!isObject(raw)) throw ApiError.validation(`${field} must be an object`);
-  const { cc, region, locality, src } = raw;
+  const { cc, region, locality, sub, spot, areas, feature, src } = raw;
   if (typeof cc !== "string" || !CC_RE.test(cc)) {
     throw ApiError.validation(`${field}.cc must be an ISO-3166 alpha-2 code`);
   }
@@ -70,45 +85,72 @@ export function parsePlace(raw: unknown, field = "place"): Place {
   const place: Place = { cc, src };
 
   if (region !== undefined && region !== null) {
-    if (!isObject(region)) throw ApiError.validation(`${field}.region must be an object`);
-    if (typeof region["id"] !== "string" || !REGION_ID_RE.test(region["id"])) {
-      throw ApiError.validation(`${field}.region.id must be a GeoNames admin1 key like JP.22`);
-    }
-    if (region["id"].slice(0, 2) !== cc) {
+    const ref = parseRef(region, `${field}.region`, (id) => REGION_ID_RE.test(id), "a GeoNames admin1 key like JP.22");
+    if (ref.id.slice(0, 2) !== cc) {
       throw ApiError.validation(`${field}.region.id must start with ${field}.cc`);
     }
-    if (!validName(region["name"])) {
-      throw ApiError.validation(`${field}.region.name must be 1-${MAX_NAME_CHARS} characters, no control characters`);
-    }
-    place.region = { id: region["id"], name: region["name"] };
+    place.region = ref;
   }
 
   // No `region` requirement: GeoNames has towns with no admin1 (Stanley, most of
   // Lesotho), so `{cc, locality}` is a legitimate lookup result. See "Validation".
   if (locality !== undefined && locality !== null) {
-    if (!isObject(locality)) throw ApiError.validation(`${field}.locality must be an object`);
-    if (typeof locality["id"] !== "string" || !LOCALITY_ID_RE.test(locality["id"])) {
-      throw ApiError.validation(`${field}.locality.id must be a GeoNames geonameid`);
-    }
-    if (!validName(locality["name"])) {
-      throw ApiError.validation(`${field}.locality.name must be 1-${MAX_NAME_CHARS} characters, no control characters`);
-    }
-    place.locality = { id: locality["id"], name: locality["name"] };
+    place.locality = parseRef(
+      locality,
+      `${field}.locality`,
+      (id) => GEONAMES_ID_RE.test(id) || OSM_ID_RE.test(id),
+      "a GeoNames geonameid or an OpenStreetMap id",
+    );
   }
+  if (sub !== undefined && sub !== null) place.sub = osmRef(sub, `${field}.sub`);
+  if (spot !== undefined && spot !== null) place.spot = osmRef(spot, `${field}.spot`);
+  if (areas !== undefined && areas !== null) {
+    if (!Array.isArray(areas) || areas.length === 0 || areas.length > MAX_AREAS) {
+      throw ApiError.validation(`${field}.areas must be a list of 1-${MAX_AREAS} entries`);
+    }
+    place.areas = areas.map((a, i) => osmRef(a, `${field}.areas[${i}]`));
+  }
+  if (feature !== undefined && feature !== null) place.feature = osmRef(feature, `${field}.feature`);
+
+  // Each named level is its own PLACE facet and L# row; one id twice would make one
+  // transaction touch the same item twice.
+  const ids = namedLevels(place).map(({ ref }) => ref.id);
+  if (new Set(ids).size !== ids.length) throw ApiError.validation(`${field} names the same id twice`);
 
   return place;
+}
+
+/** The named levels of a place below the region, each with the kind its vocabulary
+ * row records, in a fixed order. */
+export function namedLevels(place: Place): Array<{ kind: PlaceKind; ref: PlaceRef }> {
+  const out: Array<{ kind: PlaceKind; ref: PlaceRef }> = [];
+  if (place.locality) out.push({ kind: "locality", ref: place.locality });
+  if (place.sub) out.push({ kind: "sub", ref: place.sub });
+  if (place.spot) out.push({ kind: "spot", ref: place.spot });
+  for (const area of place.areas ?? []) out.push({ kind: "area", ref: area });
+  if (place.feature) out.push({ kind: "feature", ref: place.feature });
+  return out;
+}
+
+function refEqual(a: PlaceRef | undefined, b: PlaceRef | undefined): boolean {
+  return a?.id === b?.id && a?.name === b?.name;
 }
 
 /** Field-by-field equality; `undefined` means "no place". */
 export function placesEqual(a: Place | undefined, b: Place | undefined): boolean {
   if (!a || !b) return !a && !b;
+  const areasA = a.areas ?? [];
+  const areasB = b.areas ?? [];
   return (
     a.cc === b.cc &&
     a.src === b.src &&
-    a.region?.id === b.region?.id &&
-    a.region?.name === b.region?.name &&
-    a.locality?.id === b.locality?.id &&
-    a.locality?.name === b.locality?.name
+    refEqual(a.region, b.region) &&
+    refEqual(a.locality, b.locality) &&
+    refEqual(a.sub, b.sub) &&
+    refEqual(a.spot, b.spot) &&
+    refEqual(a.feature, b.feature) &&
+    areasA.length === areasB.length &&
+    areasA.every((x, i) => refEqual(x, areasB[i]))
   );
 }
 
@@ -116,12 +158,13 @@ export function placesEqual(a: Place | undefined, b: Place | undefined): boolean
 // Facet items
 // ---------------------------------------------------------------------------
 
-/** The `F#COUNTRY#`/`F#REGION#`/`F#PLACE#` facets a place implies — ids, not names. */
+/** The `F#COUNTRY#`/`F#REGION#`/`F#PLACE#` facets a place implies — ids, not names.
+ * One `PLACE` facet per named level (locality, sub, spot, each area, feature). */
 export function locationFacets(place: Place | undefined): Array<{ type: LocationFacetType; value: string }> {
   if (!place) return [];
   const out: Array<{ type: LocationFacetType; value: string }> = [{ type: "COUNTRY", value: place.cc }];
   if (place.region) out.push({ type: "REGION", value: place.region.id });
-  if (place.locality) out.push({ type: "PLACE", value: place.locality.id });
+  for (const { ref } of namedLevels(place)) out.push({ type: "PLACE", value: ref.id });
   return out;
 }
 
@@ -188,8 +231,8 @@ interface CounterRow {
   /** Display attributes, refreshed whenever the place is counted *in*. */
   attrs: Record<string, string>;
   /** Display attributes this place doesn't have, removed when it is counted *in* —
-   * `regionName` for a locality with no region, so the row never keeps one left
-   * over from an earlier writer. */
+   * `regionName` for a locality with no region, `within` for a row with no locality
+   * to name — so the row never keeps one left over from an earlier writer. */
   absent?: string[];
 }
 
@@ -199,20 +242,19 @@ function counterRows(place: Place | undefined): CounterRow[] {
   if (place.region) {
     rows.push({ sk: placeRegionSk(place.region.id), attrs: { name: place.region.name, cc: place.cc } });
   }
-  if (place.locality) {
-    rows.push(
-      place.region
-        ? {
-            sk: placeLocalitySk(place.locality.id),
-            attrs: { name: place.locality.name, regionName: place.region.name, cc: place.cc },
-          }
-        : {
-            // A town with no admin1 region: `regionName` absent, not "".
-            sk: placeLocalitySk(place.locality.id),
-            attrs: { name: place.locality.name, cc: place.cc },
-            absent: ["regionName"],
-          },
-    );
+  for (const { kind, ref } of namedLevels(place)) {
+    const attrs: Record<string, string> = { name: ref.name, cc: place.cc, kind };
+    const absent: string[] = [];
+    // A town with no admin1 region: `regionName` absent, not "".
+    if (place.region) attrs["regionName"] = place.region.name;
+    else absent.push("regionName");
+    // `within` names the locality for the levels inside it; an area can span several.
+    if ((kind === "sub" || kind === "spot" || kind === "feature") && place.locality) {
+      attrs["within"] = place.locality.name;
+    } else {
+      absent.push("within");
+    }
+    rows.push({ sk: placeLocalitySk(ref.id), attrs, absent });
   }
   return rows;
 }
@@ -322,8 +364,18 @@ export function placesRemove(ownerId: string, place: Place | undefined): Transac
 export interface PlaceVocabulary {
   countries: Array<{ cc: string; n: number }>;
   regions: Array<{ id: string; name: string; cc: string; n: number }>;
-  /** `regionName` is absent for a town with no admin1 region. */
-  localities: Array<{ id: string; name: string; regionName?: string; cc: string; n: number }>;
+  /** Every named level, not only towns. `regionName` is absent for a place with no
+   * admin1 region; `kind` on rows written before region packs (all localities);
+   * `within` except on `sub`/`spot`/`feature` rows with a locality. */
+  localities: Array<{
+    id: string;
+    name: string;
+    regionName?: string;
+    cc: string;
+    kind?: PlaceKind;
+    within?: string;
+    n: number;
+  }>;
   /** Live located photos. */
   total: number;
   /** Bumped by every change; the ETag. */
@@ -375,7 +427,17 @@ export async function readPlaces(ownerId: string): Promise<PlaceVocabulary> {
       else if (sk.startsWith("R#")) out.regions.push({ id, name, cc, n });
       else if (sk.startsWith("L#")) {
         const regionName = item["regionName"] as string | undefined;
-        out.localities.push({ id, name, ...(regionName ? { regionName } : {}), cc, n });
+        const kind = item["kind"] as PlaceKind | undefined;
+        const within = item["within"] as string | undefined;
+        out.localities.push({
+          id,
+          name,
+          ...(regionName ? { regionName } : {}),
+          cc,
+          ...(kind ? { kind } : {}),
+          ...(within ? { within } : {}),
+          n,
+        });
       }
     }
     cursor = res.LastEvaluatedKey;

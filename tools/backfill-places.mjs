@@ -148,16 +148,32 @@ function computeRows(places) {
   for (const place of places) {
     bump(`C${SEP}${place.cc}`, {});
     if (place.region) bump(`R${SEP}${place.region.id}`, { name: place.region.name, cc: place.cc });
-    if (place.locality) {
-      // A town with no admin1 region has no regionName (absent, not "").
-      bump(`L${SEP}${place.locality.id}`, {
-        name: place.locality.name,
-        ...(place.region ? { regionName: place.region.name } : {}),
+    for (const { kind, ref } of namedLevels(place)) {
+      // A place with no admin1 region has no regionName (absent, not ""); `within`
+      // names the locality for sub/spot/feature rows only.
+      bump(`L${SEP}${ref.id}`, {
+        name: ref.name,
         cc: place.cc,
+        kind,
+        ...(place.region ? { regionName: place.region.name } : {}),
+        ...((kind === "sub" || kind === "spot" || kind === "feature") && place.locality
+          ? { within: place.locality.name }
+          : {}),
       });
     }
   }
   return rows;
+}
+
+/** Mirrors namedLevels in src/core/repo/places.ts. */
+function namedLevels(place) {
+  const out = [];
+  if (place.locality) out.push({ kind: "locality", ref: place.locality });
+  if (place.sub) out.push({ kind: "sub", ref: place.sub });
+  if (place.spot) out.push({ kind: "spot", ref: place.spot });
+  for (const area of place.areas ?? []) out.push({ kind: "area", ref: area });
+  if (place.feature) out.push({ kind: "feature", ref: place.feature });
+  return out;
 }
 
 async function storedRows(ddb, tableName, ownerId) {

@@ -1,10 +1,12 @@
 # Sample data
 
-Eleven assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
+Thirteen assets as they'd actually sit in `archivist-media`, chosen to exercise the awkward
 parts of `design.md` rather than the happy path: multi-rendition grouping, all four
 `takenAtSrc` rungs, five `tzSrc` rungs, chunked encryption, a sort-key tie, location
 stripped on upload, and the location cases: a full place, a region-only place, a town
-with no region, GPS with no place at all (open sea), and a trashed located asset.
+with no region, GPS with no place at all (open sea), a trashed located asset, and two
+places from an OpenStreetMap region pack, one with a village and hamlet, one with a
+national park and a lake.
 
 ## Conventions
 
@@ -18,7 +20,9 @@ with no region, GPS with no place at all (open sea), and a trashed located asset
 * `preview` (video assets only) is written on one line as its byte count — it really
   holds `{bucket, key, iv, bytes}` too, with the key `th/<ownerId>/<photoId>/preview`.
 * Place identifiers follow GeoNames' formats (ISO country code, `<cc>.<admin1>` region
-  key, numeric `geonameid`). Treat the specific values as illustrative, like the ULIDs.
+  key, numeric `geonameid`), or OpenStreetMap's for anything from a region pack (`n`,
+  `w` or `r` plus the numeric id). Treat the specific values as illustrative, like the
+  ULIDs.
 
 ### Key
 
@@ -37,7 +41,7 @@ with no region, GPS with no place at all (open sea), and a trashed located asset
 | `#PTR` | the resolved-id payload of any pointer item (`STEM#`, `PATH#`, `HASH#`, `IDP#`) |
 | `#SETTINGS` / `#PROFILE` | the one settings item on an `O#` partition, or profile item on a `U#` partition |
 | `#DEVICES` / `#KEYS` | fixed `pk` suffixes marking an owner's device-config or key-wrapping collection |
-| `#PLACES` | fixed `pk` suffix marking an owner's place vocabulary (pattern 16); its `sk`s are `C#<cc>`, `R#<region>`, `L#<geonameid>` |
+| `#PLACES` | fixed `pk` suffix marking an owner's place vocabulary (pattern 16); its `sk`s are `C#<cc>`, `R#<region>`, `L#<place id>` |
 | `#TRASH` | `pk` suffix marking the trash partition of `timeline_gsi` (see "Trashing reuses `timeline_gsi`" in `design.md`) |
 | `REGISTRY#OWNERS` | the one fixed `pk` listing every owner in the deployment, for the purge sweep |
 
@@ -49,7 +53,7 @@ partition it's read from.
 Facet `<type>` values (`CAMERA`, `DEVICE`, `LABEL`, `LENS`, `REND`, `YEAR`, …) are a
 closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
 
-## The eleven assets
+## The thirteen assets
 
 | # | Asset | Renditions | Exercises |
 | --- | --- | --- | --- |
@@ -64,6 +68,8 @@ closed vocabulary, listed in full under "`F#` facet items" in `design.md`.
 | A9 | Trashed duplicate | 1 (jpg) | soft delete — absent from the timeline, present in trash; its place facets lose their keys and it isn't counted in `#PLACES` |
 | A10 | Beach, GPS present on the phone | 1 (jpg) | `stripLocationOnUpload` — no GPS in `exifEnc`, no `place`, offset ladder skips rung 3 |
 | A11 | Harbour, Stanley, Falkland Islands | 1 (heic) | a town with no region — GeoNames has no admin1 for it, so `place` is `{cc, locality}`, with no `F#REGION#` and no `regionName` |
+| A12 | Hamlet path, Chamonix valley | 1 (jpg) | a region-pack place: an OSM commune as `locality`, a `sub` and a `spot`, a nature reserve in `areas`; five `F#PLACE#` facets, OSM ids beside GeoNames ones in the vocabulary |
+| A13 | Lakeshore, Écrins | 1 (jpg) | a region-pack place with no `sub` or `spot` but a national park and a `feature` (a lake the photo is inside) |
 
 ---
 
@@ -545,6 +551,93 @@ It is the mirror image of A8: A8 has a region and no town, A11 a town and no reg
 one, and there is no `R#` row for it to count towards. The timeline bubble shows
 "Stanley, Falkland Islands", with the country rendered from `cc`.
 
+## A12 — a region-pack place: commune, village, hamlet, reserve
+
+This instance publishes a pack set (`osm@2026-11-19`), and one of its packs covers the
+Alps. The gazetteer's nearest town is Vallorcine, but the photo is inside the commune of
+Chamonix-Mont-Blanc, about 1 km from the village of Argentière and 60 m from the hamlet of
+Le Planet, and inside a nature reserve. Country and region still come from the gazetteer.
+(The geography is illustrative, like the ids.)
+
+```text
+O#01J7X…#M#01K5A2R3VN8QXK2MD7HTB4YWPC
+                #META    stem        2026/09-alps/IMG_20260905_104117
+                         renditions  1
+                         mime        image/jpeg
+                         takenAt     2026-09-05T08:41:17.000Z
+                         tzOffsetMin 120
+                         tzSrc       exif-offset
+                         takenAtSrc  exif
+                         deviceKey   google|pixel 9|-
+                         exifEnc     <b64>   ← gpsLat 45.98900, gpsLon 6.93300
+                         place       {cc: FR,
+                                      region:   {id: FR.84, name: Auvergne-Rhône-Alpes},
+                                      locality: {id: r100101, name: Chamonix-Mont-Blanc},
+                                      sub:      {id: n200202, name: Argentière},
+                                      spot:     {id: n300303, name: Le Planet},
+                                      areas:    [{id: r400404,
+                                                  name: Réserve naturelle des Aiguilles Rouges}],
+                                      src: osm@2026-11-19;geonames-cities500@2026-11-13}
+                         status      ready
+
+                R#01K5A2R3VP4HNXW7QKT2MDB9RZ
+                         role  display   path  2026/09-alps/IMG_20260905_104117.jpg
+                         plainBytes 4182016   encChunkSize 0
+
+                F#CAMERA#Google Pixel 9   F#REND#display   F#YEAR#2026
+                F#COUNTRY#FR     F#REGION#FR.84
+                F#PLACE#r100101   ← the commune
+                F#PLACE#n200202   ← the village
+                F#PLACE#n300303   ← the hamlet
+                F#PLACE#r400404   ← the reserve
+                … 3 LABEL facets
+```
+
+Every named level is a `PLACE` facet, so searching "Argentière" or "Aiguilles Rouges" finds this
+photo the same way searching "Chamonix-Mont-Blanc" does. Its vocabulary rows (below) say which level
+each is, and the village and hamlet rows say which commune they are in.
+
+## A13 — a region-pack place: national park and lake
+
+On the shore of a mountain lake in the core of a national park. No village or hamlet is
+within its radius, so there is no `sub` or `spot`. The lake contains the point (it is
+within the 100 m margin lakes get) and is much smaller than the commune, so it is the
+`feature`.
+
+```text
+O#01J7X…#M#01K5A2R6KD9TWB3XQM5HNV7RFA
+                #META    stem        2026/08-alps/IMG_20260820_121203
+                         renditions  1
+                         mime        image/jpeg
+                         takenAt     2026-08-20T10:12:03.000Z
+                         tzOffsetMin 120
+                         tzSrc       exif-offset
+                         takenAtSrc  exif
+                         deviceKey   google|pixel 9|-
+                         exifEnc     <b64>   ← gpsLat 44.9780, gpsLon 6.0870
+                         place       {cc: FR,
+                                      region:   {id: FR.84, name: Auvergne-Rhône-Alpes},
+                                      locality: {id: r500505, name: Les Deux Alpes},
+                                      areas:    [{id: r600606,
+                                                  name: Parc national des Écrins (cœur)}],
+                                      feature:  {id: r700707, name: Lac de la Muzelle},
+                                      src: osm@2026-11-19;geonames-cities500@2026-11-13}
+                         status      ready
+
+                R#01K5A2R6KE2MQX8WTB4NHD6YVC
+                         role  display   path  2026/08-alps/IMG_20260820_121203.jpg
+                         plainBytes 3907584   encChunkSize 0
+
+                F#CAMERA#Google Pixel 9   F#REND#display   F#YEAR#2026
+                F#COUNTRY#FR     F#REGION#FR.84
+                F#PLACE#r500505   F#PLACE#r600606   F#PLACE#r700707
+                … 3 LABEL facets
+```
+
+The lake's id starts with `r`: OSM maps it as a multipolygon relation. A smaller lake
+drawn as one closed way would have a `w` id. The type letter is part of the id, so
+`r700707` and a hypothetical `w1277892` are different places.
+
 ## Pointer items
 
 Flat, tiny, and the only place a path appears outside an `R#` item.
@@ -672,12 +765,14 @@ it — three versions minted over this library's life, the third current.
 Every `#META` item, one row each, no renditions, no facets, no pointers. Queried
 descending, this is the infinite scroll. Each row carries the projection
 `[thumbs, preview, place, encDek, encKeyId, width, height, mime, tzOffsetMin, status]`. Of
-the eleven assets, only A8's row has a `preview` to project. A1, A3, A8 and A11 have a
-`place`; A8's has no locality and A11's no region. `facet_gsi`, which projects the same list minus `preview` and
+the thirteen assets, only A8's row has a `preview` to project. A1, A3, A8, A11, A12 and
+A13 have a `place`; A8's has no locality and A11's no region. `facet_gsi`, which projects the same list minus `preview` and
 `place`, is covered below.
 
 ```text
 timelinePk                    timelineSk                                          asset
+O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-09-05T08:41:17.000Z#01K5A2R3VN8QXK2MD7HTB4YWPC  A12
+O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-08-20T10:12:03.000Z#01K5A2R6KD9TWB3XQM5HNV7RFA  A13
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-08-02T16:05:33.000Z#01K5A2QYN4WRB8VXK3TDMQ7HFC  A10
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-16T04:15:33.000Z#01K5A2QPF9XT2HMB5RKWNVQ3YD  A8
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2026-07-15T11:03:12.000Z#01K5A2QMD3ZQ8WKN6BVYTX4HRP  A7
@@ -690,7 +785,7 @@ O#01J7XQP4M2N8VBKD3RTYFW9GHC  2025-12-03T14:12:40.000Z#01K5A2QZT6HM3XKD8VBQNW4RF
 O#01J7XQP4M2N8VBKD3RTYFW9GHC  2011-03-02T19:44:10.000Z#01K5A2QF7NKD3VYB8MQXTG5HW9  A4
 ```
 
-Ten rows for **eleven** assets, from thirteen files. A2 and A3 each contribute two files
+Twelve rows for **thirteen** assets, from fifteen files. A2 and A3 each contribute two files
 and one row; A9 contributes none, because its `timelinePk` points at a different partition
 of this same index:
 
@@ -707,11 +802,11 @@ live partition.
 ## Histogram items (pattern 15)
 
 The `O#<ownerId>#HIST` partition, maintained by the same transactions that write the
-`timelinePk`/`timelineSk` above. Ten live assets, seven days:
+`timelinePk`/`timelineSk` above. Twelve live assets, nine days:
 
 ```text
 pk                                 sk              attributes
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  #META           version 10  total 10
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  #META           version 12  total 12
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2011-03-02    n 1          A4
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2025-12-03    n 1          A11
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-06-21    n 1          A5
@@ -719,6 +814,8 @@ O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-14    n 3          A1, A2, A3
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-15    n 2          A6, A7
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-07-16    n 1          A8
 O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-08-02    n 1          A10
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-08-20    n 1          A13
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST  D#2026-09-05    n 1          A12
 ```
 
 **A2 is the row worth staring at.** Its `timelineSk` starts `2026-07-13`, but its
@@ -730,25 +827,44 @@ headers (which use the same offset rule) show A2 under 14 July alongside A1 and 
 
 **A9 is absent.** It was counted when created and decremented when trashed, in the
 same transaction that moved it to the `#TRASH` partition of `timeline_gsi`. `version`
-is 10 rather than 12 only because this sample is written as its end state; a real
-partition that had created and then trashed A9 would read `version 12, total 10`.
+is 12 rather than 14 only because this sample is written as its end state; a real
+partition that had created and then trashed A9 would read `version 14, total 12`.
 
 ## Place vocabulary items (pattern 16)
 
 The `O#<ownerId>#PLACES` partition, maintained by the same transactions as the histogram
-above. Four live located assets: A1 and A3 in Kyoto, A8 in Hokkaido, A11 in Stanley.
+above. Six live located assets: A1 and A3 in Kyoto, A8 in Hokkaido, A11 in Stanley,
+A12 near Argentière, A13 by the Lac de la Muzelle. `rn` abbreviates
+`regionName Auvergne-Rhône-Alpes`.
 
 ```text
-pk                                   sk          attributes
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  #META       version 4   total 4
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#FK        n 1                                 A11
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#JP        n 3                                 A1, A3, A8
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#1857910   name Kyoto   regionName Kyoto
-                                                 cc JP        n 2                    A1, A3
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#3426691   name Stanley
-                                                 cc FK        n 1                    A11
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.12     name Hokkaido   cc JP   n 1         A8
-O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.22     name Kyoto      cc JP   n 2         A1, A3
+pk                                   sk             attributes
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  #META          version 6   total 6
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#FK           n 1                              A11
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#FR           n 2                              A12, A13
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  C#JP           n 3                              A1, A3, A8
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#1857910      name Kyoto   regionName Kyoto
+                                                    cc JP        n 2                 A1, A3
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#3426691      name Stanley
+                                                    cc FK        n 1                 A11
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#n200202      name Argentière   kind sub   within Chamonix-Mont-Blanc
+                                                    rn   cc FR   n 1                 A12
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#n300303      name Le Planet   kind spot   within Chamonix-Mont-Blanc
+                                                    rn   cc FR   n 1                 A12
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#r100101      name Chamonix-Mont-Blanc   kind locality
+                                                    rn   cc FR   n 1                 A12
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#r400404      name Réserve naturelle des Aiguilles Rouges
+                                                    kind area   rn   cc FR   n 1     A12
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#r500505      name Les Deux Alpes   kind locality
+                                                    rn   cc FR   n 1                 A13
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#r600606      name Parc national des Écrins (cœur)
+                                                    kind area   rn   cc FR   n 1     A13
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  L#r700707      name Lac de la Muzelle   kind feature   within Les Deux Alpes
+                                                    rn   cc FR   n 1                 A13
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#FR.84        name Auvergne-Rhône-Alpes
+                                                    cc FR   n 2                      A12, A13
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.12        name Hokkaido   cc JP   n 1      A8
+O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES  R#JP.22        name Kyoto      cc JP   n 2      A1, A3
 ```
 
 **A9 is absent, though it was taken in Kyoto.** It was counted when created and
@@ -758,6 +874,17 @@ is 2, not 3. As with the histogram, `version` is shown as the end state.
 **`L#3426691` has no `regionName`**, and there is no `R#FK…` row: Stanley has no region,
 so A11 counts towards `C#FK` and its town only. The attribute is absent rather than an
 empty string, and `GET /places` likewise leaves `regionName` out of that locality.
+
+**GeoNames and OSM ids share the `L#` space.** `L#1857910` (Kyoto, from the gazetteer)
+and `L#r100101` (Chamonix-Mont-Blanc, from a pack) are both localities; the type letter keeps the
+two id spaces apart. The Kyoto and Stanley rows have no `kind`: they predate packs, and an
+absent `kind` means `locality`. Once A1/A3/A11 are re-geocoded under the pack set their
+rows gain `kind locality` (no pack covers Japan or the Falklands, so the ids stay
+GeoNames ones).
+
+**`within` is only on `sub`, `spot` and `feature` rows.** A park can span several
+communes, so an `area` row names none. A12 counts towards five `L#` rows, and each of
+those rows is one search suggestion.
 
 **A6, A7 and A10 are absent for different reasons.** A6 and A7 have coordinates, but in
 `exifEnc`, which this partition never sees, and no place to count. A10 has no location at
@@ -793,7 +920,7 @@ are one query with a different `BETWEEN`.
 
 ## What to check while reading
 
-1. **Thirteen files, eleven assets, ten timeline rows.** A2 and A3 each contribute two
+1. **Fifteen files, thirteen assets, twelve timeline rows.** A2 and A3 each contribute two
    files and one row; A9 is trashed and contributes none. Nothing filters either case
    out — renditions never get timeline_gsi keys, and A9's point at a different partition.
 2. **A6 and A7 share a timestamp to the millisecond.** Only the ULID suffix separates
@@ -808,11 +935,12 @@ are one query with a different `BETWEEN`.
    so a facet query paints a grid with no second read.
 6. **`path` appears in exactly two places**: `R#` items and pointer items. Not on
    `#META`, not in facets, not in either GSI — which is what makes renaming cheap.
-7. **Location is split by precision.** A1, A3, A6, A7, A8 and A11 all carry
+7. **Location is split by precision.** A1, A3, A6, A7, A8, A11, A12 and A13 all carry
    coordinates, but only inside `exifEnc`. What's readable is the place: a town for
-   A1/A3, a region for A8, a town with no region for A11, nothing for A6/A7 at sea.
-   A10, stripped, has neither. Place keys are ids, so the town and the region both
-   called "Kyoto" never collide.
+   A1/A3, a region for A8, a town with no region for A11, a commune down to a hamlet for
+   A12, a commune, park and lake for A13, nothing for A6/A7 at sea. A10, stripped, has
+   neither. Place keys are ids, so the town and the region both called "Kyoto" never
+   collide, and nor do a GeoNames id and an OSM one.
 8. **Nothing in the media partitions references a `userId`.** Media hangs off
    `ownerId`; users reach it through a membership item. That's what would let a second
    person be added without touching a single photo row.
@@ -836,7 +964,7 @@ timeline_gsi's `INCLUDE` projection is what makes this a single round-trip.
   ScanIndexForward: false,
   Limit: 50
 }
-// → A10, A8, A7, A6, A3, A1, A2, A5, A11, A4 — ten assets, never a rendition
+// → A12, A13, A10, A8, A7, A6, A3, A1, A2, A5, A11, A4 — twelve assets, never a rendition
 ```
 
 Next page: pass back the previous response's `LastEvaluatedKey` verbatim.
@@ -927,7 +1055,7 @@ descending — no `BETWEEN`, no cursor.
   ScanIndexForward: false,
   Limit: 1
 }
-// → A10, timelineSk "2026-08-02T16:05:33.000Z#01K5A2QYN4WRB8VXK3TDMQ7HFC" → newest 2026-08-02T16:05:33.000Z
+// → A12, timelineSk "2026-09-05T08:41:17.000Z#01K5A2R3VN8QXK2MD7HTB4YWPC" → newest 2026-09-05T08:41:17.000Z
 ```
 
 The trash partition (A9) is a different `timelinePk` and never enters into this —
@@ -942,17 +1070,18 @@ Query
   :pk                  O#01J7XQP4M2N8VBKD3RTYFW9GHC#HIST
 ```
 
-Returns the eight items above — `#META` first, because `#` sorts before `D`, so a
+Returns the ten items above — `#META` first, because `#` sorts before `D`, so a
 single forward query hands back the version before the days it describes. The handler
 turns them into:
 
 ```json
-{ "version": 10, "total": 10,
+{ "version": 12, "total": 12,
   "days": { "2011-03-02": 1, "2025-12-03": 1, "2026-06-21": 1, "2026-07-14": 3,
-            "2026-07-15": 2, "2026-07-16": 1, "2026-08-02": 1 } }
+            "2026-07-15": 2, "2026-07-16": 1, "2026-08-02": 1, "2026-08-20": 1,
+            "2026-09-05": 1 } }
 ```
 
-served with `ETag: "tl-10"`. A client that already holds `"tl-10"` sends it back as
+served with `ETag: "tl-12"`. A client that already holds `"tl-12"` sends it back as
 `If-None-Match` and gets a bodiless 304 — for which the handler reads only the `#META`
 item, never the day rows. `GET /photos/bounds` shares the same ETag: both answers are
 functions of which photos are live, which is what `version` counts changes to.
@@ -1005,7 +1134,9 @@ Two steps. First, fetch the vocabulary: one query on the `#PLACES` partition, ET
   KeyConditionExpression: "pk = :pk",
   ExpressionAttributeValues: { ":pk": "O#01J7XQP4M2N8VBKD3RTYFW9GHC#PLACES" }
 }
-// → #META, C#FK, C#JP, L#1857910, L#3426691, R#JP.12, R#JP.22 (zero-count rows filtered out)
+// → #META, C#FK, C#FR, C#JP, L#1857910, L#3426691, L#n200202, L#n300303,
+//   L#r100101, L#r400404, L#r500505, L#r600606, L#r700707,
+//   R#FR.84, R#JP.12, R#JP.22 (zero-count rows filtered out)
 ```
 
 The client folds the query and every name (NFKD, strip accents, lowercase): `kyo` →
@@ -1014,7 +1145,9 @@ a country name in the viewer's locale. `kyo` returns two suggestions: "Kyoto · 
 (the town) and "Kyoto (region) · Japan · 2". `hok` returns "Hokkaido (region) · Japan · 1".
 `japon` under a French locale returns "Japon · 3". `stan` returns "Stanley · Falkland
 Islands · 1": the `L#3426691` row has no `regionName`, so the suggestion names only the
-town and the country.
+town and the country. `argen` returns "Argentière, Chamonix-Mont-Blanc · France · 1", with `within`
+naming the commune. `ecrins` returns the park row, "Parc national des Écrins
+(cœur) · France · 1", with no `within`.
 
 Second, the chosen suggestion is an ordinary facet query:
 
@@ -1033,6 +1166,9 @@ Second, the chosen suggestion is an ordinary facet query:
 ":f": "O#01J7X…#F#COUNTRY#JP"     // → A8, A3, A1
 ":f": "O#01J7X…#F#PLACE#3426691"  // → A11, with no region to query it under
 ":f": "O#01J7X…#F#COUNTRY#FK"     // → A11
+":f": "O#01J7X…#F#PLACE#n200202"  // → A12, found by its suburb
+":f": "O#01J7X…#F#PLACE#r600606"     // → A13, found by its national park
+":f": "O#01J7X…#F#REGION#FR.84"       // → A12, A13
 ```
 
 ### One photo (patterns 1, 1b, 1c)

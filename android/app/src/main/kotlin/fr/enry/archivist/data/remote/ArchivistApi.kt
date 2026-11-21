@@ -438,8 +438,16 @@ data class PlaceDto(
     val cc: String,
     val region: PlaceRefDto? = null,
     val locality: PlaceRefDto? = null,
+    val sub: PlaceRefDto? = null,
+    val spot: PlaceRefDto? = null,
+    /** 1–3 entries when present; never sent empty (the server rejects `[]`). */
+    val areas: List<PlaceRefDto>? = null,
+    val feature: PlaceRefDto? = null,
     val src: String,
 ) {
+    /** Most specific first, for display: "Le Planet, Argentière, Chamonix-Mont-Blanc". */
+    val names: List<String> get() = listOfNotNull(spot?.name, sub?.name, locality?.name)
+
     companion object {
         /** Sent as the lookup returned it. `{cc, locality}` with no `region` is a valid
          * result (~460 GeoNames towns, e.g. Stanley, FK, have no admin1) and the server
@@ -449,6 +457,10 @@ data class PlaceDto(
                 cc = place.cc,
                 region = place.region?.let { PlaceRefDto(it.id, it.name) },
                 locality = place.locality?.let { PlaceRefDto(it.id, it.name) },
+                sub = place.sub?.let { PlaceRefDto(it.id, it.name) },
+                spot = place.spot?.let { PlaceRefDto(it.id, it.name) },
+                areas = place.areas.map { PlaceRefDto(it.id, it.name) }.ifEmpty { null },
+                feature = place.feature?.let { PlaceRefDto(it.id, it.name) },
                 src = place.src,
             )
     }
@@ -523,8 +535,11 @@ data class PlaceCountryDto(val cc: String, val n: Int)
 @Serializable
 data class PlaceRegionDto(val id: String, val name: String, val cc: String, val n: Int)
 
-/** One town (`L#<geonameid>`) in `GET /places`. [regionName] is absent for a town with
- * no GeoNames admin1 region (e.g. Stanley, FK). */
+/** One named place (`L#<place id>`) in `GET /places`: a town or commune, or, from a
+ * region pack, a village, hamlet, protected area or natural feature. [regionName] is
+ * absent for a place with no GeoNames admin1 region (e.g. Stanley, FK). [kind] is
+ * `locality`, `sub`, `spot`, `area` or `feature`, and absent on rows written before region
+ * packs (all localities). [within] names the locality of a `sub`/`spot`/`feature` row. */
 @Serializable
 data class PlaceLocalityDto(
     val id: String,
@@ -532,6 +547,8 @@ data class PlaceLocalityDto(
     val regionName: String? = null,
     val cc: String,
     val n: Int,
+    val kind: String? = null,
+    val within: String? = null,
 )
 
 /** `GET /places`' body (`routes/places.ts`), zero-count rows already filtered out. */

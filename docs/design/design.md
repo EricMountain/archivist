@@ -468,7 +468,8 @@ width / height
 Facet types (closed vocabulary): `LABEL`, `CAMERA` (`<Make> <Model>`), `DEVICE`
 (`<deviceKey>`), `REND` (`display|raw|motion|sidecar`), `LENS`, `YEAR`, `ALBUM`,
 `FAVOURITE`, `PERSON`, `COUNTRY` (ISO 3166-1 alpha-2), `REGION` (GeoNames admin1 key,
-`JP.22`), `PLACE` (GeoNames `geonameid`).
+`JP.22`), `PLACE` (a GeoNames `geonameid`, or an OpenStreetMap id such as `r100101`
+for any named level of a region-pack place: see "Location").
 
 The three location facets hold **identifiers, not names** — see "Location" for why.
 
@@ -572,13 +573,18 @@ in, plus a `#META` item:
 | `#META` | `version`, `total` | Changes so far, and live located photos |
 | `C#<cc>` | `n` | A country |
 | `R#<admin1 key>` | `name`, `cc`, `n` | A region |
-| `L#<geonameid>` | `name`, `regionName`, `cc`, `n` | A town |
+| `L#<place id>` | `name`, `regionName`, `cc`, `kind`, `within`, `n` | Any named level of a place: a town or commune, a village or hamlet, a protected area, a natural feature |
+
+`kind` is the `place` field the row came from: `locality`, `sub`, `spot`, `area` or
+`feature`. It is absent on rows written before region packs, which are all localities.
+`within` is the locality's name, for `sub`, `spot` and `feature` rows whose place has a
+locality, and absent otherwise.
 
 `regionName` is absent (not an empty string) for a town with no GeoNames admin1 region,
 such as Stanley in the Falklands — see "Location", "Validation". Such a town also has no
 `R#` row; the photo counts towards `C#` and `L#` only. The display attributes on a
 shared `R#`/`L#` row are the last counted-in writer's, so a town re-geocoded without a
-region has its `regionName` removed, not left stale.
+region has its `regionName` removed, not left stale, and the same goes for `within`.
 
 **Why it exists.** Place search has to match *part of a name*, case- and
 accent-insensitively ("kyo", "quebec" for Québec). DynamoDB can't do that against an
@@ -942,7 +948,7 @@ never knows where in the town. See "Location".
 | What | Where | Readable by the server |
 | --- | --- | --- |
 | Precise coordinates (lat/lon/alt) | `exifEnc` | No |
-| Country, region, town | `#META.place`, `F#COUNTRY#`/`F#REGION#`/`F#PLACE#`, `O#<ownerId>#PLACES` | Yes |
+| Country, region, town; where a region pack covers the photo, also village or suburb, hamlet, protected areas and a natural feature | `#META.place`, `F#COUNTRY#`/`F#REGION#`/`F#PLACE#`, `O#<ownerId>#PLACES` | Yes |
 
 Precise coordinates stay encrypted because none of the location features needs the
 *server* to read them. Search runs on place facets. The timeline shows the place name. The
@@ -950,6 +956,15 @@ detail screen's map link is opened by the client after it decrypts `exifEnc`, wh
 already does for the details dialog. Plaintext coordinates would buy only server-side
 geometry (map views, radius search, server-side re-geocoding). If those are ever wanted,
 that is a separate, additive decision.
+
+**How precise the plaintext is.** With only the bundled gazetteer, the server learns the
+town. Where a region pack covers the photo (see "Detailed places: OpenStreetMap region
+packs" below), it can learn more: a village or suburb (within 1–4 km of the photo), a
+hamlet or lieu-dit (within 400–800 m), a protected area the photo is inside, or a
+natural feature within 600 m. That is roughly hamlet-level precision. Single dwellings and
+farms (OSM `place=isolated_dwelling`/`farm`), which would be close to an address, are
+excluded at pack build time. **Decided by the user on 2026-11-19**, revising the
+2026-10-25 "never knows where in the town" position for photos in covered regions.
 
 **Geocoding happens on the device, at upload.** The platform `android.location.Geocoder`
 is ruled out: on most devices it is backed by a network service, which would send every
@@ -981,11 +996,139 @@ which is why the binary is committed rather than rebuilt.
 **Identifiers, not names, in keys.** `F#PLACE#1857910`, not `F#PLACE#Kyoto`. Names
 collide (Paris, Texas), change between dataset snapshots, and differ by language. IDs
 don't. The names live once on `#META.place` and once on the vocabulary item, for display
-and search.
+and search. A GeoNames town is its numeric `geonameid`; anything from a region pack is
+its OpenStreetMap id with a type letter, `n` (node), `w` (way) or `r` (relation):
+`r100101` for the commune of Chamonix-Mont-Blanc.
 
-**`place.src`** names the dataset and snapshot (`geonames-cities500@2026-10-20`). A later
-re-geocode against a newer gazetteer can find exactly what an older one produced. The
-manual update also skips assets whose `src` is already current.
+**`place.src`** names the datasets and snapshots that produced the place. With the
+gazetteer alone it is `geonames-cities500@2026-10-20`. When the instance publishes a pack
+set, it is `osm@<set>;geonames-cities500@<date>`, e.g.
+`osm@2026-11-19;geonames-cities500@2026-11-13`, even for a photo no pack covers: the
+result was computed against that pack set, and the same inputs give the same place. A
+later re-geocode against a newer gazetteer or pack set can find exactly what an older one
+produced. The manual update also skips assets whose `src` is already current.
+
+### Detailed places: OpenStreetMap region packs
+
+The gazetteer names the nearest *populated place*, which is often not where a photo was
+taken. A photo in a hamlet on the edge of a large commune can be nearer a neighbouring
+village's centre point than its own town's, and is labelled with the neighbour. A photo
+on a ski slope above a resort can be nearest a village on the far side of the ridge.
+GeoNames can't fix this by adding rows. Below `cities500`, its points can't tell a known
+hamlet from an obscure one (both have population 0), mountains and parks are single
+points, and some are misplaced (one regional park sits 300 km from the real park).
+Adding all of them would also be ~110 MB. What these photos need is "what contains this
+point?", which needs boundaries.
+
+So an instance can publish **region packs**: per-region extracts of OpenStreetMap
+(ODbL), built by the operator for the regions they choose and served by the instance
+itself. Where a pack covers a photo, the client labels it in layers:
+
+| Layer | Rule | Example |
+| --- | --- | --- |
+| `locality` | The administrative area containing the point: the deepest OSM `admin_level` 8, else 7, else 6. A commune in France, a council area in Scotland, a borough in New York, a county for unincorporated US land. If none contains it (a boat off the coast), the nearest one within 2 km. Replaces the gazetteer's town. | Chamonix-Mont-Blanc |
+| `sub` | The nearest city, town, village or suburb within its type's radius (4 km, 2.5 km, 1.5 km, 1.2 km), scored by distance ÷ radius. When the locality contains the photo, the place must be inside it too: a town across a river or a border is a different place, however close (decided 2026-11-20, after Québec photos were labelled with Lévis). | Argentière |
+| `spot` | The same for quarter, hamlet (800 m), neighbourhood (500 m) and lieu-dit (`locality`, 400 m). | Le Planet |
+| `areas` | Every protected area containing the point, up to three: national parks and IUCN categories 1–6 first, then smallest area first. Not filtered. | Réserve naturelle des Aiguilles Rouges |
+| `feature` | The nearest peak, saddle, ridge, valley, cliff or gorge within its reach (300–600 m); else the smallest lake, beach, bay, glacier, massif or island containing the point (lakes and beaches with a 100–150 m margin) that is less than half the locality's area. | Lac de la Muzelle |
+
+Country and region still come from the gazetteer, so `F#COUNTRY#`/`F#REGION#` and the
+vocabulary's country and region rows mean the same thing with or without packs. A
+`sub`/`spot` with the locality's own name, or that is the labelling node of an admin area
+containing the point (the city node "New York" under the borough of Manhattan), is
+skipped; so is a `spot` with the `sub`'s name.
+
+The precise rules (distances, tie-breaks, the binary format and the manifest) are
+normative in `tools/geopack/README.md`, with conformance vectors in
+`tools/geopack/vectors.json` that every client must pass, on the same model as the
+gazetteer's.
+
+**Why these choices.** Measured on a real library of about two thousand geotagged
+photos across eight regions in four countries, and on a 2 km grid over one region:
+
+* Today's town differs from the containing administrative area for 61–100% of photos,
+  depending on the region. Most are improvements: a hamlet's photos go to its commune,
+  Port-Cros goes to Hyères (which it belongs to), and a merged commune's old name comes
+  back as the village under the new one.
+* **Protected areas are not filtered.** Filtering by IUCN class dropped real places that
+  OSM doesn't classify (a US state park, a protected stretch of coast) and a few
+  well-known UNESCO zones. Unfiltered, no photo fell in more than one area on average,
+  and ordering does the rest without any per-country rules.
+* Big islands contain everything near them ("Manhattan Island", "Long Island"), hence
+  the "less than half the locality" rule.
+* Packs come to 0.2–2.3 MB per region at 15 m simplification: about 1 MB for
+  Provence-Alpes-Côte d'Azur and about 15–20 MB for all of France (extrapolated, not
+  measured). That's too much to bundle, but small enough to fetch per region.
+
+**Delivery.** Packs are not bundled with the app. The instance serves them from its
+`web` bucket, through CloudFront's default behavior (no new behavior, no auth, like the
+discovery document):
+
+```text
+https://<domain>/geo/manifest.json          Cache-Control: max-age=300
+https://<domain>/geo/<set>/<name>.bin       Cache-Control: max-age=31536000, immutable
+```
+
+The set id changes whenever the set's contents do (the builder defaults it to the date
+plus a digest of builder, regions and extracts): a photo placed while no pack covered it
+carries `osm@<old set>`, so publishing a set that adds its region makes a re-geocode redo
+it. The manifest lists the set id and, for each pack, its path, size, sha256 and bounding
+box. A client fetches it before geocoding (ETag-revalidated), then downloads and caches
+every pack whose bounding box contains the photo. It must use **all** of them: an entity
+in two packs is the same entity, and the one in the earlier-listed pack wins, so the
+result depends only on the coordinates and the manifest. A client that can't get a pack
+it needs (offline, or a failed download) falls back to the gazetteer-only `src`, never
+to a partial pack set, so that a later re-geocode can find and redo the photo. No
+manifest (403/404, the default) means no packs: the gazetteer alone, as before.
+
+Fetching a pack tells the instance which region a photo is in. It already knows that
+from `place.region`. Nothing goes to a third party: the operator builds packs from
+Geofabrik extracts on their own machine and publishes them to their own bucket
+(`docs/ops/geo-packs.md`). Which regions to build is the operator's choice, kept in
+`private/`, since the list says where its users go.
+
+**Licence.** The packs are a derivative database of OpenStreetMap, under ODbL 1.0. The
+instance must offer them under ODbL with attribution, which serving them publicly from
+`/geo/` with the manifest's attribution field does. The app's About screen credits
+OpenStreetMap contributors alongside GeoNames.
+
+**Known limits.**
+
+* The admin level used as `locality` varies between countries, so granularity varies:
+  a commune, a council area or a county. `sub` usually fills the gap ("City of
+  Edinburgh › Balerno").
+* A Geofabrik extract drops boundaries that cross its edge: the Scotland extract has no
+  Dumfries and Galloway. Building from a bigger parent extract avoids it.
+* 15 m simplification moves borders slightly: on a 2 km grid over Provence, 0.26% of
+  points changed commune at 25 m.
+* Country and region come from the gazetteer's nearest place, so a photo near a border
+  can still get a neighbouring country's region (open question 6(a)).
+
+**The `place` object.** Every field is shown here for its shape; no single photo has all
+of them (`sample-data.md` A12 and A13 are real combinations).
+
+```text
+place  { cc:       "FR",
+         region:   {id: "FR.84", name: "Auvergne-Rhône-Alpes"},   gazetteer
+         locality: {id: "r100101", name: "Chamonix-Mont-Blanc"},    pack, else the gazetteer's town
+         sub:      {id: "n200202", name: "Argentière"},              pack only
+         spot:     {id: "n300303", name: "Le Planet"},            pack only
+         areas:    [{id: "r400404", name: "Réserve naturelle des Aiguilles Rouges"}],
+         feature:  {id: "r700707", name: "Lac de la Muzelle"},               pack only
+         src:      "osm@2026-11-19;geonames-cities500@2026-11-13" }
+```
+
+Every field but `cc` and `src` is optional. `areas` holds 1–3 entries when present.
+
+**One `PLACE` facet per named level.** `locality`, `sub`, `spot`, each of `areas` and
+`feature` each write an `F#PLACE#<id>` facet and count towards an `L#<id>` vocabulary
+row, so "Argentière" or "Écrins" is found by the same search as "Chamonix-Mont-Blanc". A photo has
+at most seven. The vocabulary row records which level it is (`kind`) and, for `sub`,
+`spot` and `feature`, the locality's name (`within`), so search can show "Argentière,
+Chamonix-Mont-Blanc". Decided by the user on 2026-11-19, over separate facet types per level (which
+would let the server filter by kind, at the cost of a new type in every client) and over
+keeping the finer levels display-only (which would make "photos in the Écrins"
+unsearchable).
 
 **Validation.** `place` is client-asserted input crossing the trust boundary, like the
 rest of the extracted metadata. `POST /uploads` and `PUT /photos/{photoId}/location` check
@@ -994,7 +1137,11 @@ that:
 * `cc` matches `^[A-Z]{2}$`;
 * the region id, when there is a region, matches `^[A-Z]{2}\.[0-9A-Z]{1,20}$` and its
   prefix equals `cc`;
-* the locality id matches `^[0-9]{1,12}$`;
+* the locality id matches `^[0-9]{1,12}$` (GeoNames) or `^[nwr][1-9][0-9]{0,14}$`
+  (OpenStreetMap); the `sub`, `spot`, `areas` and `feature` ids match the OpenStreetMap
+  form;
+* `areas` is a list of 1–3 entries;
+* no id appears twice within one place;
 * names are 1–200 characters with no control characters;
 * `src` is at most 64 characters.
 
@@ -1032,7 +1179,12 @@ laptop):
    carries a re-encrypted `exifEnc` with the coordinates added, so the original is never
    needed again.
 
-No coordinates anywhere means `place: null`, which clears a stale place. An original the
+No coordinates anywhere: the app's single-photo "Update location" sends `place: null`,
+which clears a stale place; the user asked about that one photo and sees the result. The
+laptop's whole-library run keeps the stored place instead (decided 2026-11-20), since it
+can't be re-derived and may have been set by hand (`locate_missing.py`); without that, every
+re-geocode after a new pack set changes `src` would erase hand-set places.
+`--clear-without-gps` opts back in to clearing. An original the
 tool can't read is an error, not "no coordinates", so it never clears anything: the
 laptop script reads JPEG, HEIC/HEIF and MP4/MOV originals but not RAW, so a RAW-primary
 asset with nothing in `exifEnc` is reported as an error. The whole-library
@@ -1052,10 +1204,11 @@ locations" action is not built yet.
 
 **What place search can't do.**
 
-* It can't find places the gazetteer doesn't name: streets, venues, landmarks.
-* Names are GeoNames' primary spelling, plus the viewer's own localized country names.
-  Not every language's spelling of every town is included, because that would multiply
-  the bundle size.
+* It can't find places neither the gazetteer nor a pack names: streets, venues,
+  buildings. Without a pack covering the photo, it only knows towns.
+* Names are GeoNames' primary spelling, or OSM's `name` tag (the local-language name),
+  plus the viewer's own localized country names. Not every language's spelling of every
+  place is included, because that would multiply the data size.
 * It can't do "within 5 km of here", which needs plaintext coordinates (above).
 
 ### Stripping location on upload
@@ -2156,3 +2309,21 @@ see "Manually correcting `takenAt`" above, which is exactly this.
      lost. Options were: let the server accept a locality without a region (the `L#`
      vocabulary row would carry no `regionName`), or have the gazetteer give such
      places a synthetic per-country region. Either changes the vectors or the API.
+
+7. **Region packs: follow-ups (open, 2026-11-19).** Raised while designing "Detailed
+   places: OpenStreetMap region packs" and left open:
+   * (a) **Uneven `locality` granularity.** "Deepest of admin levels 8, 7, 6" gives a
+     commune in France but a council area in Scotland and a county for unincorporated
+     US land. A per-country table of the level to use would even it out, at the cost of
+     the country-specific rules the design otherwise avoids. Revisit with more
+     countries' photos.
+   * (b) **What the timeline's date bubble shows.** It shows `locality` today. "Sub,
+     locality" ("Argentière, Chamonix-Mont-Blanc") is more specific but longer. A UI decision for the
+     app.
+   * (c) **Pack coverage gaps from extract edges.** Building from a parent extract fixes
+     it but costs a bigger download and build. A builder that clips a parent extract to
+     several smaller packs would avoid both.
+   * (d) **Re-geocoding existing photos.** Every located photo's `src` changes once an
+     instance publishes its first pack set, so `modify_media.py location --all` redoes
+     the whole located library. That is intended, but it rewrites every located photo's
+     facets in one run.

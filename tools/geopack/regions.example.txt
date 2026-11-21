@@ -1,0 +1,6 @@
+# One region per line: <name> <Geofabrik extract URL, or a local .osm.pbf path>.
+# An instance's real list belongs in private/instance/geo-regions.txt: it says where
+# its users take photos. Order matters only where packs overlap: an entity in two packs
+# is taken from the earlier one.
+provence-alpes-cote-d-azur https://download.geofabrik.de/europe/france/provence-alpes-cote-d-azur/provence-alpes-cote-d-azur-latest.osm.pbf
+scotland https://download.geofabrik.de/europe/united-kingdom/scotland/scotland-latest.osm.pbf

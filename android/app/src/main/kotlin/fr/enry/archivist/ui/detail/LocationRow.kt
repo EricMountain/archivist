@@ -39,6 +39,8 @@ internal data class LocationRowModel(
     val secondary: String?,
     val point: GeoPoint?,
     val label: String?,
+    /** Protected areas and the natural feature from a region pack, " · "-separated. */
+    val extras: String? = null,
 )
 
 /** Null when there is neither a place nor coordinates: no row at all. */
@@ -50,27 +52,37 @@ internal fun locationRow(
     val point = exif?.let { e -> if (e.gpsLat != null && e.gpsLon != null) GeoPoint.of(e.gpsLat, e.gpsLon) else null }
     val label = place?.let { placeLabel(it, locale) }
     return when {
-        label != null -> LocationRowModel(label, point?.let(::formatCoordinates), point, label)
+        label != null -> LocationRowModel(label, point?.let(::formatCoordinates), point, label, place.let(::placeExtras))
         point != null -> LocationRowModel(formatCoordinates(point), null, point, null)
         else -> null
     }
 }
 
 /**
- * "Locality, Region, Country", most specific first. The region is left out when it's
- * absent (about 460 GeoNames towns have no admin1, e.g. Stanley in the Falklands) or
- * has the same name as the locality ("Kyoto, Kyoto, Japan" says nothing extra). The
- * country is never stored as a name (design.md "Location"): it's rendered from `cc` in
- * [locale], so it follows the viewer's language.
+ * "Spot, Sub, Locality, Region, Country", most specific first: "Le Planet, Argentière,
+ * Chamonix-Mont-Blanc, Auvergne-Rhône-Alpes, France" with a region pack, "Kyoto, Japan" without.
+ * A name equal to the one before it is left out ("Kyoto, Kyoto, Japan" says nothing
+ * extra), and so is an absent region (about 460 GeoNames towns have no admin1, e.g.
+ * Stanley in the Falklands). The country is never stored as a name (design.md
+ * "Location"): it's rendered from `cc` in [locale], so it follows the viewer's language.
  */
 internal fun placeLabel(
     place: PlaceDto,
     locale: Locale = Locale.getDefault(),
 ): String {
-    val locality = place.locality?.name
-    val region = place.region?.name?.takeIf { !it.equals(locality, ignoreCase = true) }
-    return listOfNotNull(locality, region, countryName(place.cc, locale)).joinToString(", ")
+    val names = mutableListOf<String>()
+    for (name in place.names + listOfNotNull(place.region?.name)) {
+        if (names.none { it.equals(name, ignoreCase = true) }) names.add(name)
+    }
+    return (names + countryName(place.cc, locale)).joinToString(", ")
 }
+
+/** The region-pack levels that aren't part of the "where" chain: protected areas, then
+ * the natural feature. Null when there are none. */
+internal fun placeExtras(place: PlaceDto): String? =
+    (place.areas.orEmpty().map { it.name } + listOfNotNull(place.feature?.name))
+        .joinToString(" · ")
+        .ifEmpty { null }
 
 /** `Locale.Builder` rather than the `Locale(String, String)` constructor (deprecated
  * since JDK 19) or `Locale.of` (Android API 36+). Falls back to the bare code for a
@@ -160,6 +172,7 @@ internal fun LocationRow(
             style = MaterialTheme.typography.bodySmall,
             color = if (point != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
         )
+        model.extras?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         model.secondary?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary) }
     }

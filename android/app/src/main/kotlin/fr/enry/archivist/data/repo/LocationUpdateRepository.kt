@@ -18,7 +18,6 @@ import fr.enry.archivist.domain.ExifBlob
 import fr.enry.archivist.domain.ExifExtractor
 import fr.enry.archivist.domain.GeoPoint
 import fr.enry.archivist.domain.Iso6709
-import fr.enry.archivist.domain.ReverseGeocoder
 import fr.enry.archivist.sync.VideoLocationReader
 import java.io.File
 import java.io.IOException
@@ -55,7 +54,7 @@ private const val HTTP_CONFLICT = 409
  *    temp file by the same streaming path as "View original" ([OriginalDownloader]), and
  *    read there: `ExifInterface` for a still, [VideoLocationReader] for a video. (0, 0)
  *    is no location ([GeoPoint.of]). The temp file is always deleted.
- * 3. Geocoded with the bundled gazetteer ([ReverseGeocoder]).
+ * 3. Geocoded with the bundled gazetteer plus the instance's region packs ([PlaceGeocoder]).
  * 4. `PUT /photos/{photoId}/location`. When the coordinates came from the original, the
  *    request also carries the blob re-encrypted with `gpsLat`/`gpsLon`/`gpsAltM` added and
  *    every other field kept ([ExifCrypto], so exactly as upload encrypts it: same DEK, fresh
@@ -80,7 +79,7 @@ class LocationUpdateRepository
         private val photoDetailRepository: PhotoDetailRepository,
         private val originalDownloader: OriginalDownloader,
         private val ownerSettingsRepository: OwnerSettingsRepository,
-        private val reverseGeocoder: ReverseGeocoder,
+        private val placeGeocoder: PlaceGeocoder,
         private val videoLocationReader: VideoLocationReader,
         private val photoDao: PhotoDao,
         private val placeRepository: PlaceRepository,
@@ -219,9 +218,11 @@ class LocationUpdateRepository
             }
         }
 
-        private fun geocode(point: GeoPoint): PlaceDto? =
+        private suspend fun geocode(point: GeoPoint): PlaceDto? =
             try {
-                reverseGeocoder.lookup(point.lat, point.lon)?.let(PlaceDto::forUpload)
+                placeGeocoder.lookup(point.lat, point.lon)?.let(PlaceDto::forUpload)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 throw IOException("couldn't look up the place", e)
             }

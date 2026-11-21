@@ -19,6 +19,7 @@ private const val LICENSE_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
 const val REPO_URL = "https://github.com/EricMountain/archivist"
 private const val GEONAMES_URL = "https://www.geonames.org/"
 private const val CC_BY_URL = "https://creativecommons.org/licenses/by/4.0/"
+private const val OSM_COPYRIGHT_URL = "https://www.openstreetmap.org/copyright"
 
 /**
  * Plan step 2.17's follow-up: an About pane, the "about box" GPLv3 itself suggests for
@@ -34,7 +35,9 @@ private const val CC_BY_URL = "https://creativecommons.org/licenses/by/4.0/"
  *
  * The "Place names" section is the attribution CC BY 4.0 requires for the bundled
  * GeoNames gazetteer (`assets/gazetteer.bin`, see `tools/gazetteer/README.md`): title,
- * source, licence with a link, and a note that the data was adapted.
+ * source, licence with a link, and a note that the data was adapted. It also credits
+ * OpenStreetMap, as ODbL requires, for the region packs an instance may publish
+ * (`tools/geopack/README.md`, "Licence and attribution").
  */
 @Composable
 fun AboutScreen(
@@ -91,5 +94,14 @@ fun AboutScreen(
         )
         TextButton(onClick = { uriHandler.openUri(GEONAMES_URL) }) { Text("geonames.org") }
         TextButton(onClick = { uriHandler.openUri(CC_BY_URL) }) { Text("View the CC BY 4.0 license") }
+        Text(
+            "Where your server publishes region packs, villages, parks and natural features " +
+                "come from OpenStreetMap: © OpenStreetMap contributors, available under the " +
+                "Open Database License (ODbL). Your server adapts the data into compact " +
+                "packs that this device downloads from it.",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+        )
+        TextButton(onClick = { uriHandler.openUri(OSM_COPYRIGHT_URL) }) { Text("openstreetmap.org/copyright") }
     }
 }

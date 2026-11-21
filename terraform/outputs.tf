@@ -17,6 +17,11 @@ output "derived_bucket" {
   value       = aws_s3_bucket.derived.bucket
 }
 
+output "web_bucket" {
+  description = "Public web origin: the discovery document, and region packs under geo/ (make geo-publish)."
+  value       = aws_s3_bucket.web.bucket
+}
+
 output "region" {
   value = var.aws_region
 }

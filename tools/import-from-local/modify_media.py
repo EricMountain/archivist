@@ -37,8 +37,10 @@ family of corrections. Subcommands:
                 When they came from the original, the PUT also carries the
                 exifEnc re-encrypted with gpsLat/gpsLon/gpsAltM added, so the
                 original is never needed again. No coordinates anywhere ->
-                place: null. Skips assets whose place.src is already the
-                gazetteer's (--force to redo them) and remembers no-GPS assets
+                place: null. Places come from the gazetteer plus the
+                instance's region packs, if it publishes any. Skips assets
+                whose place.src is already current (--force to redo them) and
+                remembers no-GPS assets
                 in library_cache.py's cache so a re-run doesn't re-download
                 them. Refuses when the owner has stripLocationOnUpload on,
                 unless --ignore-strip-setting. Needs the recovery code, like
@@ -86,7 +88,7 @@ from PIL import Image, ImageOps
 
 import cli_auth
 import crypto_format as cf
-import gazetteer as gz
+import places
 import library_cache
 import library_scan
 import media_probe
@@ -484,6 +486,9 @@ def add_location_parser(sub: argparse._SubParsersAction) -> None:
         "A verified copy is always preferred. Every copy used this way is listed in --missing-report",
     )
     p.add_argument("--force", action="store_true", help="ignore the skip rule and the no-GPS memory")
+    p.add_argument("--clear-without-gps", action="store_true",
+                   help="clear the place of a photo whose original has no GPS (default: keep it, since it may "
+                        "have been set by hand, e.g. with locate_missing.py)")
     p.add_argument("--concurrency", type=int, default=library_scan.DEFAULT_CONCURRENCY)
     p.add_argument(
         "--ignore-strip-setting",
@@ -786,6 +791,10 @@ class LocationContext:
     local: LocalOriginals | None = None  # the --source-dir index; built by location_main
     local_only: bool = False
     allow_content_mismatch: bool = False
+    # Off by default: a photo with no GPS keeps whatever place it has. Its place can't be
+    # re-derived, and it may have been set by hand (locate_missing.py, the app's "Update
+    # location"), so a re-geocode clearing it would destroy work.
+    clear_without_gps: bool = False
     no_gps: dict = field(default_factory=dict)  # photoId -> {renditionId, contentHash}
     # (s3_key, dest_path, byte_range) -> bytes written; swapped for a fake in tests.
     download: object = None
@@ -794,12 +803,17 @@ class LocationContext:
 def describe_place(place: dict | None) -> str:
     if not place:
         return "(none)"
-    parts = [p["name"] for p in (place.get("locality"), place.get("region")) if p]
-    return ", ".join(parts + [place["cc"]]) + f"  [{place.get('src')}]"
+    return places.describe(place) + f"  [{place.get('src')}]"
 
 
 def _current_src(place: dict | None, gazetteer) -> bool:
     return bool(place) and place.get("src") == gazetteer.src
+
+
+def _same_rendition_no_gps(ctx: LocationContext, photo_id: str, primary: dict | None) -> bool:
+    entry = ctx.no_gps.get(photo_id)
+    return (entry is not None and primary is not None and entry.get("renditionId") == primary["renditionId"]
+            and entry.get("contentHash") == primary["contentHash"])
 
 
 def _no_gps_remembered(ctx: LocationContext, photo_id: str, place: dict | None, primary: dict | None) -> bool:
@@ -952,6 +966,13 @@ def _locate_one(ctx: LocationContext, photo_id: str, listing: dict | None) -> Lo
     coords = _coords_from_blob(blob)
     if coords is not None:
         out.coord_source = COORD_EXIF_BLOB
+    elif (old_place is not None and not ctx.clear_without_gps and not ctx.force
+          and _same_rendition_no_gps(ctx, photo_id, primary)):
+        # A place kept on a photo whose original is known to have no GPS: nothing to
+        # re-read, so no download. (Checked only after exifEnc, which may have gained
+        # coordinates since, e.g. from the app's "Update location".)
+        return LocationOutcome(photo_id, NO_GPS, old_place=old_place, new_place=old_place,
+                               from_no_gps_memory=True)
     else:
         if primary is None:
             return LocationOutcome(photo_id, ERROR, old_place=old_place, message="no primary rendition")
@@ -1004,10 +1025,12 @@ def _locate_one(ctx: LocationContext, photo_id: str, listing: dict | None) -> Lo
 
     if coords is None:
         out.kind = NO_GPS
-        out.new_place = None
-        if old_place is not None and ctx.execute:
+        clear = old_place is not None and ctx.clear_without_gps
+        out.new_place = None if clear or old_place is None else old_place
+        if clear and ctx.execute:
             ctx.api.put_photo_location(photo_id, None)
-        out.message = "clears the stored place" if old_place is not None else ""
+        out.message = ("clears the stored place" if clear
+                       else "keeps the stored place (no GPS to re-geocode from)" if old_place is not None else "")
         if primary is not None:
             out.remember_no_gps = {"renditionId": primary["renditionId"], "contentHash": primary["contentHash"]}
         return out
@@ -1081,7 +1104,8 @@ def _print_outcome(o: LocationOutcome) -> None:
         print(f"{o.photo_id}  skipped: place already from {o.old_place.get('src')}")
         return
     if o.from_no_gps_memory:
-        print(f"{o.photo_id}  no GPS (remembered from an earlier run; --force to re-read)")
+        kept = f"; keeps {describe_place(o.old_place)}" if o.old_place else ""
+        print(f"{o.photo_id}  no GPS (remembered from an earlier run; --force to re-read){kept}")
         return
     if o.kind == ERROR:
         print(f"{o.photo_id}  ERROR: {o.message}")
@@ -1172,9 +1196,12 @@ def location_main(api, args, *, progress=lambda msg: print(msg, file=sys.stderr)
             return 1
         print("warning: stripLocationOnUpload is on; continuing because of --ignore-strip-setting", file=sys.stderr)
 
+    # The instance's region-pack manifest decides what "current" means: with packs,
+    # every place's src names the pack set, so the first run after publishing one
+    # redoes every located photo (design.md open question 7(d)).
     try:
-        gaz = gazetteer if gazetteer is not None else gz.load(args.gazetteer)
-    except (FileNotFoundError, ValueError) as e:
+        gaz = gazetteer if gazetteer is not None else places.load(args.host, args.gazetteer, progress=progress)
+    except (OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
@@ -1210,6 +1237,7 @@ def location_main(api, args, *, progress=lambda msg: print(msg, file=sys.stderr)
         local=local,
         local_only=args.local_only,
         allow_content_mismatch=args.allow_content_mismatch,
+        clear_without_gps=args.clear_without_gps,
         no_gps=library_cache.load_no_gps(args.host, args.username),
         download=download or (lambda key, dest, rng: download_media(args.host, key, dest, rng)),
     )
@@ -1232,7 +1260,7 @@ def location_main(api, args, *, progress=lambda msg: print(msg, file=sys.stderr)
     if args.allow_content_mismatch:
         originals += (f"; unverified same-named copies accepted on capture time (+/-{CAPTURE_TIME_TOLERANCE_S} s)"
                       " when no verified one exists")
-    print(f"\nGazetteer {gaz.src}; {len(targets)} asset(s); {'EXECUTE' if args.execute else 'dry run'}; "
+    print(f"\nPlaces from {gaz.src}; {len(targets)} asset(s); {'EXECUTE' if args.execute else 'dry run'}; "
           f"originals: {originals}.\n")
     if not args.execute and not args.local_only:
         print("note: a dry run still downloads every original it needs and has no local copy of, so it can "

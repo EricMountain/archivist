@@ -133,8 +133,12 @@ fun matchPlaces(
         )
     }
     for (l in vocabulary.localities) {
+        // A village, hamlet or feature from a region pack names its commune first
+        // ("Argentière · Chamonix-Mont-Blanc, Auvergne-Rhône-Alpes, France"); `within` is absent on
+        // towns, communes and protected areas.
         val region = l.regionName?.takeIf { !it.equals(l.name, ignoreCase = true) }
-        val context = listOfNotNull(region, countryName(l.cc, locale)).joinToString(", ")
+        val within = l.within?.takeIf { !it.equals(l.name, ignoreCase = true) }
+        val context = listOfNotNull(within, region, countryName(l.cc, locale)).joinToString(", ")
         consider(PlaceSuggestion(PlaceLevel.LOCALITY, l.id, l.name, context, l.n, l.cc, l.name), listOf(l.name))
     }
 

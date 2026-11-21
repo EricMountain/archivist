@@ -247,6 +247,13 @@ tasks.withType<Test> {
     systemProperty("archivist.gazetteer.bin", gazetteerBin.absolutePath)
     systemProperty("archivist.gazetteer.vectors", gazetteerVectors.absolutePath)
 
+    // GeoPackTest reads tools/geopack/vectors.json and the synthetic fixture packs next to
+    // it, the same way: from the repo, declared as inputs.
+    val geopackDir = rootProject.file("../tools/geopack")
+    inputs.file(geopackDir.resolve("vectors.json")).withPropertyName("geopackVectors").withPathSensitivity(PathSensitivity.NONE)
+    inputs.dir(geopackDir.resolve("testdata")).withPropertyName("geopackFixture").withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("archivist.geopack.dir", geopackDir.absolutePath)
+
     // AppDatabaseMigrationTest builds the old version's tables from Room's exported
     // schema JSON, so a migration is tested against the schema that actually shipped.
     val roomSchemas = file("schemas/fr.enry.archivist.data.local.db.AppDatabase")

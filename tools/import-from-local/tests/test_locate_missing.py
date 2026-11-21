@@ -243,3 +243,117 @@ class OutputTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Region packs: the synthetic fixture in tools/geopack/testdata --------------------
+
+import places  # noqa: E402
+
+_FIXTURE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "geopack",
+                                         "testdata", "fixture-manifest.json"))
+PACK_SRC = f"osm@fixture;{SRC}"
+ARA = {"id": "FR.84", "name": "Auvergne-Rhône-Alpes"}
+
+
+class _FixtureGaz:
+    """Everything near the fixture is in one GeoNames town, 'Gazville'."""
+    src = SRC
+
+    def lookup(self, lat, lon):
+        if 44.5 < lat < 45.5 and 4.5 < lon < 5.6:
+            return {"cc": "FR", "region": ARA, "locality": {"id": "3000001", "name": "Gazville"}, "src": SRC}
+        return None
+
+
+def _pack_geo() -> lm.Geo:
+    d = _geonames_dir()
+    # Add Gazville, a GeoNames town whose centre is inside the fixture's commune Alpha.
+    with zipfile.ZipFile(os.path.join(d, "cities500.zip")) as z:
+        rows = z.read("cities500.txt").decode()
+    col = ["3000001", "Gazville", "Gazville", "", "45.03", "5.01", "P", "PPL", "FR", "", "84", "", "", "",
+           "9000", "", "200", "Europe/Paris", "2026-01-01"]
+    with zipfile.ZipFile(os.path.join(d, "cities500.zip"), "w") as z:
+        z.writestr("cities500.txt", rows + "\t".join(col) + "\n")
+    geocoder = places.load_local(_FIXTURE)
+    geocoder.gazetteer = _FixtureGaz()
+    geocoder.src = f"osm@fixture;{SRC}"
+    return lm.Geo(d, geocoder.gazetteer, geocoder)
+
+
+class RegionPackSearchTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.geo = _pack_geo()
+
+    def top(self, text):
+        return self.geo.search(text, None)[0].res
+
+    def test_a_village_or_suburb_adds_itself_to_its_commune(self):
+        self.assertEqual(self.top("brook").place, {
+            "cc": "FR", "region": ARA, "locality": {"id": "r101", "name": "Alpha"},
+            "sub": {"id": "n9003", "name": "Brook"}, "src": PACK_SRC})
+
+    def test_a_hamlet_brings_the_village_it_is_near(self):
+        self.assertEqual(self.top("nook").place, {
+            "cc": "FR", "region": ARA, "locality": {"id": "r101", "name": "Alpha"},
+            "sub": {"id": "n9003", "name": "Brook"}, "spot": {"id": "n9005", "name": "Nook"}, "src": PACK_SRC})
+
+    def test_a_protected_area_names_no_commune(self):
+        self.assertEqual(self.top("little reserve").place, {
+            "cc": "FR", "region": ARA, "areas": [{"id": "r202", "name": "Little Reserve"}], "src": PACK_SRC})
+
+    def test_a_feature_adds_itself_to_its_commune(self):
+        place = self.top("summit").place
+        self.assertEqual(place["locality"], {"id": "r101", "name": "Alpha"})
+        self.assertEqual(place["feature"], {"id": "n301", "name": "Summit"})
+        self.assertNotIn("areas", place)
+
+    def test_a_commune_and_its_same_named_village_are_one_choice(self):
+        alpha = [c for c in self.geo.search("alpha", None) if c.res.place.get("locality", {}).get("name") == "Alpha"
+                 and set(c.res.place) == {"cc", "region", "locality", "src"}]
+        self.assertEqual(len(alpha), 1)
+
+    def _commune(self, text, name):
+        return [c for c in self.geo.search(text, None)
+                if set(c.res.place) == {"cc", "region", "locality", "src"} and c.res.place["locality"]["name"] == name]
+
+    def test_a_commune_is_labelled_with_its_level_6_area(self):
+        # Communes share names across départements ("Le Monteil" in Cantal and in
+        # Haute-Loire): the label says which. The stored place doesn't change.
+        [beta] = self._commune("beta", "Beta")
+        self.assertEqual(beta.res.label, "Beta, Gamma County, Auvergne-Rhône-Alpes, FR")
+        self.assertTrue(beta.detail.startswith("Beta, Gamma County, Auvergne-Rhône-Alpes, FR (admin area, level 8)"))
+        self.assertEqual(beta.res.place, {"cc": "FR", "region": ARA, "locality": {"id": "r102", "name": "Beta"},
+                                          "src": PACK_SRC})
+
+    def test_a_commune_outside_every_level_6_area_has_no_extra_name(self):
+        [east] = self._commune("eastville", "Eastville")
+        self.assertEqual(east.res.label, "Eastville, Auvergne-Rhône-Alpes, FR")
+
+    def test_the_level_6_area_qualifies_a_search(self):
+        self.assertEqual(len(self._commune("beta, gamma", "Beta")), 1)
+        self.assertEqual(self._commune("beta, nowhere", "Beta"), [])
+
+    def test_a_geonames_town_is_replaced_by_the_commune_at_its_centre(self):
+        res = self.top("gazville")
+        self.assertEqual(res.key, "L:3000001")
+        self.assertEqual(res.place["locality"], {"id": "r101", "name": "Alpha"})
+        self.assertEqual(res.place["src"], PACK_SRC)
+
+    def test_keys_round_trip(self):
+        for text in ("brook", "nook", "little reserve", "summit", "gazville"):
+            with self.subTest(text=text):
+                res = self.top(text)
+                self.assertEqual(self.geo.from_key(res.key), res)
+
+    def test_a_gps_anchor_is_kept_at_commune_level(self):
+        full = self.geo.geocoder.lookup(45.0110, 5.0110)
+        self.assertIn("spot", full)
+        res = self.geo.from_place(full, (45.0110, 5.0110))
+        self.assertEqual(res.place, {"cc": "FR", "region": ARA, "locality": {"id": "r101", "name": "Alpha"},
+                                     "src": PACK_SRC})
+        self.assertEqual(self.geo.from_key(res.key).place, res.place)
+
+    def test_typed_coordinates_get_every_layer(self):
+        res = self.geo.coords_res(45.0110, 5.0110)
+        self.assertEqual(res.place["spot"], {"id": "n9005", "name": "Nook"})

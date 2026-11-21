@@ -10,6 +10,7 @@ Ordered, implementable plans. Work through them in sequence.
 | [timeline-date-bubbles.md](timeline-date-bubbles.md) | Follow-up to 2.11: immersive, continuously-flowing grid with floating date bubbles and a floating menu |
 | [geolocation.md](geolocation.md) | On-device reverse geocoding, searchable place facets, location + map link on detail, place in date bubbles. Decisions D1–D10 confirmed 2026-10-25 |
 | [timeline-place-filter.md](timeline-place-filter.md) | Place search moves into the `⋮` menu and filters the main timeline live, in place: multi-select suggestions, one-tap clear, chip hides while scrolling, load-as-you-scroll over merged facet streams, partial rail. Replaces geolocation step 8's search screen. No server change. Owner's answers recorded 2026-11-17 |
+| [geo-packs.md](geo-packs.md) | Follow-up to geolocation: OpenStreetMap region packs, built by the operator and served by the instance, for commune, village, hamlet, protected-area and natural-feature labels. Decisions G1–G6 confirmed 2026-11-19 |
 
 **[STATUS.md](STATUS.md) tracks progress against both, step by step.** Read it before
 starting work here; update it in the same change when you finish. It is the source of

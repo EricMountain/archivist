@@ -14,21 +14,28 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** A GeoNames identifier plus its display name: a region (`"JP.22"`, "Kyoto") or a
- * locality (`"1857910"`, "Kyoto"). design.md "Location": ids go in keys, names are for
- * display and search. */
+/** An identifier plus its display name: a GeoNames region (`"JP.22"`, "Kyoto") or
+ * locality (`"1857910"`, "Kyoto"), or an OpenStreetMap id from a region pack
+ * (`"r100101"`, "Chamonix-Mont-Blanc"). design.md "Location": ids go in keys, names are for display
+ * and search. */
 data class PlaceRef(val id: String, val name: String)
 
 /**
  * The `place` object design.md "Location" defines. [region] is null when the nearest place
- * has no known admin1 region; [locality] is null when it is 25–100 km away. [src] is the
- * gazetteer's snapshot, e.g. `geonames-cities500@2026-11-13`.
+ * has no known admin1 region; [locality] is null when it is 25–100 km away. [sub], [spot],
+ * [areas] and [feature] only come from a region pack ([combinePlace]). [src] names the
+ * datasets, e.g. `geonames-cities500@2026-11-13` or
+ * `osm@2026-11-19;geonames-cities500@2026-11-13`.
  */
 data class Place(
     val cc: String,
     val region: PlaceRef?,
     val locality: PlaceRef?,
     val src: String,
+    val sub: PlaceRef? = null,
+    val spot: PlaceRef? = null,
+    val areas: List<PlaceRef> = emptyList(),
+    val feature: PlaceRef? = null,
 )
 
 /** The one place the geocoder's distances live, matching `tools/gazetteer/reference.py`
