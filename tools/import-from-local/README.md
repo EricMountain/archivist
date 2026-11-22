@@ -563,7 +563,10 @@ It's built to ask as little as possible:
   hamlets, protected areas and natural features. Communes are listed with their
   level-6 area (a French département, a US county) since names repeat ("Sainte-Colombe,
   Rhône" vs "Sainte-Colombe, Doubs"), and that name narrows a search too
-  (`sainte-colombe, rhone`); it is only in the label, not the stored place. A pick means no more than it says:
+  (`sainte-colombe, rhone`); it is only in the label, not the stored place. Each
+  candidate, and the suggestion Enter would accept, is followed by an openstreetmap.org
+  link to check it: the object's own page for a pack pick (its outline on the map), else
+  a map centred on the town, coordinates, region or country. A pick means no more than it says:
   a commune is a locality; a village or hamlet is added to its commune (a hamlet
   with the village it's near); a park is just the park, since it can span
   communes; a peak or lake is added to its commune. A GeoNames town in a covered

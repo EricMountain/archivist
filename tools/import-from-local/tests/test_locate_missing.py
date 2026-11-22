@@ -7,6 +7,7 @@ import builtins
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -193,6 +194,20 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(name("d6-0.jpg"), "Paris")
         self.assertEqual(s.aliases[lm.fold("lyo")], "L:2996944")
 
+    def test_every_candidate_comes_with_a_map_link(self):
+        out = io.StringIO()
+        feed = iter(["", "lyo", ""])
+        s = self.session()
+        with mock.patch.object(builtins, "input", lambda *_: next(feed)), mock.patch("sys.stdout", new=out):
+            s.resolve("lyo", None)
+        lines = out.getvalue().splitlines()
+        numbered = [i for i, line in enumerate(lines) if re.match(r"\s+\d+\. ", line)]
+        self.assertTrue(numbered)
+        for i in numbered:
+            self.assertRegex(lines[i + 1], r"^\s+https://www\.openstreetmap\.org/\?mlat=")
+        lyon = lm.osm_url(GEO.locality(GEO.by_gid[2996944]))
+        self.assertIn(lyon, out.getvalue())
+
     def test_remembered_name_is_not_confirmed_again(self):
         self.run_session([self.day(1)], [], ["cologne", ""])
         s, _ = self.run_session([self.day(20)], [], ["cologne"])  # no pick prompt this time
@@ -333,6 +348,35 @@ class RegionPackSearchTest(unittest.TestCase):
     def test_the_level_6_area_qualifies_a_search(self):
         self.assertEqual(len(self._commune("beta, gamma", "Beta")), 1)
         self.assertEqual(self._commune("beta, nowhere", "Beta"), [])
+
+    def test_map_links(self):
+        self.assertEqual(lm.osm_url(self.geo.from_key("O:1:r102")), "https://www.openstreetmap.org/relation/102")
+        self.assertEqual(lm.osm_url(self.top("nook")), "https://www.openstreetmap.org/node/9005")
+        coords = self.geo.coords_res(45.0110, 5.0110)
+        self.assertEqual(lm.osm_url(coords),
+                         "https://www.openstreetmap.org/?mlat=45.01100&mlon=5.01100#map=16/45.01100/5.01100")
+        town = self.geo.from_key("L:3000001")
+        self.assertTrue(lm.osm_url(town).startswith("https://www.openstreetmap.org/?mlat=45.03000&mlon=5.01000#map=13/"))
+        region = self.geo.region_res(next(iter(self.geo.region_centre)))
+        self.assertRegex(lm.osm_url(region), r"^https://www\.openstreetmap\.org/#map=8/")
+
+    def test_answers_from_an_older_set_are_resolved_again(self):
+        beta = self.geo.from_key("O:1:r102")
+        stale = dict(beta.to_json(), label="Beta, Auvergne-Rhône-Alpes, FR")
+        stale["place"] = dict(stale["place"], src="osm@older;" + SRC)
+        gone = dict(stale, key="O:1:r999")
+        answers = {
+            "a.jpg": {"method": "prompt", "res": stale},
+            "b.jpg": {"method": "prompt", "res": gone},
+            "c.jpg": {"method": "prompt", "res": beta.to_json()},
+            "d.jpg": {"method": "skipped"},
+        }
+        before = json.loads(json.dumps(answers))
+        self.assertEqual(lm.refresh_answers(self.geo, answers), 1)
+        self.assertEqual(answers["a.jpg"]["res"], beta.to_json())
+        self.assertEqual(answers["a.jpg"]["res"]["place"]["src"], PACK_SRC)
+        for k in ("b.jpg", "c.jpg", "d.jpg"):
+            self.assertEqual(answers[k], before[k])
 
     def test_a_geonames_town_is_replaced_by_the_commune_at_its_centre(self):
         res = self.top("gazville")

@@ -279,6 +279,34 @@ class Resolution:
         return Resolution(d["kind"], d["place"], d["label"], tuple(d["approx"]) if d["approx"] else None, d["key"])
 
 
+_OSM_TYPES = {"n": "node", "w": "way", "r": "relation"}
+_MAP_ZOOM = {"coords": 16, "pack": 14, "locality": 13, "region": 8, "country": 5}
+
+
+def osm_url(res: Resolution) -> str | None:
+    """Where to look a resolution up on openstreetmap.org: a pack entity's own page (its
+    outline on the map, its tags), else a map centred on its point (a marker for a town or
+    typed coordinates, a wider view for a region or country)."""
+    if res.key.startswith("O:"):
+        osm_id = res.key.split(":", 2)[2]
+        if osm_id[:1] in _OSM_TYPES and osm_id[1:].isdigit():
+            return f"https://www.openstreetmap.org/{_OSM_TYPES[osm_id[0]]}/{osm_id[1:]}"
+    if not res.approx:
+        return None
+    lat, lon = res.approx
+    zoom = _MAP_ZOOM.get(res.kind, 12)
+    marker = f"mlat={lat:.5f}&mlon={lon:.5f}" if res.kind in ("coords", "locality", "pack") else ""
+    return f"https://www.openstreetmap.org/{'?' + marker if marker else ''}#map={zoom}/{lat:.5f}/{lon:.5f}"
+
+
+def _link_line(res: Resolution, indent: str = "      ", label: str = "") -> str:
+    url = osm_url(res)
+    if not url:
+        return ""
+    line = indent + label + url
+    return f"\x1b[2m{line}\x1b[0m" if sys.stdout.isatty() else line
+
+
 @dataclass
 class Candidate:
     res: Resolution
@@ -978,6 +1006,30 @@ class Pending:
         return self.items[0].t
 
 
+def refresh_answers(geo: Geo, answers: dict) -> int:
+    """Answers given against other data (an older region-pack set or gazetteer) are
+    resolved again from what was picked (their key), so the output carries current
+    places and `src`. One whose pick no longer exists stays as it was. Returns how many
+    changed."""
+    n = 0
+    memo: dict[str, Resolution | None] = {}
+    for a in answers.values():
+        r = a.get("res")
+        if a.get("method") != "prompt" or not r or not r.get("key") or r.get("place", {}).get("src") == geo.src:
+            continue
+        key = r["key"]
+        if key not in memo:
+            try:
+                memo[key] = geo.from_key(key)
+            except places.PackUnavailable:
+                memo[key] = None
+        new = memo[key]
+        if new is not None and new.to_json() != r:
+            a["res"] = new.to_json()
+            n += 1
+    return n
+
+
 class Session:
     def __init__(self, geo: Geo, state_path: str, aliases_path: str, viewer: Viewer,
                  suggest_within: timedelta = timedelta(days=90)):
@@ -1050,6 +1102,8 @@ class Session:
             res = self.geo.from_key(self.aliases[key])
             if res is not None:
                 print(f"  {text} → {res.label}  (remembered; '!{text}' to choose again)")
+                if link := _link_line(res, "    "):
+                    print(link)
                 return res
         while True:
             cands = self.geo.search(text, near)
@@ -1060,6 +1114,8 @@ class Session:
                 continue
             for n, c in enumerate(cands, 1):
                 print(f"   {n}. {c.detail}")
+                if link := _link_line(c.res):
+                    print(link)
             pick = input("  Pick [Enter = 1], a number, retype, or 'b' to go back: ").strip()
             if pick == "":
                 choice = cands[0]
@@ -1198,6 +1254,8 @@ class Session:
                 print(f"   {label}: {k.res.label}  ({k.why}, {_fmt_delta(gap)} {label.strip()})")
         print(f"   e.g. {cl[0].rel}")
         self.viewer.show_cluster(cl)
+        if suggestion and (link := _link_line(suggestion, "   ", "suggestion: ")):
+            print(link)
         while True:
             prompt = "Where? "
             if suggestion:
@@ -1422,6 +1480,10 @@ def main() -> int:
                       Viewer(args.viewer, source, os.path.join(args.state_dir, "thumbs")),
                       timedelta(days=args.suggest_days))
     answers = session.state["answers"]
+    refreshed = refresh_answers(geo, answers)
+    if refreshed:
+        print(f"re-resolved {refreshed} earlier answer(s) against {geo.src}", file=sys.stderr)
+        session.save()
     with open(os.path.join(run_dir, "source.txt"), "w", encoding="utf-8") as f:
         f.write(source + "\n")
 
