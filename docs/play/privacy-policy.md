@@ -43,8 +43,9 @@ Archivist transmits, **only to the server address you enter**:
   your device from the photo's own GPS data. If your server offers detailed map data for
   the area, also the village or neighbourhood, hamlet, park or natural feature nearby,
   which can place a photo to within a few hundred metres. No location is ever sent to a
-  mapping or geocoding service. To work these out, the app may download map data for a
-  region from your server, which tells your server which region it needed
+  mapping or geocoding service. To work these out, the app may download map data for the
+  area from your server, a square of map at a time, which tells your server roughly
+  which area it needed
 - Your account details on that server: email address, display name, sign-in identifiers
 
 That destination is a server you chose. The app has no default server and no fallback.
