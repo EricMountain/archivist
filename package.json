@@ -14,8 +14,8 @@
   "devDependencies": {
     "@types/aws-lambda": "^8.10.152",
     "@types/node": "^22.10.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "vitest": "^5.1.1"
   }
 }
