@@ -35,9 +35,14 @@ That's the whole trigger. Pushing an `android-v*.*.*` tag runs
 `.github/workflows/android-release.yml`, which:
 
 1. Builds the release bundle with `versionName` from the tag.
-2. Signs it using the `ANDROID_KEYSTORE_*` secrets.
+2. Signs it using the `ANDROID_KEYSTORE_*` secrets (from the `play` environment).
 3. Runs `:app:publishBundle` (Gradle Play Publisher), which resolves `versionCode` via
    `AUTO` and uploads straight to the Play **internal** track.
+4. In a separate job that never sees the Play secrets, creates a **GitHub Release** for
+   the tag: the exact uploaded bundle as `archivist-<version>.aab`, its `.sha256`, and
+   notes listing the commits under `android/` since the previous release tag. The
+   release is published immutable: its assets can't be changed and its tag can't be
+   moved or deleted.
 
 No manual Play Console step for a normal release. Watch it with:
 
@@ -45,6 +50,18 @@ No manual Play Console step for a normal release. Watch it with:
 gh run list --workflow=android-release.yml
 gh run view --log
 ```
+
+You usually don't need to cut one by hand at all: `android-auto-release.yml` releases
+the next patch version every Sunday if anything under `android/` changed since the last
+tag (see `docs/ops/automated-updates.md`). A hand-pushed tag still releases at any time.
+
+## A wrong tag is fixed forward
+
+Release tags can't be moved or deleted: a tag ruleset protects `android-v*`, and the
+immutable GitHub Release protects its own tag. So a mistaken tag, or a release with a
+bug, is fixed by releasing the next patch version, never by retagging. If Play
+publishing succeeded but the GitHub Release job failed, re-run just that job: it deletes
+any draft an earlier attempt left and starts again.
 
 ## Notes
 

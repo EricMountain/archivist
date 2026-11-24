@@ -1,8 +1,15 @@
 # Setting up Android release secrets
 
-Five GitHub Actions repository secrets, all read by `.github/workflows/android-release.yml`
-(plan step 2.16; see "CI and release, as built" in `docs/design/android.md`). Nothing here
-is needed for `.github/workflows/android-ci.yml` — PRs never touch signing or Play.
+Five GitHub Actions secrets in the **`play` environment**, all read by the `publish` job
+of `.github/workflows/android-release.yml` (plan step 2.16, moved into the environment by
+plan 03 step 3.2; see "CI and release, as built" in `docs/design/android.md`). Nothing
+here is needed for `.github/workflows/android-ci.yml`: PRs never touch signing or Play.
+
+Why an environment rather than repository secrets: any workflow on any same-repo branch
+can read a repository secret by naming it. An environment secret is only released to a
+job that targets that environment, and `play` only accepts deployments from `main` and
+`android-v*` tags. Create the environment first; the commands are in
+`docs/ops/automated-updates.md` ("Move the Play secrets into an environment").
 
 | Secret | What it is |
 | --- | --- |
@@ -85,10 +92,10 @@ Then set the four keystore-related secrets (`gh` reads `--body` from the given s
 `< file` reads it from stdin — either works):
 
 ```sh
-gh secret set ANDROID_KEYSTORE_BASE64 < release.keystore.b64
-gh secret set ANDROID_KEYSTORE_PASSWORD # prompt's for password
-gh secret set ANDROID_KEY_ALIAS --body 'archivist-upload'
-gh secret set ANDROID_KEY_PASSWORD # prompt's for password
+gh secret set ANDROID_KEYSTORE_BASE64 --env play < release.keystore.b64
+gh secret set ANDROID_KEYSTORE_PASSWORD --env play  # prompts for the password
+gh secret set ANDROID_KEY_ALIAS --env play --body 'archivist-upload'
+gh secret set ANDROID_KEY_PASSWORD --env play       # prompts for the password
 ```
 
 Verified: `gh secret set` (this repo's `gh` is authenticated already) encrypts the value
@@ -136,7 +143,7 @@ service-account flow, but confirm each step's actual output against your own pro
 Then set the secret from the key file's raw contents:
 
 ```sh
-gh secret set PLAY_SERVICE_ACCOUNT_JSON < play-service-account.json
+gh secret set PLAY_SERVICE_ACCOUNT_JSON --env play < play-service-account.json
 ```
 
 The CI workflow passes this secret straight to GPP as the `ANDROID_PUBLISHER_CREDENTIALS`
@@ -145,7 +152,8 @@ environment variable, unchanged. Delete the local `play-service-account.json` af
 ## After all five exist
 
 `git tag android-v0.1.0 && git push origin android-v0.1.0` (adjust the version) triggers
-`android-release.yml`. Nothing in this session has run that workflow for real — the
-first actual tag push is what confirms this end to end, not this document. If it fails,
+`android-release.yml`, which publishes to Play and then creates the version's GitHub
+Release (see `docs/ops/android-release.md`). If it fails,
 `gh run list --workflow=android-release.yml` / `gh run view --log` is the fastest way to
-see which step and why.
+see which step and why. If GitHub refuses to start the `publish` job because of the
+environment's protection rules, the run came from a ref that `play` doesn't allow.
