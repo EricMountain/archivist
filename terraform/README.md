@@ -31,6 +31,7 @@ terraform/
   cloudfront.tf    certificate, distribution, CDN-prefix-stripping functions
   dns.tf           Route 53 records: ACM validation, the domain alias
   wellknown.tf     web bucket, placeholder page, /.well-known/archivist.json
+  ci.tf            opt-in GitHub Actions deploy role + deployed-commit marker
   outputs.tf
 ```
 
@@ -125,6 +126,36 @@ workspace first, so it can't accidentally apply against whatever workspace a pre
 `dev` session left checked out.
 
 Switch back with `terraform workspace select default` before touching `prod` by hand.
+
+## Letting GitHub Actions deploy Lambda code (optional)
+
+Off by default. Setting `github_repository = "owner/repo"` in a workspace's tfvars
+creates, in that workspace:
+
+* `<prefix>-ci-deploy`, an IAM role that GitHub Actions can assume only from a job in
+  that repository running in the GitHub environment named after `environment` (`prod`
+  or `dev`). It can call `lambda:UpdateFunctionCode` (plus two reads) on the three
+  Lambdas by name, and read/write the marker below. Nothing else: CI never runs
+  `terraform apply`.
+* `/<prefix>/deployed-commit`, an SSM parameter naming the commit that's live. It
+  starts as `unknown`; `make deploy` / `make deploy-dev` overwrite it after every
+  successful apply (`<sha>`, or `<sha>-dirty` from a dirty tree), and the CI deploy
+  overwrites it after each successful deploy. Terraform ignores its value.
+
+Outputs: `ci_deploy_role_arn` and `deployed_commit_parameter`, both null when disabled.
+
+The role trusts the account's GitHub OIDC provider
+(`token.actions.githubusercontent.com`), which is looked up, not created: it's one per
+account, shared by both workspaces, so it's created once by hand (plan 03, step 3.3).
+An apply with `github_repository` set fails until it exists. The trust condition
+assumes GitHub's default `sub` claim format
+(`repo:owner/repo:environment:<name>`); if the repository customises its OIDC subject
+claim, the role won't match. The full setup is `docs/plans/03-automated-updates.md`
+steps 3.3, 3.4 and 3.11–3.14.
+
+After a CI deploy, the next `make deploy` shows an in-place update to each Lambda CI
+touched (Terraform's `source_code_hash` is stale). It re-uploads the same bytes and is
+expected; don't "fix" it.
 
 ## Choosing a region
 

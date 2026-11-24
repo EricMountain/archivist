@@ -94,3 +94,14 @@ variable "passkey_cert_fingerprints" {
     error_message = "Keys must be \"debug\" or \"release\"."
   }
 }
+
+variable "github_repository" {
+  description = "GitHub repository (\"owner/repo\") whose Actions may deploy Lambda code to this instance, from the GitHub environment named after var.environment. Null (the default) creates no CI role and no deployed-commit marker. See ci.tf."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.github_repository == null || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "Expected \"owner/repo\", without a URL or .git suffix."
+  }
+}
