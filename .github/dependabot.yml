@@ -1,0 +1,79 @@
+# Plan step 3.18 (docs/plans/03-automated-updates.md).
+#
+# Weekly, Saturday morning, so the week's updates have merged before Sunday's Android
+# auto-release (3.20). A 3-day cooldown on every ecosystem: this repo deploys to
+# production unattended, so it should never be the first to install a new version.
+# (Security updates ignore both the schedule and the cooldown, which is intended.)
+#
+# One group per ecosystem, minor and patch only. Majors arrive as individual PRs and
+# never automerge (dependabot-automerge.yml), so a group PR is always safe to merge on
+# green CI. Terraform PRs never automerge either: a provider bump needs `make deploy`.
+
+version: 2
+
+updates:
+  # The root package.json declares the src/core and src/lambda workspaces.
+  # @aws-sdk/* bumps change no deployed bundle (scripts/build.mjs leaves them external),
+  # and the 3.21 deploy correctly finds nothing to ship for them.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: saturday
+      time: "05:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Reads android/gradle/libs.versions.toml, and also bumps the Gradle wrapper
+  # (gradle/wrapper/gradle-wrapper.properties, plus gradlew and the wrapper jar).
+  - package-ecosystem: gradle
+    directory: "/android"
+    schedule:
+      interval: weekly
+      day: saturday
+      time: "05:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 5
+    groups:
+      gradle-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Keeps the SHA pins from step 3.9 current, together with their "# vX.Y.Z" comments.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: saturday
+      time: "05:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: terraform
+    directories: ["/terraform", "/terraform/bootstrap"]
+    schedule:
+      interval: weekly
+      day: saturday
+      time: "05:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 5
+    groups:
+      terraform-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
