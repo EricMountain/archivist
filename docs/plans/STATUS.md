@@ -533,7 +533,7 @@ Dependabot in 3.18.
 | 3.6 Automerge GitHub App (manual) | done | 2026-11-24: App created and installed on this repo only (operator-confirmed; the user token can't list App installations to read permissions back). `AUTOMERGE_APP_ID` and `AUTOMERGE_APP_PRIVATE_KEY` present in `gh secret list --app dependabot`. Not exercised until the first automerge after 3.18 (checked in 3.24). |
 | 3.7 Protect `main` and release tags (manual) | not started | |
 | 3.8 Play Console permission check (manual) | not started | |
-| 3.9 Pin actions by SHA | not started | |
+| 3.9 Pin actions by SHA | partial | Every `uses:` in `android-ci.yml` and `android-release.yml` pinned to the latest release within its existing major (checkout v4.4.0, setup-java v4.9.1, gradle/actions/setup-gradle v4.4.4, upload-artifact v4.6.2). SHAs resolved 2026-11-24 from each action's own repo via the GitHub API and spot-checked with `git ls-remote`; gradle/actions v4.4.4 is an annotated tag, so its pin is the peeled commit, not the tag object. The plan's "Done when" grep prints nothing. YAML parses (Ruby); actionlint/zizmor weren't available locally, so neither was run. **Not verified:** that both workflows are still green with the pins, which needs a PR run on GitHub. Newer majors exist for all four (checkout v7, setup-java v6, setup-gradle v6, upload-artifact v7); Dependabot (3.18) offers them as individual major PRs. |
 | 3.10 Require SHA-pinned actions (manual) | not started | |
 | 3.11 CI deploy role | not started | |
 | 3.12 `make deploy` records deployed commit | not started | |
