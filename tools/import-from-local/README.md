@@ -522,8 +522,8 @@ Afterwards, `make backfill-places-dev ALL=1` (a dry run of
 
 `locate_missing.py` works out a coarse place for every file under a local
 directory that has no GPS of its own, and writes it to a JSON Lines file
-(`missing-locations.jsonl`, gitignored) for a later `PUT
-/photos/{photoId}/location`. It never signs in. Its network access is a one-time
+(`missing-locations.jsonl`, gitignored), which `modify_media.py place-from` then
+stores on the photos (see "Storing the places" below). It never signs in. Its network access is a one-time
 download of GeoNames `cities500.zip`, `admin1CodesASCII.txt` and `countryInfo.txt`
 into `.cache/locate/geonames/`, and, with `--host`, the instance's public region-pack
 manifest and tiles (cached in `.cache/geo/tiles/<host>/`).
@@ -593,6 +593,37 @@ at town or commune level, never that photo's village or hamlet. `approx` is not 
 Nothing consumes the file yet: `modify_media.py location` would need a mode that
 reads it, matches each `path` to an asset the way `--source-dir` already does,
 and PUTs `place` alone.
+
+
+### Storing the places
+
+`modify_media.py place-from` stores each line's `place` on the photo(s) holding that
+very file, with `PUT /photos/{photoId}/location` (the place only: the tool's
+coordinates are a town centre or what you typed, not a measurement, so nothing goes into
+the encrypted EXIF):
+
+```sh
+.venv/bin/python3 modify_media.py place-from missing-locations.jsonl \
+  --host photos.example.com --username someone@example.com \
+  --source-dir ~/Pictures/some/folder        # the --source locate_missing.py ran on
+# check the "old -> new" lines and the summary, then add --execute
+```
+
+* **Matching is by content, not name.** Each local file's size picks the candidate
+  photos (from the cached library listing, `library_cache.py`, refreshed for new
+  uploads), and its `contentHash` (HMAC under the account's hash secret, so it needs the
+  recovery code) must equal theirs. A photo renamed on the server, or uploaded by the
+  app under a `-<bucket>/` path, still matches; a same-named different photo never does.
+  A file uploaded twice gets the place on both copies.
+* **A photo whose encrypted EXIF has coordinates is left alone** (`has GPS`): its place
+  comes from those, via `location`.
+* An identical stored place isn't written again, so re-running is cheap. A different
+  one is replaced: on a photo with no GPS, a place can only have come from here.
+* A matched original is the very file locate_missing.py found no GPS in, so it goes in
+  `location`'s no-GPS memory: a later `location --all` keeps the place without
+  downloading the original to check.
+* `not on the server` lists files no photo holds (not uploaded yet, or uploaded
+  edited); `local file gone` lines whose file has moved since.
 
 ## Looking up coordinates
 

@@ -36,20 +36,30 @@ family of corrections. Subcommands:
                 whose bytes differ, when its capture time matches takenAt.
                 When they came from the original, the PUT also carries the
                 exifEnc re-encrypted with gpsLat/gpsLon/gpsAltM added, so the
-                original is never needed again. No coordinates anywhere ->
-                place: null. Places come from the gazetteer plus the
-                instance's region packs, if it publishes any. Skips assets
+                original is never needed again. No coordinates anywhere
+                keeps the stored place (--clear-without-gps clears it).
+                Places come from the gazetteer plus the instance's region
+                tiles, if it publishes any. Skips assets
                 whose place.src is already current (--force to redo them) and
                 remembers no-GPS assets
                 in library_cache.py's cache so a re-run doesn't re-download
                 them. Refuses when the owner has stripLocationOnUpload on,
                 unless --ignore-strip-setting. Needs the recovery code, like
                 orientation. Errors don't abort --all; the summary lists them.
+  place-from    Stores the places locate_missing.py worked out for photos with
+                no GPS (its missing-locations.jsonl) on their photos (`PUT
+                /photos/{photoId}/location`, place only). Each line's local
+                file, under --source-dir, is matched to the photos holding the
+                very same bytes (size, then contentHash), whatever their name
+                on the server. A photo whose encrypted EXIF has coordinates is
+                left alone: `location` places it from those. Dry run unless
+                --execute; needs the recovery code (contentHash and EXIF).
 
 All target an exact asset via --photo-id or --path, never a search -- see
 inspect_photo.py for the same two flags and why a mutation tool doesn't offer
 --filename's fuzzy search (you don't want to accidentally correct the wrong
-photo because two shared a basename). `location` alone also takes --all.
+photo because two shared a basename). `location` alone also takes --all;
+`place-from` takes a file of locations and matches by content, never by name.
 
 Usage:
     .venv/bin/python3 modify_media.py taken-at --host photos.example.com \\
@@ -80,6 +90,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -1352,12 +1363,199 @@ def location_main(api, args, *, progress=lambda msg: print(msg, file=sys.stderr)
     return 1 if summary.errors else 0
 
 
+# --- place-from --------------------------------------------------------------------
+
+def add_place_from_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "place-from",
+        help="store the places locate_missing.py worked out (its JSON Lines output) on their photos",
+    )
+    p.add_argument("jsonl", help="locate_missing.py's output, e.g. missing-locations.jsonl")
+    p.add_argument("--host", required=True)
+    p.add_argument("--username", required=True)
+    p.add_argument("--source-dir", required=True,
+                   help="the --source locate_missing.py ran on: each line's `path` is relative to it")
+    p.add_argument("--execute", action="store_true", help="store the places (default: dry run)")
+    p.add_argument("--concurrency", type=int, default=library_scan.DEFAULT_CONCURRENCY)
+    p.add_argument("--ignore-strip-setting", action="store_true",
+                   help="run even though the owner has stripLocationOnUpload on")
+    p.set_defaults(run=run_place_from)
+
+
+def run_place_from(args) -> int:
+    def progress(msg: str) -> None:
+        print(msg, file=sys.stderr)
+
+    try:
+        api = cli_auth.authenticate(args.host, args.username, progress).api
+    except cli_auth.AuthFailed as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return place_from_main(api, args, progress=progress)
+
+
+@dataclass
+class PlaceFromOutcome:
+    rel: str
+    kind: str  # updated | unchanged | has-gps | not-uploaded | missing-locally | error
+    photo_id: str | None = None
+    old_place: dict | None = None
+    new_place: dict | None = None
+    message: str = ""
+    remember_no_gps: dict | None = None
+
+
+def _read_locations(path: str) -> list[dict]:
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            if not isinstance(rec.get("path"), str) or not isinstance(rec.get("place"), dict):
+                raise ValueError(f"{path}:{n}: expected a locate_missing.py line with `path` and `place`")
+            out.append(rec)
+    return out
+
+
+def place_from_main(api, args, *, progress=lambda msg: print(msg, file=sys.stderr), enroll_fn=None,
+                    read_recovery=None) -> int:
+    """Everything after sign-in, with the collaborators injectable for tests."""
+    try:
+        records = _read_locations(args.jsonl)
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if not os.path.isdir(args.source_dir):
+        print(f"error: --source-dir {args.source_dir!r} is not a directory", file=sys.stderr)
+        return 2
+    settings = api.get_settings() or {}
+    if settings.get("stripLocationOnUpload") and not args.ignore_strip_setting:
+        print("error: this library has stripLocationOnUpload on, so it is meant to hold no location. "
+              "Refusing; pass --ignore-strip-setting to store places anyway.", file=sys.stderr)
+        return 1
+
+    print("Enrolling this run as a device via the account's recovery code...", file=sys.stderr)
+    read_recovery = read_recovery or (lambda: cli_auth.read_secret(
+        "ARCHIVIST_RECOVERY_CODE", "Recovery code (XXXXX-XXXXX-XXXXX-XXXXX-XXXXXX): "
+    ))
+    try:
+        enrollment = (enroll_fn or enroll)(api, read_recovery())
+    except EnrollmentError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"error unwrapping the master key -- likely a mistyped recovery code: {e}", file=sys.stderr)
+        return 1
+
+    details, _ = library_cache.get_snapshot(api, args.host, args.username, progress, refresh_listing=True,
+                                            concurrency=args.concurrency)
+    # Photos by original size: a file's candidates are the photos holding something of
+    # exactly its size, confirmed by contentHash -- so a photo renamed on the server, or
+    # uploaded under another path, still matches, and a same-named different photo never.
+    by_size: dict[int, list[tuple[str, dict]]] = {}
+    for pid, d in details.items():
+        for r in d.get("renditions", []):
+            if isinstance(r.get("plainBytes"), int):
+                by_size.setdefault(r["plainBytes"], []).append((pid, r))
+    no_gps = library_cache.load_no_gps(args.host, args.username)
+    progress(f"{len(records)} location(s) in {args.jsonl}; {len(details)} photo(s) on the server")
+
+    def one(rec: dict) -> list[PlaceFromOutcome]:
+        rel = rec["path"]
+        local = os.path.join(args.source_dir, rel)
+        try:
+            size = os.path.getsize(local)
+        except OSError:
+            return [PlaceFromOutcome(rel, "missing-locally", message=f"no file at {local}")]
+        cands = by_size.get(size, [])
+        if not cands:
+            return [PlaceFromOutcome(rel, "not-uploaded")]
+        digest = cf.content_hash_of_file(enrollment.hash_secret, local)
+        matched = sorted({pid: r for pid, r in cands if r.get("contentHash") == digest}.items())
+        if not matched:
+            return [PlaceFromOutcome(rel, "not-uploaded", message=f"{len(cands)} photo(s) of that size, none the same")]
+        return [_place_one(api, enrollment.master_key, rel, pid, r, rec["place"], args.execute)
+                for pid, r in matched]
+
+    outcomes: list[PlaceFromOutcome] = []
+    with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
+        for batch in pool.map(one, records):
+            for o in batch:
+                outcomes.append(o)
+                if o.kind in ("updated", "error") or (o.kind == "has-gps"):
+                    head = f"{o.photo_id}  {o.rel}" if o.photo_id else o.rel
+                    if o.kind == "updated":
+                        print(f"{head}  {describe_place(o.old_place)}  ->  {describe_place(o.new_place)}")
+                    else:
+                        print(f"{head}  {o.kind.upper()}: {o.message}")
+                if args.execute and o.remember_no_gps is not None:
+                    no_gps[o.photo_id] = o.remember_no_gps
+    if args.execute and any(o.remember_no_gps for o in outcomes):
+        library_cache.save_no_gps(args.host, args.username, no_gps)
+
+    c = Counter(o.kind for o in outcomes)
+    verb = "stored" if args.execute else "would store"
+    print(f"\n{'Stored' if args.execute else 'Dry run -- nothing stored'}:")
+    print(f"  {verb:<22} {c['updated']}")
+    print(f"  already that place     {c['unchanged']}")
+    print(f"  has GPS (left alone)   {c['has-gps']}")
+    print(f"  not on the server      {c['not-uploaded']}")
+    print(f"  local file gone        {c['missing-locally']}")
+    print(f"  errors                 {c['error']}")
+    missing = [o.rel for o in outcomes if o.kind == "not-uploaded"]
+    if missing:
+        shown = missing[:MISSING_LIST_INLINE_LIMIT]
+        print(f"not on the server ({len(missing)}): " + ", ".join(shown) + (" ..." if len(missing) > len(shown) else ""))
+    if not args.execute and c["updated"]:
+        print("\nRe-run with --execute to store them.")
+    return 1 if c["error"] else 0
+
+
+def _place_one(api, master_key: bytes, rel: str, photo_id: str, rendition: dict, place: dict,
+               execute: bool) -> PlaceFromOutcome:
+    for attempt in (1, 2):
+        detail = api.get_photo_detail(photo_id)
+        if detail is None:
+            return PlaceFromOutcome(rel, "not-uploaded", photo_id, message="purged since the listing")
+        meta = detail["meta"]
+        if meta.get("deletedAt"):
+            return PlaceFromOutcome(rel, "not-uploaded", photo_id, message="in the trash")
+        try:
+            dek = cf.unwrap_key(master_key, b64d(meta["encDek"]))
+            blob = decrypt_exif_blob(dek, photo_id, meta)
+        except Exception as e:  # a damaged blob shouldn't stop the rest
+            return PlaceFromOutcome(rel, "error", photo_id, message=f"can't read its EXIF: {e}")
+        if _coords_from_blob(blob) is not None:
+            return PlaceFromOutcome(rel, "has-gps", photo_id, old_place=meta.get("place"),
+                                    message="its EXIF has coordinates; `location` places it from those")
+        old = meta.get("place")
+        primary = meta.get("primaryRend") == rendition.get("renditionId")
+        # The local file locate_missing.py found no GPS in *is* this original (same
+        # contentHash), so `location` needn't download it to find out.
+        memo = {"renditionId": rendition["renditionId"], "contentHash": rendition["contentHash"]} if primary else None
+        if old == place:
+            return PlaceFromOutcome(rel, "unchanged", photo_id, old, place, remember_no_gps=memo)
+        if not execute:
+            return PlaceFromOutcome(rel, "updated", photo_id, old, place)
+        try:
+            api.put_photo_location(photo_id, place)
+        except ApiError as e:
+            if e.status == 409 and attempt == 1:
+                continue  # changed under us: read it again
+            return PlaceFromOutcome(rel, "error", photo_id, old, place, message=str(e))
+        return PlaceFromOutcome(rel, "updated", photo_id, old, place, remember_no_gps=memo)
+    return PlaceFromOutcome(rel, "error", photo_id, message="kept changing; try again")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     add_taken_at_parser(sub)
     add_orientation_parser(sub)
     add_location_parser(sub)
+    add_place_from_parser(sub)
     args = parser.parse_args()
     return args.run(args)
 

@@ -1090,6 +1090,108 @@ class DecryptFirstSegment(unittest.TestCase):
             cf.decrypt_first_segment(dek, aad, ct[: cf.SEGMENT])
 
 
+class PlaceFrom(LocationTestBase):
+    """`place-from`: locate_missing.py's answers stored on the photos holding those files."""
+
+    NARA = {"cc": "JP", "region": {"id": "JP.42", "name": "Nara"}, "locality": {"id": "1855612", "name": "Nara"},
+            "src": "osm@set;geonames-cities500@2026-11-13"}
+
+    def setUp(self):
+        super().setUp()
+        self.src = os.path.join(self._tmp.name, "merged")
+        os.makedirs(self.src)
+        self.lines = []
+
+    def local(self, rel, data, place=None):
+        path = os.path.join(self.src, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        self.lines.append({"path": rel, "size": len(data), "method": "prompt", "place": place or self.NARA})
+
+    def run_place_from(self, *extra):
+        jsonl = os.path.join(self._tmp.name, "missing-locations.jsonl")
+        with open(jsonl, "w", encoding="utf-8") as f:
+            for line in self.lines:
+                f.write(json.dumps(line) + "\n")
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command", required=True)
+        mm.add_place_from_parser(sub)
+        args = parser.parse_args(["place-from", jsonl, "--host", "photos.example.com", "--username",
+                                  "someone@example.com", "--source-dir", self.src, "--concurrency", "2", *extra])
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = mm.place_from_main(self.api, args, progress=lambda m: None, enroll_fn=self._enroll,
+                                    read_recovery=lambda: "unused")
+        self.stdout, self.stderr = out.getvalue(), err.getvalue()
+        return rc
+
+    def test_matches_by_content_whatever_the_names_and_stores_only_the_place(self):
+        data = _jpeg(pad=100)
+        self.api.add("P1", original=data, path="-1739773001/IMG_20140612_101500.jpg")
+        self.local("2014/renamed copy.jpg", data)
+        self.assertEqual(self.run_place_from(), 0)
+        self.assertEqual(self.api.puts, [])
+        self.assertIn("would store            1", self.stdout)
+        self.assertEqual(self.run_place_from("--execute"), 0)
+        self.assertEqual(self.api.puts, [("P1", self.NARA, None, None)])
+        self.assertIn("P1  2014/renamed copy.jpg", self.stdout)
+
+    def test_a_photo_with_gps_in_its_exif_is_left_alone(self):
+        data = _jpeg(pad=101)
+        self.api.add("P1", original=data, blob={"gpsLat": 35.01, "gpsLon": 135.77}, place={**KYOTO, "src": OLD_SRC})
+        self.local("a.jpg", data)
+        self.run_place_from("--execute")
+        self.assertEqual(self.api.puts, [])
+        self.assertIn("has GPS (left alone)   1", self.stdout)
+
+    def test_same_size_other_bytes_is_not_a_match(self):
+        a, b = _jpeg(pad=102), bytearray(_jpeg(pad=102))
+        b[-3] ^= 0xFF
+        self.api.add("P1", original=a)
+        self.local("a.jpg", bytes(b))
+        self.run_place_from("--execute")
+        self.assertEqual(self.api.puts, [])
+        self.assertIn("not on the server      1", self.stdout)
+
+    def test_every_copy_of_a_file_uploaded_twice_gets_the_place(self):
+        data = _jpeg(pad=103)
+        self.api.add("P1", original=data, path="a/x.jpg")
+        self.api.add("P2", original=data, path="b/x.jpg")
+        self.local("x.jpg", data)
+        self.run_place_from("--execute")
+        self.assertEqual(sorted(p[0] for p in self.api.puts), ["P1", "P2"])
+
+    def test_an_identical_place_is_not_written_again(self):
+        data = _jpeg(pad=104)
+        self.api.add("P1", original=data, place=self.NARA)
+        self.local("a.jpg", data)
+        self.run_place_from("--execute")
+        self.assertEqual(self.api.puts, [])
+        self.assertIn("already that place     1", self.stdout)
+
+    def test_a_missing_local_file_is_reported(self):
+        self.lines.append({"path": "gone.jpg", "size": 10, "place": self.NARA})
+        self.run_place_from()
+        self.assertIn("local file gone        1", self.stdout)
+
+    def test_refuses_a_strip_location_library(self):
+        self.api.settings["stripLocationOnUpload"] = True
+        self.local("a.jpg", _jpeg(pad=105))
+        self.assertEqual(self.run_place_from("--execute"), 1)
+        self.assertIn("stripLocationOnUpload", self.stderr)
+
+    def test_location_all_then_keeps_the_place_without_downloading(self):
+        data = _jpeg(pad=106)
+        self.api.add("P1", original=data)
+        self.local("a.jpg", data)
+        self.run_place_from("--execute")
+        self.assertIn("P1", library_cache.load_no_gps("photos.example.com", "someone@example.com"))
+        self.run_location("--execute")
+        self.assertEqual(self.downloads.calls, [])
+        self.assertEqual(self.api.details["P1"]["meta"]["place"], self.NARA)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Works out a coarse location for the photos in a local directory that carry no GPS
 of their own, asking as few questions as possible, and writes the result to a
-JSON Lines file that a later step can push through `PUT /photos/{photoId}/location`.
+JSON Lines file that `modify_media.py place-from` stores on the photos (`PUT
+/photos/{photoId}/location`).
 
 Nothing here signs in to an instance. Network: a one-time GeoNames download (the
 same three files tools/gazetteer/build.py uses) and, with `--host`, the instance's
