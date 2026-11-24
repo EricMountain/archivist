@@ -38,3 +38,13 @@ output "api_base_url" {
   description = "Invoke URL of the HTTP API's default stage."
   value       = aws_apigatewayv2_stage.default.invoke_url
 }
+
+output "ci_deploy_role_arn" {
+  description = "Role GitHub Actions assumes to deploy Lambda code (the AWS_DEPLOY_ROLE_ARN environment secret). Null when github_repository is unset."
+  value       = local.ci_enabled ? aws_iam_role.ci_deploy[0].arn : null
+}
+
+output "deployed_commit_parameter" {
+  description = "SSM parameter naming the commit that's live; make deploy writes it after an apply. Null when github_repository is unset."
+  value       = local.ci_enabled ? aws_ssm_parameter.deployed_commit[0].name : null
+}

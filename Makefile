@@ -40,8 +40,13 @@ test-integration: install test-infra-up
 # entry point for a deploy — never `terraform apply` on its own.
 # Explicitly selects the "default" workspace (prod's state) so a deploy never lands in
 # whatever workspace a previous dev session left checked out.
+#
+# After a successful apply, both deploy targets record the live commit in the
+# workspace's deployed-commit SSM parameter (plan 03, step 3.12; a no-op when
+# github_repository is unset) — that's what the CI Lambda deploy starts from. A
+# declined or failed apply exits non-zero, so the marker doesn't move.
 deploy: build
-	cd terraform && terraform workspace select default && terraform apply
+	cd terraform && terraform workspace select default && terraform apply && ../tools/record-deployed-commit.sh
 
 # The dev instance shares prod's backend.hcl (same state bucket) but lives in its own
 # Terraform workspace, so it gets its own state file, and its own tfvars, so it gets its
@@ -50,7 +55,7 @@ plan-dev: build
 	cd terraform && terraform workspace select dev && terraform plan -var-file=../private/instance/dev.tfvars
 
 deploy-dev: build
-	cd terraform && terraform workspace select dev && terraform apply -var-file=../private/instance/dev.tfvars
+	cd terraform && terraform workspace select dev && terraform apply -var-file=../private/instance/dev.tfvars && ../tools/record-deployed-commit.sh
 
 clean:
 	rm -rf dist coverage
