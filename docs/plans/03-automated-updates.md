@@ -182,7 +182,7 @@ tags.
 
 ```sh
 gh api -X PUT repos/{owner}/{repo}/environments/play \
-  -f 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[protected_branches]=false' \
   -F 'deployment_branch_policy[custom_branch_policies]=true'
 gh api -X POST repos/{owner}/{repo}/environments/play/deployment-branch-policies -f name=main -f type=branch
 gh api -X POST repos/{owner}/{repo}/environments/play/deployment-branch-policies -f name='android-v*' -f type=tag
@@ -227,7 +227,7 @@ Same shape as `play`: deployments only from `main`.
 ```sh
 for env in dev prod; do
   gh api -X PUT repos/{owner}/{repo}/environments/$env \
-    -f 'deployment_branch_policy[protected_branches]=false' \
+    -F 'deployment_branch_policy[protected_branches]=false' \
     -F 'deployment_branch_policy[custom_branch_policies]=true'
   gh api -X POST repos/{owner}/{repo}/environments/$env/deployment-branch-policies -f name=main -f type=branch
 done

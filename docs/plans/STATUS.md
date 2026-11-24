@@ -525,12 +525,12 @@ Dependabot in 3.18.
 
 | Step | Status | Notes |
 | --- | --- | --- |
-| 3.1 Lock down Actions defaults; release immutability (manual) | not started | |
-| 3.2 Play secrets into `play` environment (manual) | not started | |
-| 3.3 GitHub OIDC provider in AWS (manual) | not started | |
-| 3.4 `dev`/`prod` environments (manual) | not started | |
-| 3.5 Dependabot alerts and security updates (manual) | not started | |
-| 3.6 Automerge GitHub App (manual) | not started | |
+| 3.1 Lock down Actions defaults; release immutability (manual) | done | Verified 2026-11-24 via `gh api`: `default_workflow_permissions=read`, `can_approve_pull_request_reviews=false`, fork-PR `approval_policy=all_external_contributors`, `immutable-releases` `enabled=true`. |
+| 3.2 Play secrets into `play` environment (manual) | done | 2026-11-24: `play` environment created with custom deployment policies `main` (branch) and `android-v*` (tag), confirmed from the API response. All five secrets present in `gh secret list --env play`; values not exercised until the first 3.19 release runs through `play`. Repository-level copies intentionally kept until 3.19 deletes them. |
+| 3.3 GitHub OIDC provider in AWS (manual) | done | 2026-11-24: `aws iam create-open-id-connect-provider` for `token.actions.githubusercontent.com`, client ID `sts.amazonaws.com`, succeeded and returned the provider ARN. Nothing can assume through it until 3.13 applies the 3.11 role. |
+| 3.4 `dev`/`prod` environments (manual) | done | 2026-11-24: `dev` and `prod` environments created, each with custom deployment policy `main` (branch) only, confirmed from the API responses. No required reviewers. Secrets come in 3.14. |
+| 3.5 Dependabot alerts and security updates (manual) | done | 2026-11-24: `vulnerability-alerts` returns 204 (enabled); `automated-security-fixes` `enabled=true, paused=false`. Grouped security updates enabled in the UI (operator-confirmed; no API to read it back). |
+| 3.6 Automerge GitHub App (manual) | done | 2026-11-24: App created and installed on this repo only (operator-confirmed; the user token can't list App installations to read permissions back). `AUTOMERGE_APP_ID` and `AUTOMERGE_APP_PRIVATE_KEY` present in `gh secret list --app dependabot`. Not exercised until the first automerge after 3.18 (checked in 3.24). |
 | 3.7 Protect `main` and release tags (manual) | not started | |
 | 3.8 Play Console permission check (manual) | not started | |
 | 3.9 Pin actions by SHA | not started | |
