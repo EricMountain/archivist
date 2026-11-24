@@ -1,0 +1,124 @@
+name: Backend CI
+
+# Plan steps 3.15/3.16 (docs/plans/03-automated-updates.md). Typecheck, unit and
+# integration tests (DynamoDB Local + MinIO via tools/local-infra.sh), the Lambda
+# bundle, and a Terraform fmt/validate that needs no AWS access.
+#
+# The required check is the `backend-ci-ok` gate job, not the individual jobs: on a PR
+# that touches nothing backend-related those are skipped, and a skipped job never
+# reports. On `push` to main everything always runs, whatever changed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# PR runs supersede each other. Runs on main never share a group: each one gates (and,
+# from step 3.21, deploys) its own commit.
+concurrency:
+  group: backend-ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.diff.outputs.backend }}
+    steps:
+      # The compare API needs only contents: read and no checkout. It lists at most
+      # 300 files; at that size, or on any API error, assume everything changed.
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! files=$(gh api "repos/$REPO/compare/$BASE...$HEAD" \
+              --jq 'if (.files | length) >= 300 then error("too many files") else .files[].filename end'); then
+            echo "::notice::Couldn't list the PR's changed files; running everything."
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s\n' "$files" | grep -qE '^(src/|test/|scripts/|terraform/|package(-lock)?\.json$|tsconfig[^/]*\.json$|vitest\.config\.ts$|\.nvmrc$|Makefile$|tools/local-infra\.sh$|\.github/workflows/backend-ci\.yml$)'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No backend files changed."
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # No dependency cache: npm ci takes seconds here, and an uncached build can't be
+      # poisoned by a cache another run wrote.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - run: npm ci
+
+      # Typecheck + the whole vitest suite, including the DynamoDB Local/MinIO-gated
+      # tests: the runner has Docker and the AWS CLI that tools/local-infra.sh needs.
+      - run: make test-integration
+
+      - run: npm run build
+
+  terraform:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform -chdir=terraform fmt -check -recursive
+
+      - name: terraform validate (root module)
+        run: |
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
+
+      - name: terraform validate (bootstrap)
+        run: |
+          terraform -chdir=terraform/bootstrap init -backend=false -input=false
+          terraform -chdir=terraform/bootstrap validate
+
+  # The one required check (step 3.17). Passes when every job it needs succeeded or
+  # was skipped; fails on failure or cancellation.
+  backend-ci-ok:
+    needs: [changes, test, terraform]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::A backend CI job finished with '$r'."; exit 1 ;;
+            esac
+          done
