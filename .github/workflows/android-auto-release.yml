@@ -77,3 +77,21 @@ jobs:
     with:
       version: ${{ needs.plan.outputs.version }}
       ref: ${{ needs.plan.outputs.sha }}
+
+  # Step 3.22: nobody is watching a scheduled run, so a failure opens an issue (or
+  # comments on the open one). "No Android changes" is a success and opens nothing.
+  report-failure:
+    needs: [plan, ci, release]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/report-failure.sh
