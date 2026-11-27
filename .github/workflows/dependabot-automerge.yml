@@ -1,0 +1,67 @@
+name: Dependabot automerge
+
+# Plan step 3.18 (docs/plans/03-automated-updates.md). Turns on auto-merge for
+# Dependabot's minor/patch PRs, so they merge by themselves once the required checks
+# (backend-ci-ok, android-ci-ok; step 3.17) pass. Auto-merge never bypasses those
+# checks, which is why this must not land before 3.17.
+#
+# The merge is enabled with a token from the automerge GitHub App (step 3.6), not
+# GITHUB_TOKEN: GitHub starts no workflows for events caused by GITHUB_TOKEN, so a
+# merge made with it would land on main without running CI or the deploy. The App's
+# credentials are Dependabot secrets, readable only by Dependabot-triggered runs.
+#
+# Majors stay open for a human. So do Terraform updates, whatever their size: a
+# provider bump only takes effect through `make deploy` (D3), so merging one
+# automatically would just leave it unapplied.
+#
+# `pull_request`, never `pull_request_target`: this workflow must not run with write
+# access in the context of untrusted PR code.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  automerge:
+    # The PR-author check is the authoritative one. The actor check is an extra guard
+    # on top (a human pushing onto a Dependabot branch must not get their commit
+    # automerged), so zizmor's "actor is spoofable" doesn't weaken anything here.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]' # zizmor: ignore[bot-conditions]
+    runs-on: ubuntu-latest
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - id: app-token
+        # Allow-list, not deny-list: an empty or unexpected update-type stays manual.
+        if: >-
+          (steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
+           steps.metadata.outputs.update-type == 'version-update:semver-patch') &&
+          steps.metadata.outputs.package-ecosystem != 'terraform'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          # app-id is deprecated in favour of client-id in v3, but still accepted; it
+          # matches the App ID step 3.6 stores.
+          app-id: ${{ secrets.AUTOMERGE_APP_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Enable auto-merge
+        if: steps.app-token.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+      - name: Leave for a human
+        if: steps.app-token.outcome == 'skipped'
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+        run: echo "::notice::Not automerging ($ECOSYSTEM, $UPDATE_TYPE); this PR needs a human."
