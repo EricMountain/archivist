@@ -122,3 +122,106 @@ jobs:
               *) echo "::error::A backend CI job finished with '$r'."; exit 1 ;;
             esac
           done
+
+  # Step 3.21: every merge to main that passed the jobs above deploys its Lambda code,
+  # dev first, then prod. Opt-in through the AUTO_DEPLOY_LAMBDAS repository variable,
+  # so a fork stays inert, and so automation can be paused without editing this file.
+  # CI updates function code only; Terraform stays with `make deploy` (D3). The logic
+  # lives in .github/scripts/deploy-lambdas.sh, shared by both jobs.
+  #
+  # concurrency with cancel-in-progress false: a running deploy finishes, and of the
+  # runs queued behind it only the newest one runs. That's correct, because each run
+  # deploys everything between the live commit and its own.
+  deploy-dev:
+    needs: [changes, test, terraform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AUTO_DEPLOY_LAMBDAS == 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    outputs:
+      result: ${{ steps.deploy.outputs.result }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - id: deploy
+        env:
+          SHA: ${{ github.sha }}
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          INSTANCE_DOMAIN: ${{ secrets.INSTANCE_DOMAIN }}
+          DEPLOY_ENV: dev
+        run: .github/scripts/deploy-lambdas.sh
+
+  # Only after dev deployed and passed its smoke test, or had nothing to deploy. When
+  # dev skipped on pending infrastructure, prod waits too: nothing reaches prod that
+  # dev hasn't run first.
+  deploy-prod:
+    needs: deploy-dev
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AUTO_DEPLOY_LAMBDAS == 'true' && needs.deploy-dev.outputs.result != 'infra-pending'
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - id: deploy
+        env:
+          SHA: ${{ github.sha }}
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          INSTANCE_DOMAIN: ${{ secrets.INSTANCE_DOMAIN }}
+          DEPLOY_ENV: prod
+        run: .github/scripts/deploy-lambdas.sh
+
+  # Step 3.22: a failed run on main (tests or deploy) opens an issue, or comments on
+  # the open one. Not for PRs: a red PR is already visible on the PR. Skips, including
+  # the infrastructure guard, aren't failures and open nothing.
+  report-failure:
+    needs: [changes, test, terraform, backend-ci-ok, deploy-dev, deploy-prod]
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/report-failure.sh
