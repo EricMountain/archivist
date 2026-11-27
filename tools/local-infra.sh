@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Reusable DynamoDB Local + MinIO fixture for the DynamoDB-Local/MinIO-gated test
+# Reusable DynamoDB Local + S3-emulator fixture for the DynamoDB-Local/MinIO-gated test
 # suites (test/lambda/*, test/repo/*) — see their own "Same DynamoDB Local + MinIO
-# gate" doc comments. Every session before this one span these up by hand and tore
+# gate" doc comments. The S3 emulator was MinIO until its community image left
+# Docker Hub (2026); it's now RustFS, a MinIO-compatible server. The tests' "MinIO"
+# wording means "the local S3 emulator". Every session before this one span these up by hand and tore
 # them down after ("no committed compose file for this exists" — see STATUS.md's
 # history on plan step 1.8/2.10); this is that setup, made reusable instead of
 # reinvented per session.
@@ -19,28 +21,35 @@
 # `down`/`status` are exposed separately for iterative local work (leave the
 # containers running across multiple test runs instead of paying startup cost every
 # time — that's the whole point of "reusable").
+#
+# Both images are pinned by digest so CI and laptops run the same bytes; bump them by
+# hand (Dependabot doesn't read shell scripts).
 set -euo pipefail
 
 DYNAMO_CONTAINER=archivist-test-dynamodb
-MINIO_CONTAINER=archivist-test-minio
+S3_CONTAINER=archivist-test-s3
+# Pre-RustFS name; removed on `up`/`down` so it can't hold the port.
+LEGACY_MINIO_CONTAINER=archivist-test-minio
+DYNAMO_IMAGE=amazon/dynamodb-local:3.3.2@sha256:6ada631ec7aa5fc83446855eb17233e3dad184fec47477e8140c6c569cfe0c86
+S3_IMAGE=rustfs/rustfs:1.0.7@sha256:69bd3c4d8d79b74723bfd68c9fbd9085155d4d4b44a5a136d87502f3075cc68c
 DYNAMO_PORT=18000
-MINIO_PORT=19000
+S3_PORT=19000
 TABLE_NAME=archivist-test-media
 ORIGINALS_BUCKET=archivist-test-originals
 DERIVED_BUCKET=archivist-test-derived
-MINIO_USER=minioadmin
-MINIO_PASSWORD=minioadmin
+S3_USER=testadmin
+S3_PASSWORD=testadmin-secret
 AWS_REGION_VALUE=us-east-1
 
 export_env() {
   cat <<EOF
 export DYNAMODB_ENDPOINT=http://localhost:${DYNAMO_PORT}
 export MEDIA_TABLE=${TABLE_NAME}
-export S3_ENDPOINT=http://localhost:${MINIO_PORT}
+export S3_ENDPOINT=http://localhost:${S3_PORT}
 export ORIGINALS_BUCKET=${ORIGINALS_BUCKET}
 export DERIVED_BUCKET=${DERIVED_BUCKET}
-export AWS_ACCESS_KEY_ID=${MINIO_USER}
-export AWS_SECRET_ACCESS_KEY=${MINIO_PASSWORD}
+export AWS_ACCESS_KEY_ID=${S3_USER}
+export AWS_SECRET_ACCESS_KEY=${S3_PASSWORD}
 export AWS_REGION=${AWS_REGION_VALUE}
 EOF
 }
@@ -73,26 +82,30 @@ up() {
     echo "started existing $DYNAMO_CONTAINER"
   else
     docker run -d --name "$DYNAMO_CONTAINER" -p "${DYNAMO_PORT}:8000" \
-      amazon/dynamodb-local:latest -jar DynamoDBLocal.jar -inMemory -sharedDb >/dev/null
+      "$DYNAMO_IMAGE" -jar DynamoDBLocal.jar -inMemory -sharedDb >/dev/null
     echo "created $DYNAMO_CONTAINER"
   fi
 
-  if is_running "$MINIO_CONTAINER"; then
-    echo "$MINIO_CONTAINER already running"
-  elif exists "$MINIO_CONTAINER"; then
-    docker start "$MINIO_CONTAINER" >/dev/null
-    echo "started existing $MINIO_CONTAINER"
+  if exists "$LEGACY_MINIO_CONTAINER"; then
+    docker rm -f "$LEGACY_MINIO_CONTAINER" >/dev/null
+    echo "removed legacy $LEGACY_MINIO_CONTAINER"
+  fi
+  if is_running "$S3_CONTAINER"; then
+    echo "$S3_CONTAINER already running"
+  elif exists "$S3_CONTAINER"; then
+    docker start "$S3_CONTAINER" >/dev/null
+    echo "started existing $S3_CONTAINER"
   else
-    docker run -d --name "$MINIO_CONTAINER" -p "${MINIO_PORT}:9000" \
-      -e MINIO_ROOT_USER="$MINIO_USER" -e MINIO_ROOT_PASSWORD="$MINIO_PASSWORD" \
-      minio/minio server /data >/dev/null
-    echo "created $MINIO_CONTAINER"
+    docker run -d --name "$S3_CONTAINER" -p "${S3_PORT}:9000" \
+      -e RUSTFS_ACCESS_KEY="$S3_USER" -e RUSTFS_SECRET_KEY="$S3_PASSWORD" \
+      "$S3_IMAGE" >/dev/null
+    echo "created $S3_CONTAINER"
   fi
 
   eval "$(export_env)"
 
   wait_for "DynamoDB Local" "aws dynamodb list-tables --endpoint-url http://localhost:${DYNAMO_PORT}"
-  wait_for "MinIO" "aws --endpoint-url http://localhost:${MINIO_PORT} s3 ls"
+  wait_for "RustFS" "aws --endpoint-url http://localhost:${S3_PORT} s3 ls"
 
   # Both the table and the buckets are idempotent to (re-)create: a fresh container
   # has neither, a reused one (docker start on an existing container, not a brand new
@@ -133,8 +146,8 @@ up() {
   fi
 
   for bucket in "$ORIGINALS_BUCKET" "$DERIVED_BUCKET"; do
-    if ! aws --endpoint-url "http://localhost:${MINIO_PORT}" s3 ls "s3://${bucket}" >/dev/null 2>&1; then
-      aws --endpoint-url "http://localhost:${MINIO_PORT}" s3 mb "s3://${bucket}" >/dev/null
+    if ! aws --endpoint-url "http://localhost:${S3_PORT}" s3 ls "s3://${bucket}" >/dev/null 2>&1; then
+      aws --endpoint-url "http://localhost:${S3_PORT}" s3 mb "s3://${bucket}" >/dev/null
       echo "created bucket $bucket"
     fi
   done
@@ -143,12 +156,12 @@ up() {
 }
 
 down() {
-  docker rm -f "$DYNAMO_CONTAINER" "$MINIO_CONTAINER" >/dev/null 2>&1 || true
-  echo "removed $DYNAMO_CONTAINER and $MINIO_CONTAINER"
+  docker rm -f "$DYNAMO_CONTAINER" "$S3_CONTAINER" "$LEGACY_MINIO_CONTAINER" >/dev/null 2>&1 || true
+  echo "removed $DYNAMO_CONTAINER and $S3_CONTAINER"
 }
 
 status() {
-  for c in "$DYNAMO_CONTAINER" "$MINIO_CONTAINER"; do
+  for c in "$DYNAMO_CONTAINER" "$S3_CONTAINER"; do
     if is_running "$c"; then
       echo "$c: running"
     elif exists "$c"; then

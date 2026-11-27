@@ -5,32 +5,90 @@ name: Android CI
 # docs/design/android.md. Release/publish lives in android-release.yml instead --
 # kept separate so a PR run never needs the signing/Play secrets.
 
+#
+# Plan step 3.16: no workflow-level `paths` filter, so the `android-ci-ok` gate job
+# reports on every PR and can be a required check. The `changes` job decides whether
+# the real work runs.
+
 on:
   pull_request:
-    paths:
-      - "android/**"
-      - ".github/workflows/android-ci.yml"
   push:
     branches: [main]
-    paths:
-      - "android/**"
-      - ".github/workflows/android-ci.yml"
+  # The weekly auto-release (step 3.20) runs the full suite on the exact commit it is
+  # about to release.
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit SHA to check out and test.
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+# PR runs supersede each other. Anything else (a push to main, or a call from the
+# release automation, where github.ref and github.event_name are the caller's) gets a
+# group of its own, so a release's test run can never cancel, or be cancelled by, an
+# unrelated run.
 concurrency:
-  group: android-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: android-ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Did anything Android-related change? On a PR: against the PR base. On a push to
+  # main: against the previous tip (github.event.before); the release re-tests the
+  # exact commit it ships anyway (3.20). When called (inputs.ref set): always yes.
+  # The compare API needs only contents: read and no checkout. It lists at most 300
+  # files; at that size, or on any API error, assume everything changed.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.diff.outputs.android }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          CALLED_REF: ${{ inputs.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          all() { echo "$1"; echo "android=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ -n "$CALLED_REF" ]; then all "Called by another workflow: running everything."; fi
+          case "$EVENT" in
+            pull_request) base=$PR_BASE; head=$PR_HEAD ;;
+            push) base=$PUSH_BEFORE; head=$PUSH_AFTER ;;
+            *) all "Event $EVENT: running everything." ;;
+          esac
+          case "$base" in ""|0000000000000000000000000000000000000000) all "No base commit: running everything." ;; esac
+          if ! files=$(gh api "repos/$REPO/compare/$base...$head" \
+              --jq 'if (.files | length) >= 300 then error("too many files") else .files[].filename end'); then
+            all "::notice::Couldn't list the changed files; running everything."
+          fi
+          if printf '%s\n' "$files" | grep -qE '^(android/|\.github/workflows/android-ci\.yml$)'; then
+            echo "android=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No Android files changed."
+            echo "android=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build-and-test:
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: android
     steps:
+      # inputs.ref is empty except under workflow_call, and then checkout falls back to
+      # the event's own commit, as before.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
@@ -81,3 +139,21 @@ jobs:
             android/core/crypto/build/reports/tests/
             android/app/build/outputs/androidTest-results/
           retention-days: 14
+
+  # The one required check (step 3.17). Passes when every job it needs succeeded or
+  # was skipped; fails on failure or cancellation.
+  android-ci-ok:
+    needs: [changes, build-and-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::An Android CI job finished with '$r'."; exit 1 ;;
+            esac
+          done

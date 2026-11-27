@@ -9,7 +9,7 @@ install:
 build: install
 	npm run build
 
-# Pure-unit-test suite only — no DynamoDB Local/MinIO needed, and every test that
+# Pure-unit-test suite only — no DynamoDB Local/S3 emulator needed, and every test that
 # does need them (test/lambda/*, test/repo/*) skips itself via its own RUN check when
 # their env vars aren't set. See test-integration for the full suite.
 test: install
@@ -30,7 +30,7 @@ test-infra-down:
 test-infra-status:
 	./tools/local-infra.sh status
 
-# The full suite, DynamoDB-Local/MinIO-gated tests included. Leaves the containers
+# The full suite, DynamoDB-Local/S3-emulator-gated tests included. Leaves the containers
 # running afterwards (test-infra-down to reclaim them) — rerunning this is meant to be
 # cheap, not a fresh docker pull/boot every time.
 test-integration: install test-infra-up
