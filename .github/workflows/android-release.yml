@@ -1,37 +1,94 @@
 name: Android Release
 
-# Plan step 2.16 (docs/plans/02-android-mvp.md). Tagging android-vX.Y.Z assembles,
-# signs and uploads the app bundle to the Play internal track -- no manual Play
-# Console step. See "CI and release" in docs/design/android.md for the secrets this
-# depends on and why the tag is prefixed (this repo also holds the unrelated
-# Terraform-deployed backend, which has its own release path).
+# Plan step 2.16 (docs/plans/02-android-mvp.md), reworked by plan 03 step 3.19.
+# Assembles, signs and uploads the app bundle to the Play internal track, then records
+# that exact bundle as an immutable GitHub Release. See "CI and release" in
+# docs/design/android.md for the secrets this depends on and why the tag is prefixed
+# (this repo also holds the unrelated Terraform-deployed backend, which has its own
+# release path).
+#
+# Two ways in, one set of steps:
+# - a hand-pushed android-vX.Y.Z tag;
+# - a call from android-auto-release.yml (step 3.20) with a version and a commit SHA.
+#   There the tag doesn't exist yet: publishing the GitHub Release creates it.
 
 on:
   push:
     tags:
       - "android-v*.*.*"
+  workflow_call:
+    inputs:
+      version:
+        description: Version name to release, e.g. 0.3.17 (no "android-v" prefix).
+        required: true
+        type: string
+      ref:
+        description: Full commit SHA to build and tag.
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+# Two overlapping runs would both ask Play for the current versionCode
+# (resolutionStrategy AUTO) and collide.
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
 jobs:
-  release:
+  # Holds the Play secrets (environment `play`, step 3.2) and nothing that can write
+  # to the repo.
+  publish:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: android
+    environment: play
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
+      - name: Resolve version and commit
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            version=$INPUT_VERSION
+            sha=$INPUT_REF
+          else
+            version=${GITHUB_REF_NAME#android-v}
+            sha=$GITHUB_SHA
+          fi
+          if ! printf '%s' "$version" | grep -qxE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::Version '$version' isn't X.Y.Z."
+            exit 1
+          fi
+          if ! printf '%s' "$sha" | grep -qxE '[0-9a-f]{40}'; then
+            echo "::error::Ref '$sha' isn't a full commit SHA."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "ARCHIVIST_VERSION_NAME=$version" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.version.outputs.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: "21"
 
+      # No Gradle cache in a signing job: a release built from a cache entry some other
+      # run wrote is only as trustworthy as that run (zizmor cache-poisoning). Weekly
+      # cadence makes the cold build an acceptable cost.
       - uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
-
-      - name: Compute version name from tag
-        run: echo "ARCHIVIST_VERSION_NAME=${GITHUB_REF_NAME#android-v}" >> "$GITHUB_ENV"
+        with:
+          cache-disabled: true
 
       - name: Decode signing keystore
         env:
@@ -52,9 +109,94 @@ jobs:
       # machine) it's unset, so the plugin stays inert and assembleRelease/bundleRelease
       # need no Play access at all.
       - name: Publish to Play internal track
+        working-directory: android
         env:
           ANDROID_PUBLISHER_CREDENTIALS: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew --no-daemon :app:publishBundle
+
+      # Signed with the upload key, not Play's app-signing key: it's the exact artifact
+      # uploaded, not what devices receive. Nothing secret in it.
+      - name: Keep the uploaded bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-bundle
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 30
+
+  # Can write to the repo, and so gets no environment: the Play secrets never reach it.
+  # If Play publishing succeeded but this failed, re-run just this job.
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.publish.outputs.version }}
+      SHA: ${{ needs.publish.outputs.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Full history and tags, for the release notes.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.publish.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/bundle
+
+      - name: Name and checksum the bundle
+        working-directory: ${{ runner.temp }}/bundle
+        run: |
+          mv app-release.aab "archivist-$VERSION.aab"
+          sha256sum "archivist-$VERSION.aab" > "archivist-$VERSION.aab.sha256"
+          cat "archivist-$VERSION.aab.sha256"
+
+      # One line per commit under android/ since the previous release tag (by semver,
+      # not lexically). main is squash-merge only (step 3.7), so each subject is a PR
+      # title.
+      - name: Write release notes
+        run: |
+          tag="android-v$VERSION"
+          prev=$( { git tag --list 'android-v*'; echo "$tag"; } | sort -uV | grep -B1 -xF "$tag" | head -n 1)
+          [ "$prev" = "$tag" ] && prev=""
+          notes="$RUNNER_TEMP/notes.md"
+          if [ -z "$prev" ]; then
+            echo "First release with a GitHub Release record." > "$notes"
+          else
+            changes=$(git log --format='- %s' "$prev..$SHA" -- android/)
+            if [ -n "$changes" ]; then
+              { echo "Changes to android/ since $prev:"; echo; echo "$changes"; } > "$notes"
+            else
+              echo "No changes to android/ since $prev." > "$notes"
+            fi
+          fi
+          cat "$notes"
+
+      # Assets go up while the release is still a draft: once published, an immutable
+      # release (step 3.1) accepts no more. Publishing also creates the tag when it
+      # doesn't exist yet (the weekly path). A tag created with GITHUB_TOKEN starts no
+      # workflow, so it can't publish to Play a second time. On the hand-tag path the
+      # tag already exists and --target is ignored.
+      - name: Create and publish the GitHub Release
+        run: |
+          tag="android-v$VERSION"
+          if is_draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$is_draft" = "false" ]; then
+              echo "::notice::Release $tag is already published; nothing to do."
+              exit 0
+            fi
+            echo "Deleting the draft left by an earlier attempt."
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft \
+            --target "$SHA" --title "Archivist $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP/bundle/archivist-$VERSION.aab" \
+            "$RUNNER_TEMP/bundle/archivist-$VERSION.aab.sha256"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false

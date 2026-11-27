@@ -1,0 +1,79 @@
+name: Android Auto-Release
+
+# Plan step 3.20 (docs/plans/03-automated-updates.md). Weekly: if android/ changed
+# since the last android-v* release, run the full Android suite on that exact commit,
+# then release it as the next patch version to the Play internal track, with its
+# immutable GitHub Release and tag (android-release.yml, step 3.19). Who wrote the
+# changes (a human, Dependabot, or both) doesn't matter (D2).
+#
+# Opt-in: nothing runs unless the repository variable AUTO_RELEASE_ANDROID is 'true',
+# so a fork stays inert. Set it to 'false' to pause.
+
+on:
+  # Sunday morning, after Saturday's Dependabot PRs have had time to merge.
+  schedule:
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    # Only ever from main: a dispatch from another branch would release that branch.
+    if: vars.AUTO_RELEASE_ANDROID == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.plan.outputs.go }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: plan
+        run: |
+          # Highest release by semver, not lexically (0.3.16 > 0.3.9).
+          last=$(git tag --list 'android-v*' --sort=-v:refname | grep -xE 'android-v[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+          if [ -z "$last" ]; then
+            echo "::error::No android-vX.Y.Z tag found; release the first version by hand."
+            exit 1
+          fi
+          # Every later job uses this SHA, never a fresh main.
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if git diff --quiet "$last" "$sha" -- android/; then
+            echo "::notice::No Android changes since $last; nothing to release."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          v=${last#android-v}
+          version="${v%.*}.$(( ${v##*.} + 1 ))"
+          echo "Releasing $version ($sha); last release $last."
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+  # The full suite on the exact commit being released.
+  ci:
+    needs: plan
+    if: needs.plan.outputs.go == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/android-ci.yml
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+
+  # Publishes to Play, then creates the GitHub Release, and with it the tag.
+  release:
+    needs: [plan, ci]
+    if: needs.plan.outputs.go == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/android-release.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      ref: ${{ needs.plan.outputs.sha }}
