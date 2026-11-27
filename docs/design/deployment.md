@@ -76,6 +76,17 @@ their-domain.example
 All of it Terraform, all of it parameterised — nothing in the configuration names the
 author's domain, account or region.
 
+**CI deployment is an opt-in operator convenience, not part of self-hosting.** The
+repository can deploy Lambda code from GitHub Actions on every merge, release the app
+weekly, and automerge Dependabot updates (`docs/ops/automated-updates.md`). None of that
+is needed to run an instance: `make deploy` from a laptop is the whole deployment path,
+and stays the only path for infrastructure changes. A fork is inert by default. The
+CI deploy role only exists when `github_repository` is set in the operator's tfvars,
+the deploy and release workflows do nothing until the operator sets the
+`AUTO_DEPLOY_LAMBDAS` / `AUTO_RELEASE_ANDROID` repository variables, and every
+deployment-specific value (role ARN, region, domain) is a secret in the operator's own
+GitHub environments, never a committed value.
+
 ## The app must find the backend
 
 Archivist ships as one generic Android app that talks to whichever instance you point

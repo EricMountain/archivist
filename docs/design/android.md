@@ -67,7 +67,7 @@ The listing existing changes a few things from "later" to "now":
   account-wide admin.
 * **`targetSdk` has a deadline.** Play requires new releases to target an API level
   within about a year of the latest. This is a recurring maintenance obligation, not a
-  one-off — worth a Renovate-adjacent reminder, since it can block shipping a fix.
+  one-off — worth a reminder beside the Dependabot updates, since it can block shipping a fix.
 * **Data Safety declaration.** Needed before any release. The honest answers here are
   unusually good: data encrypted in transit *and* at rest, keys not held by the
   developer, deletion supported. Worth filling in carefully rather than defensively.
@@ -119,8 +119,8 @@ below for what it's for.
 | EXIF | `androidx.exifinterface` | Reads `OffsetTimeOriginal` and GPS, which the platform API doesn't expose fully |
 | Background | WorkManager | Constraint handling is the battery/data policy |
 | Auth | AndroidX Credential Manager | Passkeys, and the same API covers Google sign-in |
-| Build | Gradle + version catalogs (`libs.versions.toml`) | Renovate needs a single declarative place to bump |
-| CI | GitHub Actions | Fully automated build, test and release; Renovate-driven |
+| Build | Gradle + version catalogs (`libs.versions.toml`) | Dependabot needs a single declarative place to bump |
+| CI | GitHub Actions | Fully automated build, test and release; Dependabot-driven |
 | Test | JUnit5, Turbine, MockWebServer, Robolectric, Compose UI test | — |
 
 **Not using AWS Amplify.** It would bring a large dependency tree to solve problems we
@@ -768,11 +768,14 @@ manifests is a user, years later, holding a photo nobody can read.
 
 ## Build and dependencies
 
-Version catalogs (`gradle/libs.versions.toml`) so Renovate has one file to update. Renovate grouped by ecosystem, automerging patch and minor
-updates once CI is green; majors always manual.
+Version catalogs (`gradle/libs.versions.toml`) so Dependabot has one file to update.
+Dependabot groups minor and patch updates per ecosystem (the Gradle wrapper included)
+and automerges them once the required checks are green; majors are always manual. See
+`docs/plans/03-automated-updates.md`.
 
 GitHub Actions runs build, unit tests and instrumented tests on a Gradle-managed device
-for every PR, then assembles, signs and uploads to the Play internal track on tag.
+for every PR that touches `android/`, then assembles, signs and uploads to the Play
+internal track on a tag, or from the weekly auto-release.
 
 The PR half is the part that isn't optional: the crypto round-trip and Tink conformance
 tests fail silently by nature, and a format regression found by hand is one found years
@@ -783,8 +786,9 @@ which at roughly 8 minutes a build is more headroom than a solo project will use
 
 ### CI and release, as built
 
-`.github/workflows/android-ci.yml` (PR + push to `main`, paths-filtered to `android/**`)
-runs `:core:crypto:testDebugUnitTest`, `:app:testDebugUnitTest`, `:app:assembleDebug`,
+`.github/workflows/android-ci.yml` (every PR and push to `main`; a `changes` job skips
+the real work when nothing under `android/` changed, and the `android-ci-ok` gate job
+reports either way, so it can be a required check) runs `:core:crypto:testDebugUnitTest`, `:app:testDebugUnitTest`, `:app:assembleDebug`,
 then the instrumented suite on a Gradle Managed Device (`pixel2api30`, `aosp-atd`,
 declared in `app/build.gradle.kts`'s `testOptions.managedDevices`) — GitHub's standard
 Linux runners have hardware-accelerated Android virtualization once the job grants
@@ -802,6 +806,23 @@ wires that one task to the whole chain (build, sign, upload). `versionCode` is l
 static in `app/build.gradle.kts` and overridden by the plugin's
 `resolutionStrategy.set(ResolutionStrategy.AUTO)`, which reads the Play Console's
 current value and increments it — no manual version-bump commit before tagging.
+
+Plan 03 (`docs/plans/03-automated-updates.md`) added three things on top:
+
+* **The `play` environment.** The five secrets below are environment secrets, released
+  only to the `publish` job, and the environment only accepts `main` and `android-v*`
+  tags.
+* **An immutable GitHub Release per version.** After `publishBundle`, a second job with
+  no environment, so it never sees the Play secrets, attaches the exact uploaded bundle
+  (`archivist-<version>.aab`, signed with the upload key) and its SHA-256 to a GitHub
+  Release, with the `android/` commit subjects since the previous tag as notes. Release
+  immutability and a tag ruleset mean release tags can't be moved or deleted.
+* **The weekly auto-release.** `android-auto-release.yml` runs every Sunday when the
+  `AUTO_RELEASE_ANDROID` repository variable is `true`. If `android/` changed since the
+  highest `android-v*` tag, it runs the full `android-ci.yml` on that exact commit (via
+  `workflow_call`), then calls `android-release.yml` with the next patch version. That
+  publishes to the internal track and creates the release, and with it the tag. It
+  stops at the internal track; promotion stays a Play Console click.
 
 **A real GPP quirk, found by actually running `assembleRelease` locally while writing
 this, not from its docs**: the plugin wires a Play API call into *every* release-variant
@@ -824,8 +845,8 @@ for the exact steps, both for that and for creating the secrets themselves.
 
 ### Secrets
 
-Five, all of which must exist before the first release can ship (GitHub Actions repo
-secrets, read by `android-release.yml`):
+Five, all of which must exist before the first release can ship (GitHub Actions secrets
+in the `play` environment, read by `android-release.yml`'s `publish` job):
 
 | Secret | Notes |
 | --- | --- |

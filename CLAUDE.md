@@ -37,6 +37,10 @@ in the Terraform or the app may hardcode a domain, account or region. See
 * `docs/ops/` — operator runbooks: step-by-step, command-verified how-tos for running a
   deployed instance (e.g. `create-user.md`). Different job from `deployment.md`, which
   explains the model; these explain the exact commands.
+* `docs/ops/automated-updates.md` — setting up and running the opt-in automation from
+  plan 03: Dependabot + automerge, the always-reporting CI gates, Lambda deploys on
+  every merge, the weekly Android release. Also covers pausing, rollback, and stuck
+  Dependabot PRs.
 * `docs/play/data-safety.md` — answers for the Play Console Data Safety form.
 * `docs/play/photos-video-declaration.md` — paste-ready text for the Play Console
   "Photos and Videos" permissions declaration (`READ_MEDIA_IMAGES`/`VIDEO`).
@@ -80,6 +84,19 @@ Two exceptions:
 Before suggesting a commit, grep the tree for the maintainer's name, domain and machine
 hostnames. Don't hardcode those strings anywhere committed — not even inside the check
 command, which would defeat the purpose.
+
+## `main` and GitHub Actions
+
+* **`main` only changes through PRs** (plan 03 step 3.7). Whatever reaches `main` ships:
+  a merge that changes a Lambda bundle deploys to production, and the weekly run
+  releases `android/`. Never push to `main` directly; open a PR and let the required
+  checks (`backend-ci-ok`, `android-ci-ok`) pass.
+* **Every action is pinned to a full commit SHA** with its version as a trailing comment
+  (`uses: actions/checkout@<40-hex sha> # v4.4.0`); the repository refuses to run
+  anything else (steps 3.9, 3.10). A new workflow step that uses an action pins it the
+  same way: resolve the SHA from the action's own repository (the peeled commit for an
+  annotated tag), never invent or guess one. Local `./.github/workflows/…` references
+  stay unpinned.
 
 ## Naming
 
