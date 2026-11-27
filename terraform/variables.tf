@@ -105,3 +105,14 @@ variable "github_repository" {
     error_message = "Expected \"owner/repo\", without a URL or .git suffix."
   }
 }
+
+variable "github_oidc_subject_prefix" {
+  description = "The repository's OIDC subject prefix, when it uses GitHub's immutable subject format: the `sub_claim_prefix` from `gh api repos/OWNER/REPO/actions/oidc/customization/sub`, e.g. \"repo:owner@123/repo@456\". Null (the default) trusts the plain \"repo:<github_repository>\" form. Only used when github_repository is set. See ci.tf."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.github_oidc_subject_prefix == null || can(regex("^repo:[^:]+$", var.github_oidc_subject_prefix))
+    error_message = "Expected the sub_claim_prefix value, starting \"repo:\" and without \":environment:…\"."
+  }
+}

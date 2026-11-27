@@ -12,6 +12,13 @@
 
 locals {
   ci_enabled = var.github_repository != null
+
+  # The part of GitHub's OIDC `sub` claim before ":environment:…". Repositories on
+  # GitHub's immutable subject format (the default for repositories that have it
+  # enabled; check with `gh api repos/OWNER/REPO/actions/oidc/customization/sub`) send
+  # "repo:owner@<owner id>/repo@<repo id>", which a recreated or renamed-into repository
+  # can't reproduce; others send plain "repo:owner/repo".
+  ci_subject_prefix = coalesce(var.github_oidc_subject_prefix, "repo:${coalesce(var.github_repository, "-")}")
 }
 
 data "aws_iam_openid_connect_provider" "github" {
@@ -43,7 +50,7 @@ data "aws_iam_policy_document" "ci_deploy_assume" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${var.environment}"]
+      values   = ["${local.ci_subject_prefix}:environment:${var.environment}"]
     }
   }
 }

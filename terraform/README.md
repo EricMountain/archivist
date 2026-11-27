@@ -148,9 +148,12 @@ The role trusts the account's GitHub OIDC provider
 (`token.actions.githubusercontent.com`), which is looked up, not created: it's one per
 account, shared by both workspaces, so it's created once by hand (plan 03, step 3.3).
 An apply with `github_repository` set fails until it exists. The trust condition
-assumes GitHub's default `sub` claim format
-(`repo:owner/repo:environment:<name>`); if the repository customises its OIDC subject
-claim, the role won't match. The full setup is `docs/plans/03-automated-updates.md`
+matches the token's `sub` claim, `<prefix>:environment:<name>`. Repositories on GitHub's
+immutable subject format send a prefix with numeric IDs (`repo:owner@123/repo@456`);
+set `github_oidc_subject_prefix` to the `sub_claim_prefix` that
+`gh api repos/OWNER/REPO/actions/oidc/customization/sub` reports. Otherwise the plain
+`repo:owner/repo` is trusted. A mismatch shows up in the deploy job as "Not authorized to
+perform sts:AssumeRoleWithWebIdentity". The full setup is `docs/plans/03-automated-updates.md`
 steps 3.3, 3.4 and 3.11–3.14.
 
 After a CI deploy, the next `make deploy` shows an in-place update to each Lambda CI

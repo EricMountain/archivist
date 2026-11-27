@@ -207,6 +207,9 @@ Add the repository to **both** tfvars files (`private/instance/terraform.tfvars`
 
 ```hcl
 github_repository = "OWNER/REPO"
+# If `gh api repos/{owner}/{repo}/actions/oidc/customization/sub` reports
+# "use_immutable_subject": true, also copy its sub_claim_prefix:
+github_oidc_subject_prefix = "repo:OWNER@<owner id>/REPO@<repo id>"
 ```
 
 ```sh
@@ -225,9 +228,11 @@ terraform output -raw deployed_commit_parameter \
   | xargs -I{} aws ssm get-parameter --region <region> --name {} --query Parameter.Value --output text
 ```
 
-The OIDC provider (step 3) must exist first, or the apply fails. Don't customise the
-repository's OIDC subject claim: the role trusts GitHub's default
-`repo:OWNER/REPO:environment:ENV` form.
+The OIDC provider (step 3) must exist first, or the apply fails. The role trusts
+exactly `<prefix>:environment:ENV`, where the prefix is `github_oidc_subject_prefix` if
+set, else `repo:OWNER/REPO`. If the first CI deploy fails with "Not authorized to perform
+sts:AssumeRoleWithWebIdentity", the prefix doesn't match what GitHub sends: re-check the
+`customization/sub` output above. Don't otherwise customise the subject claim.
 
 ### 11. Store the deploy secrets and the kill switches
 
