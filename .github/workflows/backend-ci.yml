@@ -1,7 +1,7 @@
 name: Backend CI
 
 # Plan steps 3.15/3.16 (docs/plans/03-automated-updates.md). Typecheck, unit and
-# integration tests (DynamoDB Local + MinIO via tools/local-infra.sh), the Lambda
+# integration tests (DynamoDB Local + RustFS via tools/local-infra.sh), the Lambda
 # bundle, and a Terraform fmt/validate that needs no AWS access.
 #
 # The required check is the `backend-ci-ok` gate job, not the individual jobs: on a PR
@@ -73,7 +73,7 @@ jobs:
 
       - run: npm ci
 
-      # Typecheck + the whole vitest suite, including the DynamoDB Local/MinIO-gated
+      # Typecheck + the whole vitest suite, including the DynamoDB Local/S3-emulator-gated
       # tests: the runner has Docker and the AWS CLI that tools/local-infra.sh needs.
       - run: make test-integration
 
