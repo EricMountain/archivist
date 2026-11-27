@@ -178,6 +178,17 @@ same bounded real-time poll as `EnrolmentRepositoryTest`'s `awaitState` helper (
 `advanceUntilIdle()` + a short real `Thread.sleep` until the expected state appears or a
 timeout elapses), not a single `advanceUntilIdle()` call. See `FoldersViewModelTest`.
 
+**That poll can itself hang: it never suspends the test body.** `advanceUntilIdle()` +
+`Thread.sleep` in a loop keeps the test thread busy inside runTest, and some work only runs
+once the body suspends and hands the thread back. Found in `TimelineViewModelFilterTest`
+(failed about one run in ten, on CI and locally): when the filtered pager's start was held
+up behind a cache wipe on a real IO thread, its PagingData never reached `cachedIn`'s
+subscribers while the test polled, so no fetch started and the poll timed out. Injecting a
+200 ms sleep into the wipe made it fail every time. Prefer a wait that suspends: a
+`CompletableDeferred` the fake completes, a Room `observeXxx().first { ... }`, or, for a
+window where the correct outcome is that nothing happens, `withContext(Dispatchers.Default)
+{ delay(ms) }`. Other tests still use the busy-poll; switch them over if they flake.
+
 **`androidx.exifinterface`'s `ExifInterface` needs `testOptions.unitTests.isReturnDefaultValues
 = true` to even construct in a plain JVM test** (not Robolectric — an AGP flag). Its
 static initializer calls `android.util.Log.isLoggable`, which the bare `android.jar`
