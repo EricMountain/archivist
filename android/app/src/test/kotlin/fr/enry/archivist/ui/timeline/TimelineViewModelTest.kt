@@ -6,6 +6,7 @@ import fr.enry.archivist.crypto.MasterKey
 import fr.enry.archivist.data.local.InstanceStore
 import fr.enry.archivist.data.local.db.AppDatabase
 import fr.enry.archivist.data.local.db.AssetStatus
+import fr.enry.archivist.data.local.db.FacetStreamEntity
 import fr.enry.archivist.data.local.db.PhotoEntity
 import fr.enry.archivist.data.local.db.TimelineKey
 import fr.enry.archivist.data.local.db.buildTestDatabase
@@ -38,6 +39,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -395,11 +397,11 @@ class TimelineViewModelFilterTest {
                 runCurrent()
                 // PagingData loads only when something presents it.
                 backgroundScope.launch { vm.filteredTimeline.asSnapshot() }
-                awaitReal("the stream's first page") { db.facetStreamDao().stream("REGION#JP.22") != null }
+                awaitStreams(db, "REGION#JP.22") { it.isNotEmpty() }
                 assertEquals(listOf(photo), db.photoDao().pageFromStart(10))
 
                 vm.clearFilter()
-                awaitReal("the cache emptied") { db.facetStreamDao().stream("REGION#JP.22") == null }
+                awaitStreams(db, "REGION#JP.22") { it.isEmpty() }
                 assertEquals(listOf(photo), db.photoDao().pageFromStart(10))
                 assertNull(vm.activeFilter.value)
             } finally {
@@ -424,10 +426,14 @@ class TimelineViewModelFilterTest {
             try {
                 val gate = CompletableDeferred<Unit>()
                 val calls = AtomicInteger()
+                val firstFetchStarted = CompletableDeferred<Unit>()
                 val fetcher =
                     fr.enry.archivist.data.repo.FacetPageFetcher { _, value, _, _ ->
                         val n = calls.incrementAndGet()
-                        if (n == 1) withContext(NonCancellable) { gate.await() }
+                        if (n == 1) {
+                            firstFetchStarted.complete(Unit)
+                            withContext(NonCancellable) { gate.await() }
+                        }
                         FacetPageResponse(
                             listOf(FacetEntryDto("p$n", "REGION", value, "2026-07-0${n}T10:00:00.000Z", encDek = "d", encKeyId = "k")),
                             null,
@@ -448,7 +454,7 @@ class TimelineViewModelFilterTest {
                         if (e !is kotlinx.coroutines.CancellationException) errors += e
                     }
                 }
-                awaitReal("the first session's fetch in flight") { calls.get() == 1 }
+                firstFetchStarted.await()
 
                 vm.clearFilter()
                 vm.onSelectionChanged(state("kyoto"))
@@ -461,13 +467,13 @@ class TimelineViewModelFilterTest {
                     }
                 }
                 // Give the re-applied filter every chance to run ahead of the stuck clear.
-                settleReal(300)
+                holdReal(300)
                 gate.complete(Unit)
-                settleReal(300)
 
                 val key = "REGION#JP.22"
-                awaitReal("the re-applied filter's page in the cache") { db.facetStreamDao().stream(key) != null }
-                settleReal(200)
+                awaitStreams(db, key) { it.isNotEmpty() }
+                // ...and a late wipe every chance to delete it.
+                holdReal(200)
                 assertNotNull(db.facetStreamDao().stream(key), "the pending clear wiped the new selection's first page")
                 assertEquals(listOf("p2"), repo.MergedPageQueries(setOf(key)).pageFromStart(10).map { it.photoId })
                 assertEquals(emptyList<Throwable>(), errors)
@@ -477,26 +483,33 @@ class TimelineViewModelFilterTest {
             }
         }
 
-    /** Lets real-thread work run for about [ms] while advancing virtual time. */
-    private fun TestScope.settleReal(ms: Long) {
-        val until = System.currentTimeMillis() + ms
-        while (System.currentTimeMillis() < until) {
-            advanceUntilIdle()
-            Thread.sleep(10)
-        }
+    /**
+     * Suspends until the `facet_streams` rows for [key] satisfy [condition]. Room's flow
+     * re-emits on every write, so this waits for the write itself rather than polling, and
+     * runTest keeps running the test dispatcher meanwhile.
+     *
+     * These waits used to busy-poll (`advanceUntilIdle()` + `Thread.sleep`) without ever
+     * suspending the test body, which starved work that only runs once the body yields its
+     * thread. When the pager's start was held up behind the first session's cache wipe (a
+     * real IO thread), the filtered pager's PagingData never reached `cachedIn`'s
+     * subscribers, nothing presented it, no fetch started, and the poll timed out — about
+     * one run in ten on CI and locally.
+     */
+    private suspend fun awaitStreams(
+        db: AppDatabase,
+        key: String,
+        condition: (List<FacetStreamEntity>) -> Boolean,
+    ) {
+        db.facetStreamDao().observeStreams(setOf(key)).first(condition)
     }
 
-    /** Room and the repository's scope run on real threads: advance virtual time and poll
-     * (android/AGENTS.md, "A Room suspend DAO call can resume on a real thread"). */
-    private suspend fun TestScope.awaitReal(
-        what: String,
-        condition: suspend () -> Boolean,
-    ) {
-        val deadline = System.currentTimeMillis() + 5_000
-        while (!condition()) {
-            check(System.currentTimeMillis() < deadline) { "timed out waiting for $what" }
-            advanceUntilIdle()
-            Thread.sleep(10)
-        }
+    /**
+     * A real-time window for a racing real-thread party (a stuck clear, a late wipe) to
+     * misbehave in. Inherently real-time: the correct outcome is that nothing happens, so
+     * there is no event to await. Suspends rather than sleeping the test thread, so runTest
+     * keeps running the test dispatcher (and advancing virtual time) throughout.
+     */
+    private suspend fun holdReal(ms: Long) {
+        withContext(Dispatchers.Default) { delay(ms) }
     }
 }
