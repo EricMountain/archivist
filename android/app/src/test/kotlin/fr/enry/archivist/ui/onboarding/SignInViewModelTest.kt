@@ -50,6 +50,12 @@ class SignInViewModelTest {
     private lateinit var fakeCognitoApi: FakeCognitoAuthApi
     private lateinit var tokenStore: TokenStore
     private lateinit var instanceStore: InstanceStore
+    private lateinit var repository: AuthRepository
+
+    // The view model checks for a stored session once, in init. A test that needs one must
+    // save it and *then* build its own view model: setUp's instance can finish that check
+    // before the test body runs (runTest drains the scheduler first, and DataStore 1.3.0
+    // answers the instance read from its in-memory cache without suspending).
     private lateinit var viewModel: SignInViewModel
 
     private val host = "photos.example.com"
@@ -77,7 +83,7 @@ class SignInViewModelTest {
                 tokenStore = tokenStore,
                 cognitoAuthClient = CognitoAuthClient(fakeCognitoApi, json),
             )
-        val repository =
+        repository =
             AuthRepository(
                 instanceStore,
                 CognitoAuthClient(fakeCognitoApi, json),
@@ -149,6 +155,7 @@ class SignInViewModelTest {
                 host,
                 AuthSession("a@example.com", "access", "id", "refresh", System.currentTimeMillis() + 3_600_000),
             )
+            viewModel = SignInViewModel(repository, instanceStore)
             dispatcher.scheduler.advanceUntilIdle()
 
             assertEquals(SignInUiState.SignedIn, viewModel.uiState.value)
@@ -163,6 +170,7 @@ class SignInViewModelTest {
                 host,
                 AuthSession("a@example.com", "access", "id", "refresh", System.currentTimeMillis() + 3_600_000),
             )
+            viewModel = SignInViewModel(repository, instanceStore)
             dispatcher.scheduler.advanceUntilIdle()
             assertEquals(SignInUiState.SignedIn, viewModel.uiState.value)
 
