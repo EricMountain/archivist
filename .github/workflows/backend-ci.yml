@@ -130,8 +130,12 @@ jobs:
   # lives in .github/scripts/deploy-lambdas.sh, shared by both jobs.
   #
   # concurrency with cancel-in-progress false: a running deploy finishes, and of the
-  # runs queued behind it only the newest one runs. That's correct, because each run
-  # deploys everything between the live commit and its own.
+  # runs queued behind it only the one queued last runs. That's the one whose tests
+  # finished last, not necessarily the newest commit. Each run deploys everything
+  # between the live commit and its own, and the script skips a commit the live one
+  # already includes, so nothing rolls back; but after several merges at once the
+  # live commit can stop short of main's tip until the next merge (or a re-run of
+  # the cancelled deploy job).
   deploy-dev:
     needs: [changes, test, terraform]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AUTO_DEPLOY_LAMBDAS == 'true'

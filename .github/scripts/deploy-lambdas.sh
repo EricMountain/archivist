@@ -55,6 +55,15 @@ fi
 if ! git cat-file -e "${marker}^{commit}" 2>/dev/null; then
   fail "the live commit $marker isn't in this repository's history."
 fi
+# A newer commit's deploy can run first: the per-environment concurrency group keeps
+# whichever run was queued last, not the newest commit. Deploying an ancestor of the
+# live commit would roll it back, so stop. (A marker merely beside SHA, from a
+# `make deploy` elsewhere, still deploys.)
+if git merge-base --is-ancestor "$SHA" "$marker"; then
+  echo "$DEPLOY_ENV already runs $marker, which includes $SHA. Nothing to do."
+  result superseded
+  exit 0
+fi
 echo "$DEPLOY_ENV runs $marker; deploying $SHA."
 
 # 2. Infrastructure guard. git diff rather than git log, so it also works when the
