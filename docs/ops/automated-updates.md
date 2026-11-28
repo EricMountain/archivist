@@ -340,6 +340,20 @@ Run `make deploy-dev` and `make deploy` from a clean, up-to-date `main`. They ap
 Terraform, deploy the code and move the markers, so there's nothing left for that run
 to do. The next merge deploys normally.
 
+### "Already runs …, which includes …"; or the live commit is behind `main`
+
+Several merges at once (a Saturday Dependabot batch) queue several deploys. Each
+environment runs one at a time, and of those waiting only the one queued last survives;
+the rest show as cancelled. That's the run whose tests finished last, which isn't always
+the newest commit. So:
+
+* A run whose commit is older than the live one skips with "already runs …, which
+  includes …". Nothing rolls back.
+* The live commit can stop one or two merges short of `main`. The next merge catches up,
+  since each deploy ships everything between the live commit and its own. To catch up
+  now, re-run the newest cancelled run's failed jobs:
+  `gh run rerun <run-id> --failed`.
+
 ### The deploy failed: "the deployed-commit marker is …"
 
 CI won't guess what's live. `unknown` (never deployed since the parameter was created),

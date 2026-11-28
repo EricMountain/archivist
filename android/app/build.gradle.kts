@@ -22,7 +22,10 @@ val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 
 android {
     namespace = "fr.enry.archivist"
-    compileSdk = 37
+    // 37.1: Compose 1.13 (compose-bom 2026.11) requires it.
+    compileSdk {
+        version = release(37) { minorApiLevel = 1 }
+    }
 
     defaultConfig {
         applicationId = "fr.enry.archivist"
