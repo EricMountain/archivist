@@ -25,6 +25,11 @@ updates:
     cooldown:
       default-days: 3
     open-pull-requests-limit: 5
+    # @types/node tracks the Lambda runtime (nodejs22.x in terraform/), not Node's
+    # latest major. Bump it by hand together with the runtime.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch:
         patterns: ["*"]

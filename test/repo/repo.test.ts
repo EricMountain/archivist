@@ -20,7 +20,6 @@ import { facetPage } from "../../src/core/repo/facets";
 import { timelineBounds, timelinePage } from "../../src/core/repo/timeline";
 import { rebuildHistogram, readHistogram } from "../../src/core/repo/histogram";
 import { restoreAsset, trashAsset } from "../../src/core/repo/trash";
-import { restoreAsset, trashAsset } from "../../src/core/repo/trash";
 import type { FacetItem, MetaItem, RenditionItem } from "../../src/core/items";
 
 const RUN = !!process.env["DYNAMODB_ENDPOINT"] && !!process.env["MEDIA_TABLE"];
