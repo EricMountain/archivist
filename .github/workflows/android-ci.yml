@@ -107,7 +107,7 @@ jobs:
       # Caches the Gradle User Home (dependencies + build cache) across runs via the
       # GitHub Actions cache -- this repo's stand-in for a self-hosted remote build
       # cache server, which a self-hosted-per-user project has nowhere to run.
-      - uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
       # The runner's preinstalled Android SDK has no licenses pre-accepted for the
       # system image the Gradle managed device (pixel2api30, see testOptions in
