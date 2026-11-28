@@ -73,7 +73,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "ARCHIVIST_VERSION_NAME=$version" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.version.outputs.sha }}
           persist-credentials: false
@@ -140,7 +140,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       # Full history and tags, for the release notes.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.publish.outputs.sha }}
           fetch-depth: 0
